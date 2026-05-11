@@ -1,6 +1,6 @@
 ---
 name: agent-tmux-control
-description: "Use when an agent needs to launch, resume, monitor, message, capture, or coordinate another terminal-based Codex/Claude/CLI agent through a safe tmux control channel, including finding or resuming the latest Codex chat for a repo without asking the user for the thread name. Trigger for agent-tmux, agent-contact, tmux agent sessions, communicating with another terminal Codex/Claude agent, latest Codex chat in a repo, cross-agent terminal coordination, capturing another agent's output, or replacing unsafe raw PTY injection. Do not use for ordinary one-shot shell commands."
+description: "Use when an agent needs to launch, resume, monitor, message, capture, or coordinate another terminal-based Codex/Claude/CLI agent through a safe tmux control channel, including identifying whether a repo's active lane is Codex or Claude before launching, and finding/resuming the latest Codex chat for a repo without asking the user for the thread name. Trigger for agent-tmux, agent-contact, tmux agent sessions, communicating with another terminal Codex/Claude agent, latest Codex chat in a repo, cross-agent terminal coordination, capturing another agent's output, or replacing unsafe raw PTY injection. Do not use for ordinary one-shot shell commands."
 ---
 
 # Agent Tmux Control
@@ -55,9 +55,23 @@ anchored by the provider command found on your current `PATH`.
 
 ## Latest Chat Routing
 
-When the user asks to connect to, resume, or contact the latest Codex chat for a
-repo and does not provide an exact thread or session name, do not start a fresh
-chat first.
+When the user asks to connect to, resume, contact, or spawn an agent for a repo
+and does not provide an exact provider plus thread or session name, do not start
+a fresh chat first.
+
+Before spawning any tmux worker, identify whether the repo's active lane is
+Codex or Claude. Do not choose the provider from the supervising agent, from
+habit, or from whichever launch command is easiest. Provider identity must come
+from one of these, in order:
+
+1. The user's explicit provider instruction.
+2. An existing tmux-managed owner session for that repo and provider.
+3. The latest recorded provider chat for that repo, when the helper supports
+   that provider.
+4. A clear repo-local handoff note or ticket naming the provider.
+
+If the signals disagree, if both providers have plausible active chats, or if no
+provider can be identified, stop and ask instead of launching a guessed worker.
 
 First inspect the latest recorded Codex thread for that repo:
 
