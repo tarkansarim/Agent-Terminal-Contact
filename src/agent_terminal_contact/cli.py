@@ -25,6 +25,7 @@ EXIT_REFUSED = 4
 EXIT_UNPROVEN = 5
 EXIT_TRANSPORT = 6
 CONTACT_ID_RE = re.compile(r"^AC-[A-Za-z0-9_.:-]+$")
+CODEX_COLLAPSED_PASTE_RE = re.compile(r"^\[Pasted Content (?P<count>[0-9]+) chars\]$")
 BRACKETED_PASTE_SEQUENCES = ("\x1b[200~", "\x1b[201~")
 MESSAGE_ALLOWED_CONTROLS = {"\n", "\t"}
 POST_PASTE_READBACK_ATTEMPTS = 5
@@ -548,13 +549,17 @@ def _revalidate_pasted_contact(selection, runner: Runner, transport: AgentTmuxTr
         if (
             classification.state == PaneState.PENDING_USER_TEXT
             and prompt_body is not None
-            and _normalized_prompt_body_contains_guarded_message(prompt_body, guarded_message)
+            and _normalized_prompt_body_matches_pasted_contact(
+                prompt_body,
+                guarded_message,
+                provider=selection.provider,
+            )
         ):
             return
         if classification.state != PaneState.PENDING_USER_TEXT:
             last_reason = f"pasted contact is not visible as pending composer text: {classification.reason}"
         else:
-            last_reason = "full guarded contact line is not the current composer prompt body"
+            last_reason = "full guarded contact line or exact Codex pasted-content placeholder is not the current composer prompt body"
         if attempt + 1 < POST_PASTE_READBACK_ATTEMPTS:
             time.sleep(POST_PASTE_READBACK_DELAY_SECONDS)
     raise DiscoveryError(last_reason)
@@ -581,8 +586,16 @@ def _normalized_prompt_body(prompt_body: str) -> str:
     return prompt_body.replace("\n", "").replace("\u258c", "").strip()
 
 
-def _normalized_prompt_body_contains_guarded_message(prompt_body: str, guarded_message: str) -> bool:
-    return _normalized_prompt_body(prompt_body) == guarded_message
+def _normalized_prompt_body_matches_pasted_contact(prompt_body: str, guarded_message: str, *, provider: str) -> bool:
+    normalized = _normalized_prompt_body(prompt_body)
+    if normalized == guarded_message:
+        return True
+    if provider != "codex":
+        return False
+    match = CODEX_COLLAPSED_PASTE_RE.match(normalized)
+    if match is None:
+        return False
+    return int(match.group("count")) == len(guarded_message)
 
 
 def _capture_contains_guarded_message(text: str, guarded_message: str) -> bool:

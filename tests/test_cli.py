@@ -41,6 +41,15 @@ def codex_wrapped_pending_contact(message='hello', width=24):
     return f"previous assistant output\n\n\u203a {wrapped}\n  gpt-5.5 xhigh · /tmp/project\n"
 
 
+def codex_collapsed_pasted_contact(message='hello', *, count_delta=0):
+    line = guarded_line(message)
+    return (
+        "previous assistant output\n\n"
+        f"\u203a [Pasted Content {len(line) + count_delta} chars]\n"
+        "  gpt-5.5 xhigh · /tmp/project\n"
+    )
+
+
 def claude_wrapped_pending_contact(message='hello', width=24):
     line = guarded_line(message)
     pieces = [line[index : index + width] for index in range(0, len(line), width)]
@@ -961,6 +970,73 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(code, EXIT_OK)
             self.assertEqual(payload["status"], "sent")
             self.assertTrue(payload["delivery_proven"])
+
+    def test_pre_submit_accepts_codex_collapsed_pasted_content_before_enter(self):
+        long_message = "collapsed-" * 90
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_collapsed_pasted_contact(long_message),
+                    f"{guarded_line(long_message)}\n{CODEX_IDLE}",
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(any(call[0][:3] == ("tmux", "send-keys", "-t") for call in runner.calls))
+
+    def test_pre_submit_rejects_codex_collapsed_pasted_content_with_wrong_count(self):
+        long_message = "collapsed-" * 90
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [CODEX_IDLE, CODEX_IDLE, CODEX_IDLE, CODEX_IDLE] + [codex_collapsed_pasted_contact(long_message, count_delta=1)] * 6,
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_TRANSPORT)
+            self.assertEqual(payload["status"], "mutated_unsubmitted")
+            self.assertEqual(payload["stage"], "submit")
+            self.assertIn("full guarded contact line", payload["reason"])
+            self.assertFalse(any(call[0][:3] == ("tmux", "send-keys", "-t") for call in runner.calls))
 
     def test_pre_submit_accepts_claude_wrapped_guarded_line_with_cursor_on_continuation(self):
         long_message = "wrapped-" * 14

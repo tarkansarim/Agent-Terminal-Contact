@@ -14,7 +14,12 @@ class SkillContractTests(unittest.TestCase):
         )
         self.assertIn("Use `agent-contact send`", text)
         self.assertIn("Raw `agent-tmux send` is a low-level transport primitive", text)
-        self.assertIn("Pending visible composer text is user-owned state and is a hard stop", text)
+        self.assertIn("Unexpected visible composer text in a tmux-managed agent is stale session", text)
+        self.assertIn("Stale contact residue created by a failed `agent-contact` attempt", text)
+        self.assertIn("agent-tmux clear-input <session>", text)
+        self.assertIn("known to be a human draft", text)
+        self.assertIn("continue through guarded `agent-contact`", text)
+        self.assertIn("after the prompt is idle", text)
         self.assertIn("If `agent-contact` refuses, stop", text)
         self.assertIn("agent-contact trust-roots", text)
 
