@@ -47,7 +47,7 @@ class AgentTmuxTransport:
 
     def capture(self, pane_id: str, lines: int = 160) -> str:
         validate_pane_id(pane_id)
-        result = self.runner.run(["tmux", "capture-pane", "-p", "-t", pane_id, "-S", f"-{lines}"])
+        result = self.runner.run(["tmux", "capture-pane", "-ep", "-t", pane_id, "-S", f"-{lines}"])
         if result.returncode != 0:
             raise TransportError(_detail("capture failed", result.stderr, result.stdout))
         return result.stdout

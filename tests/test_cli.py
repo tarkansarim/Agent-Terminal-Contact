@@ -20,8 +20,12 @@ CODEX_STARTER = (
     "│ directory: ~/Dropbox/work/MyTools/3dSculptTool │\n"
     "╰────────────────────────────────────────────────╯\n\n"
     "  Tip: Use /side to start a side conversation in a temporary fork without polluting the main thread.\n\n\n"
-    "\u203a Find and fix a bug in @filename\n\n"
+    "\u203a Improve documentation in @filename\n\n"
     "  gpt-5.5 xhigh · ~/Dropbox/work/MyTools/3dSculptTool\n"
+)
+CODEX_DIM_STARTER = CODEX_STARTER.replace(
+    "Improve documentation in @filename",
+    "\x1b[2mSummarize recent commits\x1b[0m",
 )
 CLAUDE_IDLE = "previous assistant output\n\n> \u258c\n? for shortcuts\n"
 
@@ -137,7 +141,7 @@ class FakeRunner:
     def run(self, args, input_text=None):
         key = tuple(args)
         self.calls.append((key, input_text))
-        if key[:3] == ("tmux", "capture-pane", "-p"):
+        if key[:2] == ("tmux", "capture-pane"):
             capture = self.captures.pop(0) if self.captures else ""
             self.last_capture = capture
             return CommandResult(key, 0, capture, "")
@@ -243,6 +247,32 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["status"], "would_send")
             self.assertEqual(payload["pane_state"], "idle_empty_prompt")
 
+    def test_dry_run_would_send_from_dim_codex_starter_prompt(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, CODEX_DIM_STARTER, cursor_x=2)
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--dry-run",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "would_send")
+            self.assertEqual(payload["pane_state"], "idle_empty_prompt")
+
     def test_trust_roots_reports_narrow_provider_and_launcher_roots(self):
         with tempfile.TemporaryDirectory() as repo:
             runner = FakeRunner(repo, CODEX_IDLE)
@@ -269,7 +299,7 @@ class AgentContactCliTests(unittest.TestCase):
                 str(Path(repo).resolve() / "node_modules" / "@openai" / "codex"),
             )
             self.assertEqual(suggestion["launcher_root"], "/usr/bin")
-            self.assertFalse(any(call[0][:3] == ("tmux", "capture-pane", "-p") for call in runner.calls))
+            self.assertFalse(any(call[0][:2] == ("tmux", "capture-pane") for call in runner.calls))
 
     def test_trust_roots_refuses_node_preload_instead_of_returning_false_root(self):
         with tempfile.TemporaryDirectory() as repo:
@@ -589,7 +619,7 @@ class AgentContactCliTests(unittest.TestCase):
             payload = json.loads(stdout.getvalue())
             self.assertEqual(code, EXIT_DISCOVERY)
             self.assertEqual(payload["stage"], "discovery")
-            self.assertFalse(any(call[0][:3] == ("tmux", "capture-pane", "-p") for call in runner.calls))
+            self.assertFalse(any(call[0][:2] == ("tmux", "capture-pane") for call in runner.calls))
 
     def test_real_send_targets_locked_pane_id(self):
         with tempfile.TemporaryDirectory() as repo:

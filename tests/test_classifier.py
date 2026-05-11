@@ -3,6 +3,17 @@ import unittest
 from agent_terminal_contact.classifier import PaneState, classify_pane, current_prompt_body
 
 
+def codex_starter_capture(prompt_text: str, *, dim: bool = False) -> str:
+    body = f"\x1b[2m{prompt_text}\x1b[0m" if dim else prompt_text
+    return (
+        "╭────────────────────────────────────────────────╮\n"
+        "│ >_ OpenAI Codex (v0.130.0)                     │\n"
+        "╰────────────────────────────────────────────────╯\n\n"
+        f"\u203a {body}\n\n"
+        "  gpt-5.5 xhigh · /tmp/project\n"
+    )
+
+
 class PaneClassifierTests(unittest.TestCase):
     def test_idle_empty_codex_prompt(self):
         result = classify_pane(
@@ -23,14 +34,33 @@ class PaneClassifierTests(unittest.TestCase):
         result = classify_pane(text, provider="codex", cursor_line_index=4, cursor_column_index=2)
         self.assertEqual(result.state, PaneState.IDLE_EMPTY_PROMPT)
 
+    def test_codex_implement_feature_placeholder_is_idle_when_cursor_is_at_body_start(self):
+        text = codex_starter_capture("Implement {feature}")
+        result = classify_pane(text, provider="codex", cursor_line_index=4, cursor_column_index=2)
+        self.assertEqual(result.state, PaneState.IDLE_EMPTY_PROMPT)
+
+    def test_codex_improve_documentation_placeholder_is_idle_when_cursor_is_at_body_start(self):
+        text = codex_starter_capture("Improve documentation in @filename")
+        result = classify_pane(text, provider="codex", cursor_line_index=4, cursor_column_index=2)
+        self.assertEqual(result.state, PaneState.IDLE_EMPTY_PROMPT)
+
+    def test_codex_dim_source_starter_prompt_is_idle_when_cursor_is_at_body_start(self):
+        text = codex_starter_capture("Summarize recent commits", dim=True)
+        result = classify_pane(text, provider="codex", cursor_line_index=4, cursor_column_index=2)
+        self.assertEqual(result.state, PaneState.IDLE_EMPTY_PROMPT)
+
+    def test_codex_source_starter_prompt_without_style_or_template_is_pending(self):
+        text = codex_starter_capture("Summarize recent commits")
+        result = classify_pane(text, provider="codex", cursor_line_index=4, cursor_column_index=2)
+        self.assertEqual(result.state, PaneState.PENDING_USER_TEXT)
+
+    def test_codex_template_starter_prompt_with_normal_style_is_pending(self):
+        text = codex_starter_capture("\x1b[22mImprove documentation in @filename\x1b[0m")
+        result = classify_pane(text, provider="codex", cursor_line_index=4, cursor_column_index=2)
+        self.assertEqual(result.state, PaneState.PENDING_USER_TEXT)
+
     def test_codex_starter_placeholder_text_is_pending_when_cursor_is_after_text(self):
-        text = (
-            "╭────────────────────────────────────────────────╮\n"
-            "│ >_ OpenAI Codex (v0.130.0)                     │\n"
-            "╰────────────────────────────────────────────────╯\n\n"
-            "\u203a Find and fix a bug in @filename\n\n"
-            "  gpt-5.5 xhigh · /tmp/project\n"
-        )
+        text = codex_starter_capture("Find and fix a bug in @filename")
         result = classify_pane(text, provider="codex", cursor_line_index=4, cursor_column_index=36)
         self.assertEqual(result.state, PaneState.PENDING_USER_TEXT)
 
@@ -171,6 +201,17 @@ class PaneClassifierTests(unittest.TestCase):
         result = classify_pane(
             "Working for 12s\nRunning tests\n\n\u203a \n  gpt-5.5 xhigh · /tmp/project\n",
             provider="codex",
+        )
+        self.assertEqual(result.state, PaneState.AGENT_WORKING)
+
+    def test_codex_working_status_with_esc_interrupt_wins_over_submitted_prompt(self):
+        result = classify_pane(
+            "• Working (1m 12s • esc to interrupt)\n\n"
+            "\u203a Run /review on my current changes\n\n"
+            "  gpt-5.5 xhigh · /tmp/project\n",
+            provider="codex",
+            cursor_line_index=2,
+            cursor_column_index=2,
         )
         self.assertEqual(result.state, PaneState.AGENT_WORKING)
 

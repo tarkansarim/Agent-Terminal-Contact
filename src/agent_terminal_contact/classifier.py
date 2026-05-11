@@ -12,6 +12,21 @@ ANSI_RE = re.compile(
     r"\x1b\[[0-9;?]*[ -/]*[@-~]|"
     r"\x1b[()#][0-9A-Za-z]"
 )
+SGR_RE = re.compile(r"\x1b\[([0-9;]*)m")
+CODEX_STARTER_PROMPTS = {
+    "Explain this codebase",
+    "Summarize recent commits",
+    "Implement {feature}",
+    "Find and fix a bug in @filename",
+    "Write tests for @filename",
+    "Improve documentation in @filename",
+    "Run /review on my current changes",
+    "Use /skills to list available skills",
+    "Check recently modified functions for compatibility",
+    "How many files have been modified?",
+    "Will this algorithm scale well?",
+}
+CODEX_UNRESOLVED_TEMPLATE_RE = re.compile(r"(?:\{[^{}\n]+\}|@[A-Za-z][A-Za-z0-9_-]*)")
 
 
 class PaneState(str, Enum):
@@ -67,6 +82,7 @@ def classify_pane(
         if not _prompt_body_is_empty(prompt.body):
             if _is_codex_starter_placeholder(
                 prompt,
+                raw_text=text or "",
                 provider=provider,
                 cursor_column_index=cursor_column_index,
             ) and _has_provider_prompt_context(
@@ -103,14 +119,22 @@ def current_prompt_body(
 def _is_codex_starter_placeholder(
     prompt: PromptMatch,
     *,
+    raw_text: str,
     provider: str | None,
     cursor_column_index: int | None,
 ) -> bool:
+    # DELICATE_FIX: Carefully debugged. Modify only with failing repro + targeted tests.
     if provider != "codex" or cursor_column_index is None:
         return False
-    if _strip_prompt_cursor(prompt.body).strip() != "Find and fix a bug in @filename":
+    body = _strip_prompt_cursor(prompt.body).strip()
+    if body not in CODEX_STARTER_PROMPTS:
         return False
-    return cursor_column_index <= _prompt_body_start_column(prompt.line, provider=provider)
+    if cursor_column_index > _prompt_body_start_column(prompt.line, provider=provider):
+        return False
+    raw_line = _line_at(raw_text, prompt.line_index)
+    if _line_has_sgr(raw_line):
+        return _codex_prompt_body_is_dim(raw_line)
+    return bool(CODEX_UNRESOLVED_TEMPLATE_RE.search(body))
 
 
 def _looks_like_trust_prompt(lowered: str) -> bool:
@@ -135,13 +159,13 @@ def _looks_like_approval_prompt(lowered: str) -> bool:
 def _looks_like_working_state(text: str) -> bool:
     lines = [line.strip().lower() for line in text.splitlines() if line.strip()]
     for line in lines[-12:]:
-        if _is_provider_footer(line, provider="codex") or _is_provider_footer(line, provider="claude"):
-            continue
         line = _strip_status_prefix(line)
         if re.match(r"^(working|thinking|running|executing|applying patch|waiting for)\b", line):
             return True
         if " tokens" in line and ("used" in line or "remaining" in line):
             return True
+        if _is_provider_footer(line, provider="codex") or _is_provider_footer(line, provider="claude"):
+            continue
     return False
 
 
@@ -230,6 +254,79 @@ def _prompt_body_start_column(line: str, *, provider: str | None) -> int:
     while index < len(line) and line[index].isspace():
         index += 1
     return index
+
+
+def _line_at(text: str, line_index: int) -> str:
+    lines = text.splitlines()
+    if line_index < 0 or line_index >= len(lines):
+        return ""
+    return lines[line_index]
+
+
+def _line_has_sgr(line: str) -> bool:
+    return SGR_RE.search(line) is not None
+
+
+def _codex_prompt_body_is_dim(raw_line: str) -> bool:
+    visible_line = strip_terminal_control(raw_line).strip()
+    body_start_column = _prompt_body_start_column(visible_line, provider="codex")
+    return _dim_style_at_visible_column(raw_line.strip(), body_start_column)
+
+
+def _dim_style_at_visible_column(raw_line: str, target_column: int) -> bool:
+    dim = False
+    visible_column = 0
+    index = 0
+    while index < len(raw_line):
+        sgr = SGR_RE.match(raw_line, index)
+        if sgr is not None:
+            dim = _sgr_dim_state(sgr.group(1), dim)
+            index = sgr.end()
+            continue
+        control = ANSI_RE.match(raw_line, index)
+        if control is not None:
+            index = control.end()
+            continue
+        if visible_column >= target_column:
+            return dim
+        visible_column += 1
+        index += 1
+    return visible_column >= target_column and dim
+
+
+def _sgr_dim_state(parameter_text: str, current: bool) -> bool:
+    if not parameter_text:
+        return False
+    try:
+        parameters = [int(part) if part else 0 for part in parameter_text.split(";")]
+    except ValueError:
+        return current
+    dim = current
+    index = 0
+    while index < len(parameters):
+        code = parameters[index]
+        if code in {38, 48, 58}:
+            index = _skip_extended_sgr_color(parameters, index)
+            continue
+        if code == 0:
+            dim = False
+        elif code == 2:
+            dim = True
+        elif code == 22:
+            dim = False
+        index += 1
+    return dim
+
+
+def _skip_extended_sgr_color(parameters: list[int], index: int) -> int:
+    if index + 1 >= len(parameters):
+        return index + 1
+    mode = parameters[index + 1]
+    if mode == 2:
+        return min(len(parameters), index + 5)
+    if mode == 5:
+        return min(len(parameters), index + 3)
+    return index + 1
 
 
 def _is_provider_footer(line: str, *, provider: str | None) -> bool:
