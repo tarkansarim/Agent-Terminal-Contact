@@ -1,43 +1,169 @@
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
-from agent_terminal_contact.cli import EXIT_DISCOVERY, EXIT_OK, EXIT_REFUSED, main
+from agent_terminal_contact.cli import EXIT_DISCOVERY, EXIT_OK, EXIT_REFUSED, EXIT_TRANSPORT, EXIT_UNPROVEN, main
 from agent_terminal_contact.runner import CommandResult
-from agent_terminal_contact.session import SESSION_FORMAT
+from agent_terminal_contact.session import PANE_FORMAT
+from agent_terminal_contact.tmux_transport import CAPTURE_STATE_FORMAT
+
+
+CODEX_IDLE = "previous assistant output\n\n\u203a \n  gpt-5.5 xhigh · /tmp/project\n"
+CLAUDE_IDLE = "previous assistant output\n\n> \u258c\n? for shortcuts\n"
+
+
+def guarded_line(message='hello'):
+    return f"CONTACT_ID: AC-TEST MESSAGE_JSON: {json.dumps(message)}"
+
+
+def codex_pending_contact(message='hello'):
+    return f"previous assistant output\n\n\u203a {guarded_line(message)}\n  gpt-5.5 xhigh · /tmp/project\n"
+
+
+def codex_wrapped_pending_contact(message='hello', width=24):
+    line = guarded_line(message)
+    pieces = [line[:width], *[line[index : index + width] for index in range(width, len(line), width)]]
+    wrapped = "\n".join(pieces)
+    return f"previous assistant output\n\n\u203a {wrapped}\n  gpt-5.5 xhigh · /tmp/project\n"
+
+
+def claude_wrapped_pending_contact(message='hello', width=24):
+    line = guarded_line(message)
+    pieces = [line[index : index + width] for index in range(0, len(line), width)]
+    pieces[-1] = pieces[-1] + "\u258c"
+    wrapped = "\n".join(pieces)
+    return f"previous assistant output\n\n> {wrapped}\n? for shortcuts\n"
+
+
+def wrapped_guarded_echo(message='hello', width=24):
+    line = guarded_line(message)
+    return "\n".join(line[index : index + width] for index in range(0, len(line), width))
+
+
+def write_provider_package(root, provider="codex"):
+    if provider == "codex":
+        package_root = Path(root) / "node_modules" / "@openai" / "codex"
+        script = package_root / "bin" / "codex.js"
+        package_json = '{"name":"@openai/codex","bin":{"codex":"bin/codex.js"}}\n'
+    else:
+        package_root = Path(root) / "node_modules" / "@anthropic-ai" / "claude-code"
+        script = package_root / "bin" / "claude.exe"
+        package_json = '{"name":"@anthropic-ai/claude-code","bin":{"claude":"bin/claude.exe","claude-code":"bin/claude.exe"}}\n'
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    (package_root / "package.json").write_text(package_json, encoding="utf-8")
+    return script
+
+
+def pane_line(session, pane_id, repo, command="node", pid=1234, attached=0):
+    return f"{session}\t{pane_id}\t/dev/pts/7\t{Path(repo).resolve()}\t{command}\t{pid}\t1\t0\t10\t{attached}\n"
 
 
 class FakeRunner:
-    def __init__(self, repo, capture):
+    def __init__(
+        self,
+        repo,
+        captures,
+        *,
+        fail_submit=False,
+        fail_paste=False,
+        cursor_line_index=None,
+        cursor_line_indexes=None,
+        display_messages=None,
+        tty_processes=None,
+        provider="codex",
+    ):
+        if isinstance(captures, str):
+            captures = [captures]
         resolved = Path(repo).resolve()
+        script = write_provider_package(resolved, provider=provider)
+        package_root = script.parents[1]
+        os.environ["AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS"] = str(package_root)
+        os.environ["AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS"] = "/usr/bin"
+        session_name = f"{provider}-demo"
+        self.default_display_message = CommandResult((), 0, pane_line(session_name, "%1", resolved), "")
+        self.default_tty_process = CommandResult((), 0, f"1234 1 1234 Sl+ node {script}\n", "")
+        self.display_messages = list(display_messages or [])
+        self.tty_processes = list(tty_processes or [])
         self.responses = {
-            ("tmux", "list-sessions", "-F", SESSION_FORMAT): CommandResult(
-                (), 0, f"codex-demo\t{resolved}\tcodex\t10\t0\n", ""
+            ("tmux", "list-panes", "-a", "-F", PANE_FORMAT): CommandResult(
+                (), 0, pane_line(session_name, "%1", resolved), ""
             ),
-            ("agent-tmux", "capture", "codex-demo", "160"): CommandResult(
-                (), 0, capture, ""
+            ("bash", "-lc", f"command -v -- {provider}"): CommandResult((), 0, f"{script}\n", ""),
+            ("ps", "-p", "1234", "-o", "args="): CommandResult(
+                (), 0, f"node {script}\n", ""
             ),
-            ("agent-tmux", "log", "codex-demo"): CommandResult(
-                (), 0, "/tmp/agent-tmux/codex-demo.log\n", ""
+            ("cat", "/proc/1234/cmdline"): CommandResult((), 0, f"node\0{script}\0", ""),
+            ("readlink", "-f", "/proc/1234/exe"): CommandResult((), 0, "/usr/bin/node\n", ""),
+            ("cat", "/proc/1234/environ"): CommandResult((), 0, "PATH=/usr/bin\0", ""),
+            ("agent-tmux", "log", session_name): CommandResult(
+                (), 0, f"/tmp/agent-tmux/{session_name}.log\n", ""
             ),
         }
+        self.captures = list(captures)
         self.calls = []
+        self.fail_submit = fail_submit
+        self.fail_paste = fail_paste
+        self.cursor_line_index = cursor_line_index
+        self.cursor_line_indexes = list(cursor_line_indexes or [])
 
-    def run(self, args):
+    def run(self, args, input_text=None):
         key = tuple(args)
-        self.calls.append(key)
+        self.calls.append((key, input_text))
+        if key[:3] == ("tmux", "capture-pane", "-p"):
+            capture = self.captures.pop(0) if self.captures else ""
+            self.last_capture = capture
+            return CommandResult(key, 0, capture, "")
+        if key == ("tmux", "display-message", "-p", "-t", "%1", CAPTURE_STATE_FORMAT):
+            return CommandResult(key, 0, self._capture_state_stdout(), "")
+        if key == ("tmux", "display-message", "-p", "-t", "%1", PANE_FORMAT):
+            if self.display_messages:
+                return self.display_messages.pop(0)
+            return self.default_display_message
+        if key == ("ps", "-t", "/dev/pts/7", "-o", "pid=,ppid=,pgid=,stat=,args="):
+            if self.tty_processes:
+                return self.tty_processes.pop(0)
+            return self.default_tty_process
+        if key[:3] == ("tmux", "load-buffer", "-b"):
+            return CommandResult(key, 0, "", "")
+        if key[:2] == ("tmux", "paste-buffer"):
+            if self.fail_paste:
+                return CommandResult(key, 1, "", "no such pane")
+            return CommandResult(key, 0, "", "")
+        if key[:3] == ("tmux", "delete-buffer", "-b"):
+            return CommandResult(key, 0, "", "")
+        if key[:3] == ("tmux", "send-keys", "-t"):
+            if self.fail_submit:
+                return CommandResult(key, 1, "", "send failed")
+            return CommandResult(key, 0, "", "")
         response = self.responses.get(key)
         if response is None:
             return CommandResult(key, 127, "", f"unexpected command: {key}")
         return response
 
+    def _capture_state_stdout(self):
+        lines = getattr(self, "last_capture", "").splitlines()
+        if self.cursor_line_indexes:
+            cursor_y = self.cursor_line_indexes.pop(0)
+        elif self.cursor_line_index is None:
+            cursor_y = 0
+            for index in range(len(lines) - 1, -1, -1):
+                if lines[index].strip().startswith("\u203a") or lines[index].strip().startswith(">"):
+                    cursor_y = index
+                    break
+        else:
+            cursor_y = self.cursor_line_index
+        pane_height = max(len(lines), 1)
+        return f"0\t{cursor_y}\t120\t{pane_height}\n"
+
 
 class AgentContactCliTests(unittest.TestCase):
     def test_dry_run_would_send_from_idle_prompt(self):
         with tempfile.TemporaryDirectory() as repo:
-            runner = FakeRunner(repo, "\u203a \n")
+            runner = FakeRunner(repo, CODEX_IDLE)
             stdout = io.StringIO()
             code = main(
                 [
@@ -60,11 +186,161 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(code, EXIT_OK)
             self.assertEqual(payload["status"], "would_send")
             self.assertEqual(payload["session"], "codex-demo")
-            self.assertNotIn(("agent-tmux", "send", "codex-demo", "hello"), runner.calls)
+            self.assertEqual(payload["pane_id"], "%1")
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+
+    def test_trust_roots_reports_narrow_provider_and_launcher_roots(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, CODEX_IDLE)
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "trust-roots",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--json",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "ok")
+            self.assertEqual(len(payload["suggestions"]), 1)
+            suggestion = payload["suggestions"][0]
+            self.assertEqual(
+                suggestion["provider_root"],
+                str(Path(repo).resolve() / "node_modules" / "@openai" / "codex"),
+            )
+            self.assertEqual(suggestion["launcher_root"], "/usr/bin")
+            self.assertFalse(any(call[0][:3] == ("tmux", "capture-pane", "-p") for call in runner.calls))
+
+    def test_trust_roots_refuses_node_preload_instead_of_returning_false_root(self):
+        with tempfile.TemporaryDirectory() as repo:
+            resolved = Path(repo).resolve()
+            not_agent = resolved / "not-agent.js"
+            not_agent.write_text("console.log('not agent')\n", encoding="utf-8")
+            preload = resolved / "preload.js"
+            preload.write_text("console.log('preload')\n", encoding="utf-8")
+            args = f"node --require {preload} {not_agent}"
+            runner = FakeRunner(repo, CODEX_IDLE, tty_processes=[CommandResult((), 0, f"1234 1 1234 Sl+ {args}\n", "")])
+            runner.responses[("cat", "/proc/1234/cmdline")] = CommandResult((), 0, "\0".join(args.split()) + "\0", "")
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "trust-roots",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--json",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_DISCOVERY)
+            self.assertEqual(payload["status"], "refused")
+            self.assertNotIn("False", stdout.getvalue())
+
+    def test_trust_roots_refuses_package_not_anchored_by_provider_command_on_path(self):
+        with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as real_install:
+            resolved = Path(repo).resolve()
+            fake_script = write_provider_package(resolved)
+            real_script = write_provider_package(real_install)
+            runner = FakeRunner(repo, CODEX_IDLE)
+            args = f"node {fake_script}"
+            runner.default_tty_process = CommandResult((), 0, f"1234 1 1234 Sl+ {args}\n", "")
+            runner.responses[("cat", "/proc/1234/cmdline")] = CommandResult((), 0, f"node\0{fake_script}\0", "")
+            runner.responses[("bash", "-lc", "command -v -- codex")] = CommandResult((), 0, f"{real_script}\n", "")
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "trust-roots",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--json",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_DISCOVERY)
+            self.assertEqual(payload["status"], "refused")
+
+    def test_trust_roots_accepts_global_npm_package_anchor_when_provider_command_is_wrapper(self):
+        with tempfile.TemporaryDirectory() as repo:
+            resolved = Path(repo).resolve()
+            script = write_provider_package(resolved)
+            runner = FakeRunner(repo, CODEX_IDLE)
+            runner.responses[("bash", "-lc", "command -v -- codex")] = CommandResult(
+                (), 0, "/home/tarkan/.local/bin/codex\n", ""
+            )
+            runner.responses[("bash", "-lc", "command -v -- npm")] = CommandResult((), 0, "/usr/bin/npm\n", "")
+            runner.responses[("/usr/bin/npm", "root", "-g")] = CommandResult(
+                (), 0, f"{resolved / 'node_modules'}\n", ""
+            )
+            runner.responses[("cat", "/proc/1234/cmdline")] = CommandResult((), 0, f"node\0{script}\0", "")
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "trust-roots",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--json",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(
+                payload["suggestions"][0]["provider_root"],
+                str(resolved / "node_modules" / "@openai" / "codex"),
+            )
+
+    def test_trust_roots_refuses_global_npm_anchor_outside_live_launcher_root(self):
+        with tempfile.TemporaryDirectory() as repo:
+            resolved = Path(repo).resolve()
+            script = write_provider_package(resolved)
+            runner = FakeRunner(repo, CODEX_IDLE)
+            runner.responses[("bash", "-lc", "command -v -- codex")] = CommandResult(
+                (), 0, "/home/tarkan/.local/bin/codex\n", ""
+            )
+            runner.responses[("bash", "-lc", "command -v -- npm")] = CommandResult((), 0, "/tmp/npm\n", "")
+            runner.responses[("/tmp/npm", "root", "-g")] = CommandResult(
+                (), 0, f"{resolved / 'node_modules'}\n", ""
+            )
+            runner.responses[("cat", "/proc/1234/cmdline")] = CommandResult((), 0, f"node\0{script}\0", "")
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "trust-roots",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--json",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_DISCOVERY)
+            self.assertEqual(payload["status"], "refused")
 
     def test_pending_composer_refuses_before_send(self):
         with tempfile.TemporaryDirectory() as repo:
-            runner = FakeRunner(repo, "\u203a already typed by user\n")
+            runner = FakeRunner(
+                repo,
+                "previous assistant output\n\n\u203a already typed by user\n  gpt-5.5 xhigh · /tmp/project\n",
+            )
             stdout = io.StringIO()
             code = main(
                 [
@@ -84,18 +360,163 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(code, EXIT_REFUSED)
             self.assertEqual(payload["status"], "refused")
             self.assertEqual(payload["pane_state"], "pending_user_text")
-            self.assertFalse(any(call[:2] == ("agent-tmux", "send") for call in runner.calls))
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
 
-    def test_ambiguous_sessions_refuse_before_capture(self):
+    def test_agent_tmux_invalid_session_name_reports_structured_capture_error(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, CODEX_IDLE)
+            runner.responses[("tmux", "list-panes", "-a", "-F", PANE_FORMAT)] = CommandResult(
+                (), 0, pane_line("codex demo", "%1", repo), ""
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_TRANSPORT)
+            self.assertEqual(payload["status"], "error")
+            self.assertEqual(payload["stage"], "capture")
+            self.assertIn("session name must match", payload["reason"])
+
+    def test_prompt_text_without_cursor_on_prompt_refuses_before_send(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, CODEX_IDLE, cursor_line_index=0)
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["status"], "refused")
+            self.assertEqual(payload["pane_state"], "dead_or_unknown")
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+
+    def test_real_send_refuses_attached_session_to_avoid_human_input_race(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, CODEX_IDLE)
+            runner.responses[("tmux", "list-panes", "-a", "-F", PANE_FORMAT)] = CommandResult(
+                (), 0, pane_line("codex-demo", "%1", repo, attached=1), ""
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["stage"], "attached_session")
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+
+    def test_control_character_message_refuses_before_discovery(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, CODEX_IDLE)
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello\x1b[201~whoops",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["stage"], "message")
+            self.assertIn("bracketed paste", payload["reason"])
+            self.assertFalse(any(call[0][:2] == ("tmux", "list-panes") for call in runner.calls))
+
+    def test_c0_control_message_refuses_before_discovery(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, CODEX_IDLE)
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello\x00whoops",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["stage"], "message")
+            self.assertIn("U+0000", payload["reason"])
+            self.assertFalse(any(call[0][:2] == ("tmux", "list-panes") for call in runner.calls))
+
+    def test_ambiguous_panes_refuse_before_capture(self):
         with tempfile.TemporaryDirectory() as repo:
             resolved = Path(repo).resolve()
-            runner = FakeRunner(repo, "\u203a \n")
-            runner.responses[("tmux", "list-sessions", "-F", SESSION_FORMAT)] = CommandResult(
+            runner = FakeRunner(repo, CODEX_IDLE)
+            script = write_provider_package(resolved)
+            runner.responses[("tmux", "list-panes", "-a", "-F", PANE_FORMAT)] = CommandResult(
                 (),
                 0,
-                f"codex-a\t{resolved}\tcodex\t10\t0\ncodex-b\t{resolved}\tcodex\t11\t0\n",
+                pane_line("codex-a", "%1", resolved, pid=111)
+                + pane_line("codex-b", "%2", resolved, pid=222),
                 "",
             )
+            runner.responses[("ps", "-p", "111", "-o", "args=")] = CommandResult(
+                (), 0, f"node {script}\n", ""
+            )
+            runner.responses[("ps", "-p", "222", "-o", "args=")] = CommandResult(
+                (), 0, f"node {script}\n", ""
+            )
+            runner.responses[("ps", "-t", "/dev/pts/7", "-o", "pid=,ppid=,pgid=,stat=,args=")] = CommandResult(
+                (), 0, f"111 1 111 Sl+ node {script}\n", ""
+            )
+            runner.responses[("cat", "/proc/111/cmdline")] = CommandResult((), 0, f"node\0{script}\0", "")
+            runner.responses[("readlink", "-f", "/proc/111/exe")] = CommandResult((), 0, "/usr/bin/node\n", "")
+            runner.responses[("cat", "/proc/111/environ")] = CommandResult((), 0, "PATH=/usr/bin\0", "")
             stdout = io.StringIO()
             code = main(
                 [
@@ -114,7 +535,808 @@ class AgentContactCliTests(unittest.TestCase):
             payload = json.loads(stdout.getvalue())
             self.assertEqual(code, EXIT_DISCOVERY)
             self.assertEqual(payload["stage"], "discovery")
-            self.assertFalse(any(call[:2] == ("agent-tmux", "capture") for call in runner.calls))
+            self.assertFalse(any(call[0][:3] == ("tmux", "capture-pane", "-p") for call in runner.calls))
+
+    def test_real_send_targets_locked_pane_id(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact(),
+                    f"{guarded_line()}\n{CODEX_IDLE}",
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(
+                any(
+                    call[0][:4] == ("tmux", "paste-buffer", "-d", "-r")
+                    and call[0][-2:] == ("-t", "%1")
+                    for call in runner.calls
+                )
+            )
+            self.assertTrue(
+                any(
+                    call[0][:4] == ("tmux", "paste-buffer", "-d", "-r")
+                    and "-b" in call[0]
+                    for call in runner.calls
+                )
+            )
+
+    def test_real_send_pastes_single_line_message_json(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact("hello\nworld"),
+                    guarded_line("hello\nworld") + "\n" + CODEX_IDLE,
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello\nworld",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            self.assertEqual(code, EXIT_OK)
+            load_inputs = [
+                call[1]
+                for call in runner.calls
+                if call[0][:3] == ("tmux", "load-buffer", "-b")
+            ]
+            self.assertEqual(len(load_inputs), 1)
+            self.assertNotIn("\n", load_inputs[0])
+            self.assertIn('MESSAGE_JSON: "hello\\nworld"', load_inputs[0])
+
+    def test_process_drift_after_recapture_refuses_before_send(self):
+        with tempfile.TemporaryDirectory() as repo:
+            resolved = Path(repo).resolve()
+            runner = FakeRunner(
+                repo,
+                [CODEX_IDLE, CODEX_IDLE],
+                display_messages=[
+                    CommandResult((), 0, pane_line("codex-demo", "%1", resolved), ""),
+                    CommandResult((), 0, pane_line("codex-demo", "%1", resolved, command="bash"), ""),
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["status"], "refused")
+            self.assertEqual(payload["stage"], "pre_send_revalidate")
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+
+    def test_process_drift_inside_transport_before_paste_refuses_without_paste(self):
+        with tempfile.TemporaryDirectory() as repo:
+            resolved = Path(repo).resolve()
+            runner = FakeRunner(
+                repo,
+                [CODEX_IDLE, CODEX_IDLE, CODEX_IDLE],
+                display_messages=[
+                    CommandResult((), 0, pane_line("codex-demo", "%1", resolved), ""),
+                    CommandResult((), 0, pane_line("codex-demo", "%1", resolved), ""),
+                    CommandResult((), 0, pane_line("codex-demo", "%1", resolved, command="bash"), ""),
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["status"], "refused")
+            self.assertEqual(payload["stage"], "pre_send_revalidate")
+            self.assertTrue(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+            self.assertTrue(any(call[0][:3] == ("tmux", "delete-buffer", "-b") for call in runner.calls))
+            self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
+
+    def test_process_drift_inside_transport_before_submit_reports_unsubmitted(self):
+        with tempfile.TemporaryDirectory() as repo:
+            resolved = Path(repo).resolve()
+            runner = FakeRunner(
+                repo,
+                [CODEX_IDLE, CODEX_IDLE, CODEX_IDLE, CODEX_IDLE, f"CONTACT_ID: AC-TEST\nhello\n{CODEX_IDLE}"],
+                display_messages=[
+                    CommandResult((), 0, pane_line("codex-demo", "%1", resolved), ""),
+                    CommandResult((), 0, pane_line("codex-demo", "%1", resolved), ""),
+                    CommandResult((), 0, pane_line("codex-demo", "%1", resolved), ""),
+                    CommandResult((), 0, pane_line("codex-demo", "%1", resolved, command="bash"), ""),
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_TRANSPORT)
+            self.assertEqual(payload["status"], "mutated_unsubmitted")
+            self.assertEqual(payload["stage"], "submit")
+            self.assertIn("pre-submit revalidation failed", payload["reason"])
+            self.assertTrue(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
+            self.assertFalse(any(call[0][:3] == ("tmux", "send-keys", "-t") for call in runner.calls))
+
+    def test_pre_submit_contact_id_must_be_in_current_composer_prompt(self):
+        contaminated = (
+            "previous assistant output\n\n"
+            "\u203a unrelated draft\n"
+            "  gpt-5.5 xhigh · /tmp/project\n"
+            "CONTACT_ID: AC-TEST MESSAGE_JSON: \"hello\"\n"
+        )
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [CODEX_IDLE, CODEX_IDLE, CODEX_IDLE, CODEX_IDLE] + [contaminated] * 6,
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_TRANSPORT)
+            self.assertEqual(payload["status"], "mutated_unsubmitted")
+            self.assertEqual(payload["stage"], "submit")
+            self.assertIn("current composer prompt body", payload["reason"])
+            self.assertTrue(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
+            self.assertFalse(any(call[0][:3] == ("tmux", "send-keys", "-t") for call in runner.calls))
+
+    def test_pre_submit_requires_full_guarded_message_json_in_current_composer(self):
+        truncated = "previous assistant output\n\n\u203a CONTACT_ID: AC-TEST\n  gpt-5.5 xhigh · /tmp/project\n"
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [CODEX_IDLE, CODEX_IDLE, CODEX_IDLE, CODEX_IDLE] + [truncated] * 6,
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_TRANSPORT)
+            self.assertEqual(payload["status"], "mutated_unsubmitted")
+            self.assertEqual(payload["stage"], "submit")
+            self.assertIn("full guarded contact line", payload["reason"])
+            self.assertTrue(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
+            self.assertFalse(any(call[0][:3] == ("tmux", "send-keys", "-t") for call in runner.calls))
+
+    def test_pre_submit_waits_for_delayed_paste_render_before_enter(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact(),
+                    f"{guarded_line()}\n{CODEX_IDLE}",
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(any(call[0][:3] == ("tmux", "send-keys", "-t") for call in runner.calls))
+
+    def test_pre_submit_accepts_current_prompt_when_old_prompt_marker_is_visible(self):
+        current_with_old_prompt = (
+            "older assistant output\n\n"
+            "\u203a old visible request\n"
+            "  gpt-5.5 xhigh · /tmp/project\n"
+            "new assistant output\n\n"
+            f"\u203a {guarded_line()}\n"
+            "  gpt-5.5 xhigh · /tmp/project\n"
+        )
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    current_with_old_prompt,
+                    f"{guarded_line()}\n{CODEX_IDLE}",
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+
+    def test_pre_submit_accepts_wrapped_guarded_line_before_enter(self):
+        long_message = "wrapped-" * 14
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_wrapped_pending_contact(long_message, width=32),
+                    wrapped_guarded_echo(long_message, width=32) + "\n" + CODEX_IDLE,
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(payload["delivery_proven"])
+
+    def test_pre_submit_accepts_claude_wrapped_guarded_line_with_cursor_on_continuation(self):
+        long_message = "wrapped-" * 14
+        pre_submit = claude_wrapped_pending_contact(long_message, width=32)
+        post_send = wrapped_guarded_echo(long_message, width=32) + "\n" + CLAUDE_IDLE
+        pre_submit_cursor = next(index for index, line in enumerate(pre_submit.splitlines()) if "\u258c" in line)
+        post_send_cursor = next(index for index, line in enumerate(post_send.splitlines()) if "\u258c" in line)
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CLAUDE_IDLE,
+                    CLAUDE_IDLE,
+                    CLAUDE_IDLE,
+                    CLAUDE_IDLE,
+                    pre_submit,
+                    post_send,
+                ],
+                provider="claude",
+                cursor_line_indexes=[2, 2, 2, 2, pre_submit_cursor, post_send_cursor],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "claude",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(payload["delivery_proven"])
+
+    def test_pending_text_inside_transport_before_paste_refuses_without_paste(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    "previous assistant output\n\n\u203a critical user draft\n  gpt-5.5 xhigh · /tmp/project\n",
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["stage"], "pre_send_revalidate")
+            self.assertIn("pending user text", payload["reason"])
+            self.assertTrue(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+            self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
+
+    def test_unsafe_post_send_state_is_unproven_even_with_contact_id(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact(),
+                    f"{guarded_line()}\nplain echo\n",
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_UNPROVEN)
+            self.assertEqual(payload["status"], "sent_unproven")
+            self.assertEqual(payload["post_send_state"], "dead_or_unknown")
+
+    def test_final_recapture_refuses_if_user_types_after_latest_recapture(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    "previous assistant output\n\n\u203a final user draft appeared\n  gpt-5.5 xhigh · /tmp/project\n",
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["stage"], "pre_send_final_state")
+            self.assertEqual(payload["pane_state"], "pending_user_text")
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+
+    def test_recapture_refuses_if_user_types_after_initial_capture(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    "previous assistant output\n\n\u203a user draft appeared\n  gpt-5.5 xhigh · /tmp/project\n",
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["stage"], "pre_send_recapture")
+            self.assertEqual(payload["pane_state"], "pending_user_text")
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+
+    def test_existing_contact_id_before_send_refuses(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, ["previous\nCONTACT_ID: AC-TEST\n\u203a \n  gpt-5.5 xhigh · /tmp/project\n"])
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["stage"], "contact_id")
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+
+    def test_invalid_contact_id_refuses(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, [CODEX_IDLE])
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST with spaces",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["stage"], "contact_id")
+
+    def test_bare_prompt_glyph_refuses_before_send(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, ["ordinary output\n\u203a \n"])
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["stage"], "pre_send_state")
+            self.assertEqual(payload["pane_state"], "dead_or_unknown")
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+
+    def test_bare_prompt_glyph_after_send_is_unproven_even_with_contact_id(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact(),
+                    f"{guarded_line()}\nordinary output\n\u203a \n",
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_UNPROVEN)
+            self.assertEqual(payload["status"], "sent_unproven")
+            self.assertEqual(payload["post_send_state"], "dead_or_unknown")
+
+    def test_generic_working_after_send_is_unproven_even_with_contact_id(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact(),
+                    f"{guarded_line()}\nplain working echo\n",
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_UNPROVEN)
+            self.assertEqual(payload["status"], "sent_unproven")
+            self.assertFalse(payload["delivery_proven"])
+
+    def test_submit_failure_reports_mutated_unsubmitted(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [CODEX_IDLE, CODEX_IDLE, CODEX_IDLE, CODEX_IDLE, codex_pending_contact()],
+                fail_submit=True,
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_TRANSPORT)
+            self.assertEqual(payload["status"], "mutated_unsubmitted")
+            self.assertEqual(payload["stage"], "submit")
+            self.assertFalse(payload["delivery_proven"])
+            self.assertTrue(any(call[0][:4] == ("tmux", "paste-buffer", "-d", "-r") for call in runner.calls))
+
+    def test_post_send_revalidation_failure_reports_unproven_not_refused(self):
+        with tempfile.TemporaryDirectory() as repo:
+            resolved = Path(repo).resolve()
+            runner = FakeRunner(
+                repo,
+                [CODEX_IDLE, CODEX_IDLE, CODEX_IDLE, CODEX_IDLE, codex_pending_contact()],
+                display_messages=[
+                    CommandResult((), 0, pane_line("codex-demo", "%1", resolved), ""),
+                    CommandResult((), 0, pane_line("codex-demo", "%1", resolved), ""),
+                    CommandResult((), 0, pane_line("codex-demo", "%1", resolved), ""),
+                    CommandResult((), 0, pane_line("codex-demo", "%1", resolved), ""),
+                    CommandResult((), 0, pane_line("codex-demo", "%1", resolved, command="bash"), ""),
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_UNPROVEN)
+            self.assertEqual(payload["status"], "sent_unproven")
+            self.assertEqual(payload["stage"], "post_send_revalidate")
+            self.assertFalse(payload["delivery_proven"])
+            self.assertTrue(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+
+    def test_paste_failure_deletes_loaded_tmux_buffer(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, [CODEX_IDLE, CODEX_IDLE, CODEX_IDLE, CODEX_IDLE], fail_paste=True)
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "secret instruction",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_TRANSPORT)
+            self.assertEqual(payload["status"], "error")
+            self.assertEqual(payload["stage"], "send")
+            load_calls = [call for call in runner.calls if call[0][:3] == ("tmux", "load-buffer", "-b")]
+            delete_calls = [call for call in runner.calls if call[0][:3] == ("tmux", "delete-buffer", "-b")]
+            self.assertEqual(len(load_calls), 1)
+            self.assertEqual(len(delete_calls), 1)
+            self.assertEqual(delete_calls[0][0][-1], load_calls[0][0][3])
 
 
 if __name__ == "__main__":

@@ -1,15 +1,43 @@
-"""Transport wrapper around agent-tmux."""
+"""Pane-locked tmux transport plus agent-tmux transcript lookup."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+import secrets
 
 from .runner import Runner
-from .session import validate_session_name
+from .session import validate_pane_id, validate_session_name
+
+
+CAPTURE_STATE_FORMAT = "#{cursor_x}\t#{cursor_y}\t#{pane_width}\t#{pane_height}"
 
 
 class TransportError(RuntimeError):
     pass
+
+
+class UnsubmittedMessageError(TransportError):
+    pass
+
+
+class PreSubmitCheckError(UnsubmittedMessageError):
+    pass
+
+
+@dataclass(frozen=True)
+class PaneCapture:
+    text: str
+    cursor_x: int
+    cursor_y: int
+    pane_width: int
+    pane_height: int
+
+    @property
+    def cursor_line_index(self) -> int:
+        line_count = len(self.text.splitlines())
+        visible_origin = max(0, line_count - self.pane_height)
+        return visible_origin + self.cursor_y
 
 
 @dataclass(frozen=True)
@@ -17,12 +45,32 @@ class AgentTmuxTransport:
     runner: Runner
     executable: str = "agent-tmux"
 
-    def capture(self, session: str, lines: int = 160) -> str:
-        validate_session_name(session)
-        result = self.runner.run([self.executable, "capture", session, str(lines)])
+    def capture(self, pane_id: str, lines: int = 160) -> str:
+        validate_pane_id(pane_id)
+        result = self.runner.run(["tmux", "capture-pane", "-p", "-t", pane_id, "-S", f"-{lines}"])
         if result.returncode != 0:
             raise TransportError(_detail("capture failed", result.stderr, result.stdout))
         return result.stdout
+
+    def capture_state(self, pane_id: str, lines: int = 160) -> PaneCapture:
+        text = self.capture(pane_id, lines)
+        state = self.runner.run(["tmux", "display-message", "-p", "-t", pane_id, CAPTURE_STATE_FORMAT])
+        if state.returncode != 0:
+            raise TransportError(_detail("capture cursor-state failed", state.stderr, state.stdout))
+        parts = state.stdout.strip().split("\t")
+        if len(parts) != 4:
+            raise TransportError("capture cursor-state failed: malformed tmux cursor metadata")
+        try:
+            cursor_x, cursor_y, pane_width, pane_height = (int(part) for part in parts)
+        except ValueError:
+            raise TransportError("capture cursor-state failed: non-numeric tmux cursor metadata") from None
+        return PaneCapture(
+            text=text,
+            cursor_x=cursor_x,
+            cursor_y=cursor_y,
+            pane_width=pane_width,
+            pane_height=pane_height,
+        )
 
     def log_path(self, session: str) -> str:
         validate_session_name(session)
@@ -31,13 +79,50 @@ class AgentTmuxTransport:
             raise TransportError(_detail("log path lookup failed", result.stderr, result.stdout))
         return result.stdout.strip()
 
-    def send(self, session: str, message: str) -> None:
-        validate_session_name(session)
+    def send(
+        self,
+        pane_id: str,
+        message: str,
+        *,
+        pre_paste_check: Callable[[], None] | None = None,
+        pre_submit_check: Callable[[], None] | None = None,
+    ) -> None:
+        validate_pane_id(pane_id)
         if not message:
             raise TransportError("refusing to send an empty message")
-        result = self.runner.run([self.executable, "send", session, message])
-        if result.returncode != 0:
-            raise TransportError(_detail("send failed", result.stderr, result.stdout))
+
+        buffer_name = f"agent-contact-{pane_id.lstrip('%')}-{secrets.token_hex(4)}"
+        load = self.runner.run(["tmux", "load-buffer", "-b", buffer_name, "-"], input_text=message)
+        if load.returncode != 0:
+            raise TransportError(_detail("load-buffer failed", load.stderr, load.stdout))
+        try:
+            if pre_paste_check is not None:
+                pre_paste_check()
+            paste = self.runner.run(["tmux", "paste-buffer", "-d", "-r", "-b", buffer_name, "-t", pane_id])
+            if paste.returncode != 0:
+                raise TransportError(_detail("paste-buffer failed", paste.stderr, paste.stdout))
+            if pre_submit_check is not None:
+                try:
+                    pre_submit_check()
+                except Exception as exc:
+                    raise PreSubmitCheckError(
+                        "pre-submit revalidation failed after paste; "
+                        f"target composer may contain an unsubmitted message: {exc}"
+                    ) from exc
+            enter = self.runner.run(["tmux", "send-keys", "-t", pane_id, "C-m"])
+            if enter.returncode != 0:
+                raise UnsubmittedMessageError(
+                    _detail(
+                        "submit key failed after paste; target composer may contain an unsubmitted message",
+                        enter.stderr,
+                        enter.stdout,
+                    )
+                )
+        finally:
+            self._delete_buffer(buffer_name)
+
+    def _delete_buffer(self, buffer_name: str):
+        return self.runner.run(["tmux", "delete-buffer", "-b", buffer_name])
 
 
 def _detail(prefix: str, stderr: str, stdout: str) -> str:

@@ -5,14 +5,17 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
+import re
 import secrets
+import shlex
 import sys
+import time
 from typing import TextIO
 
-from .classifier import PaneState, classify_pane
+from .classifier import PaneState, classify_pane, current_prompt_body
 from .runner import Runner, SubprocessRunner
-from .session import DiscoveryError, select_target
-from .tmux_transport import AgentTmuxTransport, TransportError
+from .session import DiscoveryError, revalidate_target, select_target, suggest_trusted_roots
+from .tmux_transport import AgentTmuxTransport, TransportError, UnsubmittedMessageError
 
 
 EXIT_OK = 0
@@ -21,6 +24,11 @@ EXIT_DISCOVERY = 3
 EXIT_REFUSED = 4
 EXIT_UNPROVEN = 5
 EXIT_TRANSPORT = 6
+CONTACT_ID_RE = re.compile(r"^AC-[A-Za-z0-9_.:-]+$")
+BRACKETED_PASTE_SEQUENCES = ("\x1b[200~", "\x1b[201~")
+MESSAGE_ALLOWED_CONTROLS = {"\n", "\t"}
+POST_PASTE_READBACK_ATTEMPTS = 5
+POST_PASTE_READBACK_DELAY_SECONDS = 0.05
 
 
 def main(
@@ -39,6 +47,8 @@ def main(
 
     if args.command == "send":
         return _send(args, runner, stdout, stderr)
+    if args.command == "trust-roots":
+        return _trust_roots(args, runner, stdout)
 
     parser.print_help(stderr)
     return EXIT_USAGE
@@ -58,10 +68,88 @@ def _build_parser() -> argparse.ArgumentParser:
     send.add_argument("--agent-tmux", default="agent-tmux", help="agent-tmux executable path")
     send.add_argument("--capture-lines", type=int, default=160)
     send.add_argument("--contact-id", help=argparse.SUPPRESS)
+
+    trust_roots = subparsers.add_parser(
+        "trust-roots",
+        help="inspect live tmux panes and print narrow provider/launcher roots for agent-contact",
+    )
+    trust_roots.add_argument("--repo", required=True, help="absolute or relative target project path")
+    trust_roots.add_argument("--provider", required=True, choices=("codex", "claude"))
+    trust_roots.add_argument("--session", help="explicit tmux session name to validate and inspect")
+    trust_roots.add_argument("--json", action="store_true", help="emit JSON output")
     return parser
 
 
+def _trust_roots(args: argparse.Namespace, runner: Runner, stdout: TextIO) -> int:
+    try:
+        suggestions = suggest_trusted_roots(
+            repo=args.repo,
+            provider=args.provider,
+            runner=runner,
+            explicit_session=args.session,
+        )
+    except DiscoveryError as exc:
+        _emit(
+            args,
+            stdout,
+            {
+                "status": "refused",
+                "stage": "discovery",
+                "reason": str(exc),
+            },
+        )
+        return EXIT_DISCOVERY
+
+    payload = {
+        "status": "ok",
+        "repo": suggestions[0].repo,
+        "provider": args.provider,
+        "suggestions": [
+            {
+                "session": suggestion.session_name,
+                "pane_id": suggestion.pane_id,
+                "provider_pid": suggestion.provider_pid,
+                "provider_root": suggestion.provider_root,
+                "launcher_root": suggestion.launcher_root,
+                "process_args": suggestion.process_args,
+            }
+            for suggestion in suggestions
+        ],
+    }
+    if args.json:
+        stdout.write(json.dumps(payload, sort_keys=True) + "\n")
+        return EXIT_OK
+
+    stdout.write("agent-contact: ok\n")
+    if len(suggestions) != 1:
+        stdout.write("reason: multiple matching provider panes; rerun with --session before exporting roots\n")
+        for suggestion in suggestions:
+            stdout.write(f"- {suggestion.session_name}:{suggestion.pane_id} provider_root={suggestion.provider_root}\n")
+        return EXIT_OK
+
+    suggestion = suggestions[0]
+    stdout.write(f"session: {suggestion.session_name}\n")
+    stdout.write(f"pane_id: {suggestion.pane_id}\n")
+    stdout.write(f"export AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS={shlex.quote(suggestion.provider_root)}\n")
+    if suggestion.launcher_root is not None:
+        stdout.write(f"export AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS={shlex.quote(suggestion.launcher_root)}\n")
+    return EXIT_OK
+
+
 def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: TextIO) -> int:
+    payload_error = _message_payload_error(args.message)
+    if payload_error is not None:
+        _emit(
+            args,
+            stdout,
+            {
+                "status": "refused",
+                "stage": "message",
+                "reason": payload_error,
+            },
+        )
+        return EXIT_REFUSED
+
     try:
         selection = select_target(
             repo=args.repo,
@@ -84,8 +172,9 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
     transport = AgentTmuxTransport(runner=runner, executable=args.agent_tmux)
 
     try:
-        before = transport.capture(selection.session.name, args.capture_lines)
-        log_path = transport.log_path(selection.session.name)
+        before_capture = transport.capture_state(selection.pane.pane_id, args.capture_lines)
+        before = before_capture.text
+        log_path = transport.log_path(selection.pane.session_name)
     except (DiscoveryError, TransportError) as exc:
         _emit(
             args,
@@ -94,18 +183,26 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                 "status": "error",
                 "stage": "capture",
                 "reason": str(exc),
-                "session": selection.session.name,
+                "session": selection.pane.session_name,
+                "pane_id": selection.pane.pane_id,
             },
         )
         return EXIT_TRANSPORT
 
-    classification = classify_pane(before)
+    classification = classify_pane(
+        before,
+        provider=selection.provider,
+        cursor_line_index=before_capture.cursor_line_index,
+    )
     base = {
         "repo": selection.repo,
         "provider": selection.provider,
-        "session": selection.session.name,
-        "session_command": selection.session.command,
-        "provider_evidence": selection.session.provider_evidence,
+        "session": selection.pane.session_name,
+        "pane_id": selection.pane.pane_id,
+        "session_command": selection.pane.command,
+        "pane_pid": selection.pane.pid,
+        "provider_pid": selection.pane.provider_pid,
+        "provider_evidence": selection.pane.provider_evidence,
         "log_path": log_path,
         "pane_state": classification.state.value,
         "pane_reason": classification.reason,
@@ -124,8 +221,48 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         )
         return EXIT_REFUSED
 
+    if not args.dry_run and selection.pane.attached > 0:
+        _emit(
+            args,
+            stdout,
+            {
+                **base,
+                "status": "refused",
+                "stage": "attached_session",
+                "reason": "target tmux session is attached; refusing real send to avoid human input races",
+            },
+        )
+        return EXIT_REFUSED
+
     contact_id = args.contact_id or _new_contact_id()
-    guarded_message = f"CONTACT_ID: {contact_id}\n{args.message}"
+    if not CONTACT_ID_RE.match(contact_id):
+        _emit(
+            args,
+            stdout,
+            {
+                **base,
+                "status": "refused",
+                "stage": "contact_id",
+                "reason": "contact id must be a single AC-prefixed token",
+                "contact_id": contact_id,
+            },
+        )
+        return EXIT_REFUSED
+    contact_marker = f"CONTACT_ID: {contact_id}"
+    if contact_marker in before:
+        _emit(
+            args,
+            stdout,
+            {
+                **base,
+                "status": "refused",
+                "stage": "contact_id",
+                "reason": "contact id is already visible before send",
+                "contact_id": contact_id,
+            },
+        )
+        return EXIT_REFUSED
+    guarded_message = _guarded_message(contact_id, args.message)
 
     if args.dry_run:
         _emit(
@@ -140,9 +277,166 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         return EXIT_OK
 
     try:
-        transport.send(selection.session.name, guarded_message)
-        after = transport.capture(selection.session.name, args.capture_lines)
-    except (DiscoveryError, TransportError) as exc:
+        revalidated = revalidate_target(selection, runner)
+        latest_before_capture = transport.capture_state(revalidated.pane_id, args.capture_lines)
+        latest_before = latest_before_capture.text
+        latest_classification = classify_pane(
+            latest_before,
+            provider=selection.provider,
+            cursor_line_index=latest_before_capture.cursor_line_index,
+        )
+        if latest_classification.state != PaneState.IDLE_EMPTY_PROMPT:
+            _emit(
+                args,
+                stdout,
+                {
+                    **base,
+                    "status": "refused",
+                    "stage": "pre_send_recapture",
+                    "contact_id": contact_id,
+                    "reason": latest_classification.reason,
+                    "pane_state": latest_classification.state.value,
+                    "pane_reason": latest_classification.reason,
+                },
+            )
+            return EXIT_REFUSED
+        if contact_marker in latest_before:
+            _emit(
+                args,
+                stdout,
+                {
+                    **base,
+                    "status": "refused",
+                    "stage": "contact_id",
+                    "contact_id": contact_id,
+                    "reason": "contact id is already visible in latest pre-send capture",
+                },
+            )
+            return EXIT_REFUSED
+        send_target = revalidate_target(selection, runner)
+        final_before_capture = transport.capture_state(send_target.pane_id, args.capture_lines)
+        final_before = final_before_capture.text
+        final_classification = classify_pane(
+            final_before,
+            provider=selection.provider,
+            cursor_line_index=final_before_capture.cursor_line_index,
+        )
+        if final_classification.state != PaneState.IDLE_EMPTY_PROMPT:
+            _emit(
+                args,
+                stdout,
+                {
+                    **base,
+                    "status": "refused",
+                    "stage": "pre_send_final_state",
+                    "contact_id": contact_id,
+                    "reason": final_classification.reason,
+                    "pane_state": final_classification.state.value,
+                    "pane_reason": final_classification.reason,
+                },
+            )
+            return EXIT_REFUSED
+        if contact_marker in final_before:
+            _emit(
+                args,
+                stdout,
+                {
+                    **base,
+                    "status": "refused",
+                    "stage": "contact_id",
+                    "contact_id": contact_id,
+                    "reason": "contact id is already visible in final pre-send capture",
+                },
+            )
+            return EXIT_REFUSED
+    except DiscoveryError as exc:
+        _emit(
+            args,
+            stdout,
+            {
+                **base,
+                "status": "refused",
+                "stage": "pre_send_revalidate",
+                "contact_id": contact_id,
+                "reason": str(exc),
+            },
+        )
+        return EXIT_REFUSED
+    except TransportError as exc:
+        _emit(
+            args,
+            stdout,
+            {
+                **base,
+                "status": "error",
+                "stage": "pre_send_capture",
+                "contact_id": contact_id,
+                "reason": str(exc),
+            },
+        )
+        return EXIT_TRANSPORT
+
+    try:
+        transport.send(
+            send_target.pane_id,
+            guarded_message,
+            pre_paste_check=lambda: _revalidate_idle_prompt(
+                selection,
+                runner,
+                transport,
+                args.capture_lines,
+                contact_marker,
+            ),
+            pre_submit_check=lambda: _revalidate_pasted_contact(
+                selection,
+                runner,
+                transport,
+                args.capture_lines,
+                guarded_message,
+            ),
+        )
+    except UnsubmittedMessageError as exc:
+        try:
+            contaminated_capture = transport.capture_state(selection.pane.pane_id, args.capture_lines)
+            contaminated_classification = classify_pane(
+                contaminated_capture.text,
+                provider=selection.provider,
+                cursor_line_index=contaminated_capture.cursor_line_index,
+            )
+            contaminated_state = contaminated_classification.state.value
+            contaminated_reason = contaminated_classification.reason
+        except TransportError as capture_exc:
+            contaminated_state = PaneState.DEAD_OR_UNKNOWN.value
+            contaminated_reason = f"post-failure capture failed: {capture_exc}"
+        _emit(
+            args,
+            stdout,
+            {
+                **base,
+                "status": "mutated_unsubmitted",
+                "stage": "submit",
+                "contact_id": contact_id,
+                "reason": str(exc),
+                "pane_state": contaminated_state,
+                "pane_reason": contaminated_reason,
+                "delivery_proven": False,
+            },
+        )
+        return EXIT_TRANSPORT
+    except DiscoveryError as exc:
+        _emit(
+            args,
+            stdout,
+            {
+                **base,
+                "status": "refused",
+                "stage": "pre_send_revalidate",
+                "contact_id": contact_id,
+                "reason": str(exc),
+            },
+        )
+        return EXIT_REFUSED
+    except TransportError as exc:
         _emit(
             args,
             stdout,
@@ -156,8 +450,48 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         )
         return EXIT_TRANSPORT
 
-    after_classification = classify_pane(after)
-    delivery_proven = contact_id in after and after_classification.state != PaneState.PENDING_USER_TEXT
+    try:
+        after_target = revalidate_target(selection, runner)
+        after_capture = transport.capture_state(after_target.pane_id, args.capture_lines)
+        after = after_capture.text
+    except DiscoveryError as exc:
+        _emit(
+            args,
+            stdout,
+            {
+                **base,
+                "status": "sent_unproven",
+                "stage": "post_send_revalidate",
+                "contact_id": contact_id,
+                "reason": str(exc),
+                "delivery_proven": False,
+            },
+        )
+        return EXIT_UNPROVEN
+    except TransportError as exc:
+        _emit(
+            args,
+            stdout,
+            {
+                **base,
+                "status": "sent_unproven",
+                "stage": "post_send_capture",
+                "contact_id": contact_id,
+                "reason": str(exc),
+                "delivery_proven": False,
+            },
+        )
+        return EXIT_UNPROVEN
+
+    after_classification = classify_pane(
+        after,
+        provider=selection.provider,
+        cursor_line_index=after_capture.cursor_line_index,
+    )
+    delivery_proven = (
+        _capture_contains_guarded_message(after, guarded_message)
+        and after_classification.state == PaneState.IDLE_EMPTY_PROMPT
+    )
     status = "sent" if delivery_proven else "sent_unproven"
     _emit(
         args,
@@ -174,6 +508,83 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
     return EXIT_OK if delivery_proven else EXIT_UNPROVEN
 
 
+def _revalidate_idle_prompt(selection, runner: Runner, transport: AgentTmuxTransport, lines: int, contact_marker: str) -> None:
+    target = revalidate_target(selection, runner)
+    capture = transport.capture_state(target.pane_id, lines)
+    classification = classify_pane(
+        capture.text,
+        provider=selection.provider,
+        cursor_line_index=capture.cursor_line_index,
+    )
+    if classification.state != PaneState.IDLE_EMPTY_PROMPT:
+        raise DiscoveryError(classification.reason)
+    if contact_marker in capture.text:
+        raise DiscoveryError("contact id is already visible in critical pre-paste capture")
+
+
+def _revalidate_pasted_contact(selection, runner: Runner, transport: AgentTmuxTransport, lines: int, guarded_message: str) -> None:
+    last_reason = "pasted contact was not visible before submit"
+    for attempt in range(POST_PASTE_READBACK_ATTEMPTS):
+        target = revalidate_target(selection, runner)
+        capture = transport.capture_state(target.pane_id, lines)
+        prompt_body = current_prompt_body(
+            capture.text,
+            provider=selection.provider,
+            cursor_line_index=capture.cursor_line_index,
+        )
+        classification = classify_pane(
+            capture.text,
+            provider=selection.provider,
+            cursor_line_index=capture.cursor_line_index,
+        )
+        if (
+            classification.state == PaneState.PENDING_USER_TEXT
+            and prompt_body is not None
+            and _normalized_prompt_body_contains_guarded_message(prompt_body, guarded_message)
+        ):
+            return
+        if classification.state != PaneState.PENDING_USER_TEXT:
+            last_reason = f"pasted contact is not visible as pending composer text: {classification.reason}"
+        else:
+            last_reason = "full guarded contact line is not the current composer prompt body"
+        if attempt + 1 < POST_PASTE_READBACK_ATTEMPTS:
+            time.sleep(POST_PASTE_READBACK_DELAY_SECONDS)
+    raise DiscoveryError(last_reason)
+
+
+def _message_payload_error(message: str) -> str | None:
+    for sequence in BRACKETED_PASTE_SEQUENCES:
+        if sequence in message:
+            return "message contains a bracketed paste control sequence"
+    for character in message:
+        codepoint = ord(character)
+        if character in MESSAGE_ALLOWED_CONTROLS:
+            continue
+        if codepoint < 0x20 or codepoint == 0x7F or 0x80 <= codepoint <= 0x9F:
+            return f"message contains terminal control character U+{codepoint:04X}"
+    return None
+
+
+def _guarded_message(contact_id: str, message: str) -> str:
+    return f"CONTACT_ID: {contact_id} MESSAGE_JSON: {json.dumps(message)}"
+
+
+def _normalized_prompt_body(prompt_body: str) -> str:
+    return prompt_body.replace("\n", "").replace("\u258c", "").strip()
+
+
+def _normalized_prompt_body_contains_guarded_message(prompt_body: str, guarded_message: str) -> bool:
+    return _normalized_prompt_body(prompt_body) == guarded_message
+
+
+def _capture_contains_guarded_message(text: str, guarded_message: str) -> bool:
+    return guarded_message in text or _remove_visual_wrap_newlines(text).find(guarded_message) != -1
+
+
+def _remove_visual_wrap_newlines(text: str) -> str:
+    return text.replace("\n", "")
+
+
 def _emit(args: argparse.Namespace, stdout: TextIO, payload: dict[str, object]) -> None:
     if getattr(args, "json", False):
         stdout.write(json.dumps(payload, sort_keys=True) + "\n")
@@ -188,6 +599,9 @@ def _emit(args: argparse.Namespace, stdout: TextIO, payload: dict[str, object]) 
         "provider",
         "session",
         "session_command",
+        "pane_id",
+        "pane_pid",
+        "provider_pid",
         "provider_evidence",
         "pane_state",
         "pane_reason",

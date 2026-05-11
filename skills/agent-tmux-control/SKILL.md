@@ -5,12 +5,23 @@ description: "Use when an agent needs to launch, resume, monitor, message, captu
 
 # Agent Tmux Control
 
+Source: AgentTerminalContact guarded-contact skill, version 0.1.0.
+
 Use `agent-tmux` for launch, resume, capture, transcript, attach, and stop.
 
 Use `agent-contact send` for sending messages to another live terminal agent.
 Raw `agent-tmux send` is a low-level transport primitive and must not be used for
 cross-agent Codex/Claude messages unless the user explicitly asks for a bypass
 for that exact target.
+
+`agent-contact` verifies provider package identity against explicitly trusted
+exact package roots only. Set `AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS` to the
+narrow provider package root printed by `agent-contact trust-roots`, and set
+`AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS` to the launcher root for bare Node-style
+launches, before contacting local Codex/Claude processes. Do not guess broad
+roots. Launcher roots are exact executable directories, not broad parent
+directories. `trust-roots` only prints roots when the live pane package is
+anchored by the provider command found on your current `PATH`.
 
 ## Hard Safety Rules
 
@@ -19,6 +30,9 @@ for that exact target.
 - Before sending to another Codex/Claude chat, run `agent-contact send --dry-run` or use `agent-contact send` directly.
 - If `agent-contact` refuses, stop. Do not fall back to raw `agent-tmux send`.
 - Pending visible composer text is user-owned state and is a hard stop.
+- Messages with terminal control bytes or bracketed-paste markers are refused; summarize or sanitize captured terminal output before sending it.
+- The actual paste payload is one `CONTACT_ID ... MESSAGE_JSON ...` line and does not request tmux bracketed-paste wrapping.
+- Real sends to attached tmux sessions are refused; detach or use a tmux-managed worker session for cross-agent contact.
 - Multiple plausible same-repo sessions are an identity problem, not a routine choice.
 - Include the transcript path from the contact output or `agent-tmux log <session>` when reporting cross-agent work.
 
@@ -32,6 +46,28 @@ agent-contact send \
   --provider codex \
   --message "Please brief me on the active issue." \
   --dry-run
+```
+
+If discovery reports no matching provider pane because no roots are trusted,
+ask `agent-contact` to inspect the live pane and print narrow roots:
+
+```bash
+agent-contact trust-roots \
+  --repo /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2 \
+  --provider codex \
+  --json
+```
+
+Then rerun with those explicit roots:
+
+```bash
+AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS=/home/tarkan/.nvm/versions/node/v22.22.0/lib/node_modules/@openai/codex \
+AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS=/home/tarkan/.nvm/versions/node/v22.22.0/bin \
+  agent-contact send \
+    --repo /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2 \
+    --provider codex \
+    --message "Please brief me on the active issue." \
+    --dry-run
 ```
 
 If the dry-run reports `status: would_send`, run the same command without
@@ -104,4 +140,3 @@ When cross-agent contact is attempted, report:
 - pane state from `agent-contact`
 - transcript path
 - whether delivery was proven, unproven, or refused
-

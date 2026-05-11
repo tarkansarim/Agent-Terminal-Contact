@@ -16,15 +16,16 @@ class CommandResult:
 
 
 class Runner(Protocol):
-    def run(self, args: Sequence[str]) -> CommandResult:
+    def run(self, args: Sequence[str], input_text: str | None = None) -> CommandResult:
         ...
 
 
 class SubprocessRunner:
-    def run(self, args: Sequence[str]) -> CommandResult:
+    def run(self, args: Sequence[str], input_text: str | None = None) -> CommandResult:
         completed = subprocess.run(
             list(args),
             check=False,
+            input=input_text,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
