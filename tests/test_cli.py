@@ -163,6 +163,8 @@ class FakeRunner:
             return CommandResult(key, 0, "", "")
         if key[:3] == ("tmux", "delete-buffer", "-b"):
             return CommandResult(key, 0, "", "")
+        if key[:5] == ("tmux", "send-keys", "-t", "%1", "-l"):
+            return CommandResult(key, 0, "", "")
         if key[:3] == ("tmux", "send-keys", "-t"):
             if self.fail_submit:
                 return CommandResult(key, 1, "", "send failed")
@@ -1001,6 +1003,49 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["status"], "sent")
             self.assertTrue(payload["delivery_proven"])
 
+    def test_pre_submit_accepts_codex_wrap_that_hides_boundary_space(self):
+        message = "alpha beta"
+        line = guarded_line(message)
+        split_index = line.index(" beta")
+        wrapped_with_hidden_space = (
+            "previous assistant output\n\n"
+            f"\u203a {line[:split_index]}\n"
+            f"{line[split_index + 1:]}\n"
+            "  gpt-5.5 xhigh · /tmp/project\n"
+        )
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    wrapped_with_hidden_space,
+                    f"{line}\n{CODEX_IDLE}",
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+
     def test_pre_submit_accepts_codex_collapsed_pasted_content_before_enter(self):
         long_message = "collapsed-" * 90
         with tempfile.TemporaryDirectory() as repo:
@@ -1036,6 +1081,48 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(code, EXIT_OK)
             self.assertEqual(payload["status"], "sent")
             self.assertTrue(any(call[0][:3] == ("tmux", "send-keys", "-t") for call in runner.calls))
+
+    def test_codex_oversized_payload_uses_literal_chunks_before_enter(self):
+        long_message = "chunked-" * 190
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_wrapped_pending_contact(long_message, width=96),
+                    wrapped_guarded_echo(long_message, width=96) + "\n" + CODEX_IDLE,
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            literal_calls = [
+                call for call in runner.calls if call[0][:5] == ("tmux", "send-keys", "-t", "%1", "-l")
+            ]
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertGreater(len(literal_calls), 1)
+            self.assertTrue(all(len(call[0][5]) <= 200 for call in literal_calls))
+            self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
+            self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
     def test_pre_submit_rejects_codex_collapsed_pasted_content_with_wrong_count(self):
         long_message = "collapsed-" * 90

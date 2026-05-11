@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 import secrets
+import time
 
 from .runner import Runner
 from .session import validate_pane_id, validate_session_name
@@ -86,10 +87,36 @@ class AgentTmuxTransport:
         *,
         pre_paste_check: Callable[[], None] | None = None,
         pre_submit_check: Callable[[], None] | None = None,
+        literal_key_chunk_size: int | None = None,
+        literal_key_chunk_delay_seconds: float = 0.0,
     ) -> None:
         validate_pane_id(pane_id)
         if not message:
             raise TransportError("refusing to send an empty message")
+        if literal_key_chunk_size is not None and literal_key_chunk_size <= 0:
+            raise TransportError("literal key chunk size must be positive")
+        if literal_key_chunk_delay_seconds < 0:
+            raise TransportError("literal key chunk delay must not be negative")
+
+        if literal_key_chunk_size is not None:
+            if pre_paste_check is not None:
+                pre_paste_check()
+            self._send_literal_chunks(
+                pane_id,
+                message,
+                chunk_size=literal_key_chunk_size,
+                chunk_delay_seconds=literal_key_chunk_delay_seconds,
+            )
+            if pre_submit_check is not None:
+                try:
+                    pre_submit_check()
+                except Exception as exc:
+                    raise PreSubmitCheckError(
+                        "pre-submit revalidation failed after literal input; "
+                        f"target composer may contain an unsubmitted message: {exc}"
+                    ) from exc
+            self._submit(pane_id)
+            return
 
         buffer_name = f"agent-contact-{pane_id.lstrip('%')}-{secrets.token_hex(4)}"
         load = self.runner.run(["tmux", "load-buffer", "-b", buffer_name, "-"], input_text=message)
@@ -109,20 +136,46 @@ class AgentTmuxTransport:
                         "pre-submit revalidation failed after paste; "
                         f"target composer may contain an unsubmitted message: {exc}"
                     ) from exc
-            enter = self.runner.run(["tmux", "send-keys", "-t", pane_id, "C-m"])
-            if enter.returncode != 0:
-                raise UnsubmittedMessageError(
-                    _detail(
-                        "submit key failed after paste; target composer may contain an unsubmitted message",
-                        enter.stderr,
-                        enter.stdout,
-                    )
-                )
+            self._submit(pane_id)
         finally:
             self._delete_buffer(buffer_name)
 
     def _delete_buffer(self, buffer_name: str):
         return self.runner.run(["tmux", "delete-buffer", "-b", buffer_name])
+
+    def _send_literal_chunks(
+        self,
+        pane_id: str,
+        message: str,
+        *,
+        chunk_size: int,
+        chunk_delay_seconds: float,
+    ) -> None:
+        # DELICATE_FIX: Carefully debugged. Modify only with failing repro + targeted tests.
+        for offset in range(0, len(message), chunk_size):
+            chunk = message[offset : offset + chunk_size]
+            result = self.runner.run(["tmux", "send-keys", "-t", pane_id, "-l", chunk])
+            if result.returncode != 0:
+                raise UnsubmittedMessageError(
+                    _detail(
+                        "literal input failed after partial send; target composer may contain an unsubmitted message",
+                        result.stderr,
+                        result.stdout,
+                    )
+                )
+            if chunk_delay_seconds and offset + chunk_size < len(message):
+                time.sleep(chunk_delay_seconds)
+
+    def _submit(self, pane_id: str) -> None:
+        enter = self.runner.run(["tmux", "send-keys", "-t", pane_id, "C-m"])
+        if enter.returncode != 0:
+            raise UnsubmittedMessageError(
+                _detail(
+                    "submit key failed after input; target composer may contain an unsubmitted message",
+                    enter.stderr,
+                    enter.stdout,
+                )
+            )
 
 
 def _detail(prefix: str, stderr: str, stdout: str) -> str:

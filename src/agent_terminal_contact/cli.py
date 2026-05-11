@@ -30,6 +30,9 @@ BRACKETED_PASTE_SEQUENCES = ("\x1b[200~", "\x1b[201~")
 MESSAGE_ALLOWED_CONTROLS = {"\n", "\t"}
 POST_PASTE_READBACK_ATTEMPTS = 5
 POST_PASTE_READBACK_DELAY_SECONDS = 0.05
+CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS = 1024
+CODEX_LITERAL_INPUT_CHUNK_SIZE = 200
+CODEX_LITERAL_INPUT_DELAY_SECONDS = 0.03
 
 
 def main(
@@ -381,6 +384,11 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         return EXIT_TRANSPORT
 
     try:
+        literal_key_chunk_size = None
+        literal_key_chunk_delay_seconds = 0.0
+        if selection.provider == "codex" and len(guarded_message) >= CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS:
+            literal_key_chunk_size = CODEX_LITERAL_INPUT_CHUNK_SIZE
+            literal_key_chunk_delay_seconds = CODEX_LITERAL_INPUT_DELAY_SECONDS
         transport.send(
             send_target.pane_id,
             guarded_message,
@@ -398,6 +406,8 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                 args.capture_lines,
                 guarded_message,
             ),
+            literal_key_chunk_size=literal_key_chunk_size,
+            literal_key_chunk_delay_seconds=literal_key_chunk_delay_seconds,
         )
     except UnsubmittedMessageError as exc:
         try:
@@ -592,10 +602,36 @@ def _normalized_prompt_body_matches_pasted_contact(prompt_body: str, guarded_mes
         return True
     if provider != "codex":
         return False
+    if _codex_visual_wrapped_prompt_body_matches_guarded_message(prompt_body, guarded_message):
+        return True
     match = CODEX_COLLAPSED_PASTE_RE.match(normalized)
     if match is None:
         return False
     return int(match.group("count")) == len(guarded_message)
+
+
+def _codex_visual_wrapped_prompt_body_matches_guarded_message(prompt_body: str, guarded_message: str) -> bool:
+    # DELICATE_FIX: Carefully debugged. Modify only with failing repro + targeted tests.
+    pieces = [piece.replace("\u258c", "").strip() for piece in prompt_body.splitlines()]
+    pieces = [piece for piece in pieces if piece]
+    if not pieces:
+        return False
+
+    position = 0
+    for index, piece in enumerate(pieces):
+        if guarded_message.startswith(piece, position):
+            position += len(piece)
+            continue
+        if (
+            index > 0
+            and position < len(guarded_message)
+            and guarded_message[position] == " "
+            and guarded_message.startswith(piece, position + 1)
+        ):
+            position += len(piece) + 1
+            continue
+        return False
+    return position == len(guarded_message)
 
 
 def _capture_contains_guarded_message(text: str, guarded_message: str) -> bool:
