@@ -14,6 +14,11 @@ Raw `agent-tmux send` is a low-level transport primitive and must not be used fo
 cross-agent Codex/Claude messages unless the user explicitly asks for a bypass
 for that exact target.
 
+Normal user-launched `codex` chats are not tmux-managed by default. Treat tmux as
+a worker/control surface, not as the user's foreground Codex UI. If a foreground
+Codex chat is outside tmux, this skill cannot safely inject into it; resume the
+intended existing thread into a tmux worker only when worker contact is needed.
+
 `agent-contact` verifies provider package identity against explicitly trusted
 exact package roots only. Set `AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS` to the
 narrow provider package root printed by `agent-contact trust-roots`, and set
@@ -47,6 +52,37 @@ anchored by the provider command found on your current `PATH`.
 - Real sends to attached tmux sessions are refused; detach or use a tmux-managed worker session for cross-agent contact.
 - Multiple plausible same-repo sessions are an identity problem, not a routine choice.
 - Include the transcript path from the contact output or `agent-tmux log <session>` when reporting cross-agent work.
+
+## Latest Chat Routing
+
+When the user asks to connect to, resume, or contact the latest Codex chat for a
+repo and does not provide an exact thread or session name, do not start a fresh
+chat first.
+
+First inspect the latest recorded Codex thread for that repo:
+
+```bash
+agent-tmux codex-latest /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2
+```
+
+If a tmux-managed worker is needed for contact, resume that latest thread rather
+than opening a new one:
+
+```bash
+agent-tmux codex-resume-latest sonicgroom /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2
+```
+
+If an existing tmux-managed Codex session already targets the repo, prefer
+inspecting it before launching anything:
+
+```bash
+agent-tmux codex-existing /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2
+```
+
+If multiple matching tmux sessions exist, stop and resolve identity instead of
+guessing. Only use `agent-tmux codex <session> <repo>` for a genuinely new
+worker session when the user asked for a new worker or no prior repo chat
+exists.
 
 ## Contact Workflow
 
