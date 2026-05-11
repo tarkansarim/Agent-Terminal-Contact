@@ -1,0 +1,14 @@
+.rewind/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.venv/
+venv/
+env/
+build/
+dist/
+coverage/
