@@ -45,6 +45,7 @@ def classify_pane(
     *,
     provider: str | None = None,
     cursor_line_index: int | None = None,
+    cursor_column_index: int | None = None,
 ) -> Classification:
     visible = strip_terminal_control(text or "")
     lowered = visible.lower()
@@ -64,6 +65,17 @@ def classify_pane(
     prompt = _safe_prompt(visible, provider=provider, cursor_line_index=cursor_line_index)
     if prompt is not None:
         if not _prompt_body_is_empty(prompt.body):
+            if _is_codex_starter_placeholder(
+                prompt,
+                provider=provider,
+                cursor_column_index=cursor_column_index,
+            ) and _has_provider_prompt_context(
+                visible,
+                prompt,
+                provider=provider,
+                cursor_line_index=cursor_line_index,
+            ):
+                return Classification(PaneState.IDLE_EMPTY_PROMPT, "codex starter placeholder has no pending user text")
             return Classification(PaneState.PENDING_USER_TEXT, "prompt contains pending user text")
         if not _has_provider_prompt_context(visible, prompt, provider=provider, cursor_line_index=cursor_line_index):
             return Classification(PaneState.DEAD_OR_UNKNOWN, "bare prompt marker lacks provider TUI context")
@@ -77,6 +89,7 @@ def current_prompt_body(
     *,
     provider: str | None,
     cursor_line_index: int | None,
+    cursor_column_index: int | None = None,
 ) -> str | None:
     visible = strip_terminal_control(text or "")
     prompt = _safe_prompt(visible, provider=provider, cursor_line_index=cursor_line_index)
@@ -85,6 +98,19 @@ def current_prompt_body(
     if not _has_provider_prompt_context(visible, prompt, provider=provider, cursor_line_index=cursor_line_index):
         return None
     return _strip_prompt_cursor(prompt.body)
+
+
+def _is_codex_starter_placeholder(
+    prompt: PromptMatch,
+    *,
+    provider: str | None,
+    cursor_column_index: int | None,
+) -> bool:
+    if provider != "codex" or cursor_column_index is None:
+        return False
+    if _strip_prompt_cursor(prompt.body).strip() != "Find and fix a bug in @filename":
+        return False
+    return cursor_column_index <= _prompt_body_start_column(prompt.line, provider=provider)
 
 
 def _looks_like_trust_prompt(lowered: str) -> bool:
@@ -189,6 +215,21 @@ def _prompt_body(line: str, *, provider: str | None) -> str | None:
         if line.startswith(marker):
             return line[len(marker) :].strip()
     return None
+
+
+def _prompt_body_start_column(line: str, *, provider: str | None) -> int:
+    if provider == "codex":
+        marker = "\u203a"
+    elif provider == "claude":
+        marker = ">"
+    else:
+        return 0
+    if not line.startswith(marker):
+        return 0
+    index = len(marker)
+    while index < len(line) and line[index].isspace():
+        index += 1
+    return index
 
 
 def _is_provider_footer(line: str, *, provider: str | None) -> bool:

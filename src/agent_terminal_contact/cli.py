@@ -193,6 +193,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         before,
         provider=selection.provider,
         cursor_line_index=before_capture.cursor_line_index,
+        cursor_column_index=before_capture.cursor_x,
     )
     base = {
         "repo": selection.repo,
@@ -284,6 +285,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
             latest_before,
             provider=selection.provider,
             cursor_line_index=latest_before_capture.cursor_line_index,
+            cursor_column_index=latest_before_capture.cursor_x,
         )
         if latest_classification.state != PaneState.IDLE_EMPTY_PROMPT:
             _emit(
@@ -320,6 +322,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
             final_before,
             provider=selection.provider,
             cursor_line_index=final_before_capture.cursor_line_index,
+            cursor_column_index=final_before_capture.cursor_x,
         )
         if final_classification.state != PaneState.IDLE_EMPTY_PROMPT:
             _emit(
@@ -402,6 +405,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                 contaminated_capture.text,
                 provider=selection.provider,
                 cursor_line_index=contaminated_capture.cursor_line_index,
+                cursor_column_index=contaminated_capture.cursor_x,
             )
             contaminated_state = contaminated_classification.state.value
             contaminated_reason = contaminated_classification.reason
@@ -487,6 +491,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         after,
         provider=selection.provider,
         cursor_line_index=after_capture.cursor_line_index,
+        cursor_column_index=after_capture.cursor_x,
     )
     delivery_proven = (
         _capture_contains_guarded_message(after, guarded_message)
@@ -515,6 +520,7 @@ def _revalidate_idle_prompt(selection, runner: Runner, transport: AgentTmuxTrans
         capture.text,
         provider=selection.provider,
         cursor_line_index=capture.cursor_line_index,
+        cursor_column_index=capture.cursor_x,
     )
     if classification.state != PaneState.IDLE_EMPTY_PROMPT:
         raise DiscoveryError(classification.reason)
@@ -531,11 +537,13 @@ def _revalidate_pasted_contact(selection, runner: Runner, transport: AgentTmuxTr
             capture.text,
             provider=selection.provider,
             cursor_line_index=capture.cursor_line_index,
+            cursor_column_index=capture.cursor_x,
         )
         classification = classify_pane(
             capture.text,
             provider=selection.provider,
             cursor_line_index=capture.cursor_line_index,
+            cursor_column_index=capture.cursor_x,
         )
         if (
             classification.state == PaneState.PENDING_USER_TEXT

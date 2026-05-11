@@ -12,6 +12,39 @@ class PaneClassifierTests(unittest.TestCase):
         )
         self.assertEqual(result.state, PaneState.IDLE_EMPTY_PROMPT)
 
+    def test_codex_starter_placeholder_is_idle_when_cursor_is_at_body_start(self):
+        text = (
+            "╭────────────────────────────────────────────────╮\n"
+            "│ >_ OpenAI Codex (v0.130.0)                     │\n"
+            "╰────────────────────────────────────────────────╯\n\n"
+            "\u203a Find and fix a bug in @filename\n\n"
+            "  gpt-5.5 xhigh · /tmp/project\n"
+        )
+        result = classify_pane(text, provider="codex", cursor_line_index=4, cursor_column_index=2)
+        self.assertEqual(result.state, PaneState.IDLE_EMPTY_PROMPT)
+
+    def test_codex_starter_placeholder_text_is_pending_when_cursor_is_after_text(self):
+        text = (
+            "╭────────────────────────────────────────────────╮\n"
+            "│ >_ OpenAI Codex (v0.130.0)                     │\n"
+            "╰────────────────────────────────────────────────╯\n\n"
+            "\u203a Find and fix a bug in @filename\n\n"
+            "  gpt-5.5 xhigh · /tmp/project\n"
+        )
+        result = classify_pane(text, provider="codex", cursor_line_index=4, cursor_column_index=36)
+        self.assertEqual(result.state, PaneState.PENDING_USER_TEXT)
+
+    def test_codex_starter_placeholder_text_is_pending_without_cursor_column(self):
+        text = (
+            "╭────────────────────────────────────────────────╮\n"
+            "│ >_ OpenAI Codex (v0.130.0)                     │\n"
+            "╰────────────────────────────────────────────────╯\n\n"
+            "\u203a Find and fix a bug in @filename\n\n"
+            "  gpt-5.5 xhigh · /tmp/project\n"
+        )
+        result = classify_pane(text, provider="codex", cursor_line_index=4)
+        self.assertEqual(result.state, PaneState.PENDING_USER_TEXT)
+
     def test_text_only_codex_prompt_footer_does_not_prove_idle(self):
         result = classify_pane("previous assistant output\n\n\u203a \n  gpt-5.5 xhigh · /tmp/project\n", provider="codex")
         self.assertEqual(result.state, PaneState.DEAD_OR_UNKNOWN)

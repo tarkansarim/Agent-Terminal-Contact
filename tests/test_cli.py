@@ -12,6 +12,17 @@ from agent_terminal_contact.tmux_transport import CAPTURE_STATE_FORMAT
 
 
 CODEX_IDLE = "previous assistant output\n\n\u203a \n  gpt-5.5 xhigh · /tmp/project\n"
+CODEX_STARTER = (
+    "╭────────────────────────────────────────────────╮\n"
+    "│ >_ OpenAI Codex (v0.130.0)                     │\n"
+    "│                                                │\n"
+    "│ model:     gpt-5.5 xhigh   /model to change    │\n"
+    "│ directory: ~/Dropbox/work/MyTools/3dSculptTool │\n"
+    "╰────────────────────────────────────────────────╯\n\n"
+    "  Tip: Use /side to start a side conversation in a temporary fork without polluting the main thread.\n\n\n"
+    "\u203a Find and fix a bug in @filename\n\n"
+    "  gpt-5.5 xhigh · ~/Dropbox/work/MyTools/3dSculptTool\n"
+)
 CLAUDE_IDLE = "previous assistant output\n\n> \u258c\n? for shortcuts\n"
 
 
@@ -72,6 +83,8 @@ class FakeRunner:
         fail_paste=False,
         cursor_line_index=None,
         cursor_line_indexes=None,
+        cursor_x=0,
+        cursor_x_indexes=None,
         display_messages=None,
         tty_processes=None,
         provider="codex",
@@ -109,6 +122,8 @@ class FakeRunner:
         self.fail_paste = fail_paste
         self.cursor_line_index = cursor_line_index
         self.cursor_line_indexes = list(cursor_line_indexes or [])
+        self.cursor_x = cursor_x
+        self.cursor_x_indexes = list(cursor_x_indexes or [])
 
     def run(self, args, input_text=None):
         key = tuple(args)
@@ -146,6 +161,10 @@ class FakeRunner:
 
     def _capture_state_stdout(self):
         lines = getattr(self, "last_capture", "").splitlines()
+        if self.cursor_x_indexes:
+            cursor_x = self.cursor_x_indexes.pop(0)
+        else:
+            cursor_x = self.cursor_x
         if self.cursor_line_indexes:
             cursor_y = self.cursor_line_indexes.pop(0)
         elif self.cursor_line_index is None:
@@ -157,7 +176,7 @@ class FakeRunner:
         else:
             cursor_y = self.cursor_line_index
         pane_height = max(len(lines), 1)
-        return f"0\t{cursor_y}\t120\t{pane_height}\n"
+        return f"{cursor_x}\t{cursor_y}\t120\t{pane_height}\n"
 
 
 class AgentContactCliTests(unittest.TestCase):
@@ -188,6 +207,32 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["session"], "codex-demo")
             self.assertEqual(payload["pane_id"], "%1")
             self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+
+    def test_dry_run_would_send_from_codex_starter_placeholder(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, CODEX_STARTER, cursor_x=2)
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--dry-run",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "would_send")
+            self.assertEqual(payload["pane_state"], "idle_empty_prompt")
 
     def test_trust_roots_reports_narrow_provider_and_launcher_roots(self):
         with tempfile.TemporaryDirectory() as repo:
