@@ -30,6 +30,14 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("after the prompt is idle", text)
         self.assertIn("If `agent-contact` refuses, stop", text)
         self.assertIn("agent-contact trust-roots", text)
+        self.assertIn("## Codex Worker Permission Profile", text)
+        self.assertIn("agent-tmux codex <session> <repo> -s danger-full-access -a never", text)
+        self.assertIn(
+            "agent-tmux codex-resume <session> <repo> <thread-name-or-id> -s danger-full-access -a never",
+            text,
+        )
+        self.assertIn("agent-tmux codex-resume-latest <session> <repo> -s danger-full-access -a never", text)
+        self.assertIn("Do not use\n`--dangerously-bypass-approvals-and-sandbox`", text)
 
     def test_install_dry_run_names_non_invasive_targets(self):
         with tempfile.TemporaryDirectory() as home:

@@ -98,6 +98,40 @@ guessing. Only use `agent-tmux codex <session> <repo>` for a genuinely new
 worker session when the user asked for a new worker or no prior repo chat
 exists.
 
+## Codex Worker Permission Profile
+
+For tmux-launched Codex workers doing autonomous ticket, source-owned repo, or
+explicit full-permission work, make the worker permission profile visible in the
+launch command. Do not rely on the supervisor's current sandbox or approval
+settings carrying into the worker.
+
+Use this explicit full-permission profile only when the user asked for it, when
+the worker was relaunched with `sandbox=danger-full-access` and
+`ask-for-approval=never`, or when resuming a worker that was blocked by approval
+prompts under a weaker profile:
+
+```bash
+agent-tmux codex <session> <repo> -s danger-full-access -a never
+```
+
+Resume a known Codex thread with the same visible profile:
+
+```bash
+agent-tmux codex-resume <session> <repo> <thread-name-or-id> -s danger-full-access -a never
+```
+
+Resume the latest recorded Codex thread for a repo with the same visible
+profile:
+
+```bash
+agent-tmux codex-resume-latest <session> <repo> -s danger-full-access -a never
+```
+
+These flags are Codex CLI flags forwarded by `agent-tmux`; they belong in the
+logged command line so later captures and process inspection show the worker was
+started with `danger-full-access` and `never` approval. Do not use
+`--dangerously-bypass-approvals-and-sandbox` for this workflow.
+
 ## Contact Workflow
 
 Dry-run first when the target state matters:
