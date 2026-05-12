@@ -10,6 +10,7 @@ Usage:
   agent-tmux codex-full <session> <workdir> [codex-args...]
   agent-tmux codex-resume-full <session> <workdir> <thread-name-or-id> [prompt...]
   agent-tmux codex-resume-latest-full <session> <workdir> [prompt...]
+  agent-tmux codex-existing <workdir> [preferred-session]
   agent-tmux <regular-agent-tmux-command> [...]
 
 Full-permission aliases expand visibly to Codex args:
@@ -20,8 +21,10 @@ already exists, the wrapper refuses before launching so prompts cannot be lost
 inside a stale pane. Older same-repo sessions are ignored for these explicit
 routes.
 
-Regular commands are delegated unchanged to /usr/local/bin/agent-tmux by default.
-Set AGENT_TMUX_DELEGATE to test or override the delegated helper path.
+codex-existing is delegated, but an empty rc=1 absence result is normalized into
+a clear stderr line for machine callers. Other regular commands are delegated
+unchanged to /usr/local/bin/agent-tmux by default. Set AGENT_TMUX_DELEGATE to
+test or override the delegated helper path.
 EOF
 }
 
@@ -102,14 +105,75 @@ delegate_new_codex_session() {
     AGENT_TMUX_ALLOW_DUPLICATE=1 exec "${DELEGATE}" "$@"
 }
 
+delegate_codex_existing() {
+    (($# >= 1 && $# <= 2)) || die "codex-existing requires <workdir> [preferred-session]"
+    require_delegate
+    local stdout_file
+    local stderr_file
+    stdout_file="$(mktemp)"
+    stderr_file="$(mktemp)"
+    local rc=0
+    set +e
+    "${DELEGATE}" codex-existing "$@" >"${stdout_file}" 2>"${stderr_file}"
+    rc=$?
+    set -e
+    local stdout_empty=0
+    local stderr_empty=0
+    [[ -s "${stdout_file}" ]] || stdout_empty=1
+    [[ -s "${stderr_file}" ]] || stderr_empty=1
+    if ((stdout_empty == 0)); then
+        cat "${stdout_file}"
+    fi
+    if ((stderr_empty == 0)); then
+        cat "${stderr_file}" >&2
+    fi
+    rm -f "${stdout_file}" "${stderr_file}"
+    if ((rc == 1 && stdout_empty == 1 && stderr_empty == 1)); then
+        echo "agent-tmux: no Codex tmux session found for workdir: $(resolved_path "$1")" >&2
+    fi
+    return "${rc}"
+}
+
 latest_thread_for_workdir() {
     local workdir="$1"
+    require_delegate
+    local stdout_file
+    local stderr_file
+    stdout_file="$(mktemp)"
+    stderr_file="$(mktemp)"
+    local rc=0
+    set +e
+    "${DELEGATE}" codex-latest "${workdir}" >"${stdout_file}" 2>"${stderr_file}"
+    rc=$?
+    set -e
+    local latest_lines=()
+    mapfile -t latest_lines <"${stdout_file}"
+    local stderr_present=0
+    [[ ! -s "${stderr_file}" ]] || stderr_present=1
+    if ((rc != 0)); then
+        if ((stderr_present)); then
+            cat "${stderr_file}" >&2
+        fi
+        rm -f "${stdout_file}" "${stderr_file}"
+        die "codex-latest failed for workdir: ${workdir}"
+    fi
+    if ((stderr_present)); then
+        cat "${stderr_file}" >&2
+        rm -f "${stdout_file}" "${stderr_file}"
+        die "codex-latest wrote stderr for workdir: ${workdir}"
+    fi
+    rm -f "${stdout_file}" "${stderr_file}"
+    ((${#latest_lines[@]} == 1)) || die "codex-latest returned malformed output for workdir: ${workdir}"
     local latest_line
-    latest_line="$("${DELEGATE}" codex-latest "${workdir}")"
+    latest_line="${latest_lines[0]}"
     [[ -n "${latest_line}" ]] || die "codex-latest returned no session for workdir: ${workdir}"
     local thread_name
-    IFS=$'\t' read -r thread_name _ <<<"${latest_line}"
-    [[ -n "${thread_name}" ]] || die "codex-latest returned malformed output: ${latest_line}"
+    local session_id
+    local timestamp
+    local path
+    local extra
+    IFS=$'\t' read -r thread_name session_id timestamp path extra <<<"${latest_line}"
+    [[ -z "${extra:-}" && -n "${thread_name}" && -n "${session_id}" && -n "${timestamp}" && -n "${path}" ]] || die "codex-latest returned malformed output: ${latest_line}"
     printf "%s\n" "${thread_name}"
 }
 
@@ -206,6 +270,9 @@ main() {
             ;;
         -h|--help|help)
             usage
+            ;;
+        codex-existing)
+            delegate_codex_existing "$@"
             ;;
         *)
             require_delegate

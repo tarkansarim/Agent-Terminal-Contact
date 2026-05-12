@@ -102,6 +102,11 @@ guessing. Only use `agent-tmux codex <session> <repo>` for a genuinely new
 worker session when the user asked for a new worker or no prior repo chat
 exists.
 
+The source-owned wrapper normalizes `agent-tmux codex-existing <repo>` for
+machine callers: a true no-existing-session result is `rc=1`, empty stdout, and
+one stderr line beginning `agent-tmux: no Codex tmux session found for workdir:`.
+Treat other non-zero shapes as ambiguous or broken helper output.
+
 ## Codex Worker Permission Profile
 
 For tmux-launched Codex workers doing autonomous ticket, source-owned repo, or
@@ -137,6 +142,9 @@ The wrapper expands these aliases to Codex CLI flags `-s danger-full-access -a
 never` in the delegated command line so later captures and process inspection
 show the worker was started with `danger-full-access` and `never` approval. Do not use
 `--dangerously-bypass-approvals-and-sandbox` for this workflow.
+Latest-thread parsing for these aliases is fail-closed: stderr, multi-line
+stdout, or anything other than the expected four tab-separated `codex-latest`
+fields is refused before a worker launch.
 
 Codex launch/resume routes through this wrapper require the requested tmux
 session name to be unused. If that session already exists, the wrapper refuses

@@ -137,7 +137,8 @@ These aliases expand to Codex CLI args `-s danger-full-access -a never` and
 refuse `--dangerously-bypass-approvals-and-sandbox`. After the requested tmux
 session preflight passes, the latest-resume alias resolves the latest thread and
 launches `codex ... resume <thread> [prompt]` so a prompt is not misread as the
-resume session id.
+resume session id. Latest-thread parsing is fail-closed: stderr, multi-line
+stdout, or anything other than the expected four tab-separated fields is refused.
 
 Codex launch/resume routes through this wrapper require the requested tmux
 session name to be unused. If that session already exists, the wrapper refuses
@@ -147,3 +148,9 @@ delegated helper to create the requested session. The wrapper also recognizes
 the legacy supervise-style shape `agent-tmux codex-resume-latest <session>
 <repo> -s danger-full-access -a never [prompt]` and routes it through the same
 deterministic latest-thread path.
+
+The wrapper also normalizes `agent-tmux codex-existing <repo>` for supervised
+machine callers. A true no-existing-session result is `rc=1`, empty stdout, and
+one stderr line beginning `agent-tmux: no Codex tmux session found for workdir:`;
+ambiguous or broken helper results keep the delegated output and return code.
+Other non-wrapper commands are delegated unchanged.

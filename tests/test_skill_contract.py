@@ -40,6 +40,8 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("Do not use\n`--dangerously-bypass-approvals-and-sandbox`", text)
         self.assertIn("Codex launch/resume routes through this wrapper require the requested tmux", text)
         self.assertIn("legacy supervise-style shape", text)
+        self.assertIn("a true no-existing-session result is `rc=1`, empty stdout", text)
+        self.assertIn("Latest-thread parsing for these aliases is fail-closed", text)
         self.assertIn("source-owned user-level wrapper", text)
         self.assertIn("/usr/local/bin/agent-tmux", text)
 
@@ -821,6 +823,193 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(env_capture.read_text(encoding="utf-8").strip(), "")
             self.assertEqual(capture.read_text(encoding="utf-8").splitlines(), ["log", "sess"])
+
+    def test_agent_tmux_codex_existing_empty_absence_gets_explicit_message(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            delegate = Path(tmp) / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = codex-existing ]; then\n"
+                "  exit 1\n"
+                "fi\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-existing", repo],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual("", result.stdout)
+            self.assertIn("no Codex tmux session found for workdir:", result.stderr)
+            self.assertIn(repo, result.stderr)
+
+    def test_agent_tmux_codex_existing_existing_session_is_delegated_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            env_capture = Path(tmp) / "env.txt"
+            delegate = Path(tmp) / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = codex-existing ]; then\n"
+                "  printf '%s\\n' \"${AGENT_TMUX_ALLOW_DUPLICATE:-}\" >\"${AGENT_TMUX_ENV_CAPTURE}\"\n"
+                "  printf 'owner-session\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-existing", repo],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_ENV_CAPTURE": str(env_capture),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual("owner-session\n", result.stdout)
+            self.assertEqual("", result.stderr)
+            self.assertEqual(env_capture.read_text(encoding="utf-8").strip(), "")
+
+    def test_agent_tmux_codex_existing_failure_detail_is_not_absence(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            delegate = Path(tmp) / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = codex-existing ]; then\n"
+                "  printf 'agent-tmux: multiple detached Codex tmux sessions\\n' >&2\n"
+                "  exit 3\n"
+                "fi\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-existing", repo],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 3)
+            self.assertEqual("", result.stdout)
+            self.assertEqual("agent-tmux: multiple detached Codex tmux sessions\n", result.stderr)
+            self.assertNotIn("no Codex tmux session found", result.stderr)
+
+    def test_agent_tmux_resume_latest_full_rejects_malformed_latest_output(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            delegate = Path(tmp) / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 1\n"
+                "fi\n"
+                "if [ \"$1\" = codex-latest ]; then\n"
+                "  echo malformed-success-line-without-tabs\n"
+                "  exit 0\n"
+                "fi\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-resume-latest-full", "sess", repo, "Please do work"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("codex-latest returned malformed output", result.stderr)
+
+    def test_agent_tmux_resume_latest_full_rejects_latest_extra_output_line(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            delegate = Path(tmp) / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 1\n"
+                "fi\n"
+                "if [ \"$1\" = codex-latest ]; then\n"
+                "  printf 'Thread\\tid-123\\t2026-05-12T00:00:00Z\\t/tmp/session.jsonl\\nextra\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-resume-latest-full", "sess", repo, "Please do work"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("codex-latest returned malformed output", result.stderr)
+
+    def test_agent_tmux_resume_latest_full_rejects_latest_stderr_warning(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            delegate = Path(tmp) / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 1\n"
+                "fi\n"
+                "if [ \"$1\" = codex-latest ]; then\n"
+                "  printf 'warning: stale state\\n' >&2\n"
+                "  printf 'Thread\\tid-123\\t2026-05-12T00:00:00Z\\t/tmp/session.jsonl\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-resume-latest-full", "sess", repo, "Please do work"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("warning: stale state", result.stderr)
+            self.assertIn("codex-latest wrote stderr", result.stderr)
 
     def test_agent_tmux_full_alias_rejects_bypass_flag(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
