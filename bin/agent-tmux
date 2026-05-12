@@ -15,6 +15,11 @@ Usage:
 Full-permission aliases expand visibly to Codex args:
   -s danger-full-access -a never
 
+Codex launch/resume routes require a new requested tmux session. If that session
+already exists, the wrapper refuses before launching so prompts cannot be lost
+inside a stale pane. Older same-repo sessions are ignored for these explicit
+routes.
+
 Regular commands are delegated unchanged to /usr/local/bin/agent-tmux by default.
 Set AGENT_TMUX_DELEGATE to test or override the delegated helper path.
 EOF
@@ -66,12 +71,35 @@ reject_bypass_arg() {
     done
 }
 
+is_full_permission_profile() {
+    (($# >= 4)) || return 1
+    [[ "$1" == "-s" && "$2" == "danger-full-access" && "$3" == "-a" && "$4" == "never" ]]
+}
+
+require_new_requested_session() {
+    local session="$1"
+    require_delegate
+    if "${DELEGATE}" has "${session}" >/dev/null 2>&1; then
+        die "requested session already exists: ${session}; choose a unique session name or stop it before launching"
+    fi
+}
+
 delegate() {
     require_delegate
     if [[ "${AGENT_TMUX_SHOW_EFFECTIVE_COMMAND:-1}" != "0" ]]; then
         echo "agent-tmux: delegated command: $(quote_command "${DELEGATE}" "$@")" >&2
     fi
     exec "${DELEGATE}" "$@"
+}
+
+delegate_new_codex_session() {
+    local session="$1"
+    shift
+    require_new_requested_session "${session}"
+    if [[ "${AGENT_TMUX_SHOW_EFFECTIVE_COMMAND:-1}" != "0" ]]; then
+        echo "agent-tmux: delegated command: AGENT_TMUX_ALLOW_DUPLICATE=1 $(quote_command "${DELEGATE}" "$@")" >&2
+    fi
+    AGENT_TMUX_ALLOW_DUPLICATE=1 exec "${DELEGATE}" "$@"
 }
 
 latest_thread_for_workdir() {
@@ -100,7 +128,7 @@ main() {
             local session="$1"
             local workdir="$2"
             shift 2
-            delegate codex "${session}" "${workdir}" "${FULL_PERMISSION_ARGS[@]}" "$@"
+            delegate_new_codex_session "${session}" codex "${session}" "${workdir}" "${FULL_PERMISSION_ARGS[@]}" "$@"
             ;;
         codex-resume-full)
             (($# >= 3)) || die "codex-resume-full requires <session> <workdir> <thread-name-or-id> [prompt...]"
@@ -113,7 +141,7 @@ main() {
             if (($# > 0)); then
                 prompt_args=("$*")
             fi
-            delegate codex "${session}" "${workdir}" "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
+            delegate_new_codex_session "${session}" codex "${session}" "${workdir}" "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
             ;;
         codex-resume-latest-full)
             (($# >= 2)) || die "codex-resume-latest-full requires <session> <workdir> [prompt...]"
@@ -122,13 +150,59 @@ main() {
             local workdir="$2"
             shift 2
             require_delegate
+            require_new_requested_session "${session}"
             local thread_name
             thread_name="$(latest_thread_for_workdir "${workdir}")"
             local prompt_args=()
             if (($# > 0)); then
                 prompt_args=("$*")
             fi
-            delegate codex "${session}" "${workdir}" "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
+            delegate_new_codex_session "${session}" codex "${session}" "${workdir}" "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
+            ;;
+        codex)
+            (($# >= 2)) || die "codex requires <session> <workdir> [codex-args...]"
+            reject_bypass_arg "$@"
+            local session="$1"
+            local workdir="$2"
+            shift 2
+            delegate_new_codex_session "${session}" codex "${session}" "${workdir}" "$@"
+            ;;
+        codex-resume)
+            (($# >= 3)) || die "codex-resume requires <session> <workdir> <thread-name-or-id> [prompt...]"
+            reject_bypass_arg "$@"
+            local session="$1"
+            local workdir="$2"
+            local thread_name="$3"
+            shift 3
+            if is_full_permission_profile "$@"; then
+                shift 4
+                local prompt_args=()
+                if (($# > 0)); then
+                    prompt_args=("$*")
+                fi
+                delegate_new_codex_session "${session}" codex "${session}" "${workdir}" "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
+            fi
+            delegate_new_codex_session "${session}" "${command}" "${session}" "${workdir}" "${thread_name}" "$@"
+            ;;
+        codex-resume-latest)
+            (($# >= 2)) || die "codex-resume-latest requires <session> <workdir> [prompt...]"
+            reject_bypass_arg "$@"
+            local session="$1"
+            local workdir="$2"
+            shift 2
+            if is_full_permission_profile "$@"; then
+                shift 4
+                require_delegate
+                require_new_requested_session "${session}"
+                local thread_name
+                thread_name="$(latest_thread_for_workdir "${workdir}")"
+                local prompt_args=()
+                if (($# > 0)); then
+                    prompt_args=("$*")
+                fi
+                delegate_new_codex_session "${session}" codex "${session}" "${workdir}" "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
+            fi
+            delegate_new_codex_session "${session}" "${command}" "${session}" "${workdir}" "$@"
             ;;
         -h|--help|help)
             usage

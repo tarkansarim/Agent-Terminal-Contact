@@ -134,6 +134,16 @@ agent-tmux codex-resume-latest-full <session> <repo> [prompt]
 ```
 
 These aliases expand to Codex CLI args `-s danger-full-access -a never` and
-refuse `--dangerously-bypass-approvals-and-sandbox`. The latest-resume alias
-resolves the latest thread first, then launches `codex ... resume <thread>
-[prompt]` so a prompt is not misread as the resume session id.
+refuse `--dangerously-bypass-approvals-and-sandbox`. After the requested tmux
+session preflight passes, the latest-resume alias resolves the latest thread and
+launches `codex ... resume <thread> [prompt]` so a prompt is not misread as the
+resume session id.
+
+Codex launch/resume routes through this wrapper require the requested tmux
+session name to be unused. If that session already exists, the wrapper refuses
+before launching so a prompt cannot disappear into a stale pane. Older Codex
+sessions for the same repo do not steal these launches; the wrapper tells the
+delegated helper to create the requested session. The wrapper also recognizes
+the legacy supervise-style shape `agent-tmux codex-resume-latest <session>
+<repo> -s danger-full-access -a never [prompt]` and routes it through the same
+deterministic latest-thread path.

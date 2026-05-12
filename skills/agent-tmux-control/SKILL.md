@@ -125,9 +125,9 @@ agent-tmux codex-resume-full <session> <repo> <thread-name-or-id>
 ```
 
 Resume the latest recorded Codex thread for a repo with the same visible
-profile. This helper resolves the latest thread first and then starts
-`codex ... resume <thread> [prompt]`; it does not pass a prompt to ambiguous
-`resume --last` positional parsing:
+profile. After the requested tmux session preflight passes, this helper resolves
+the latest thread and starts `codex ... resume <thread> [prompt]`; it does not
+pass a prompt to ambiguous `resume --last` positional parsing:
 
 ```bash
 agent-tmux codex-resume-latest-full <session> <repo>
@@ -137,6 +137,15 @@ The wrapper expands these aliases to Codex CLI flags `-s danger-full-access -a
 never` in the delegated command line so later captures and process inspection
 show the worker was started with `danger-full-access` and `never` approval. Do not use
 `--dangerously-bypass-approvals-and-sandbox` for this workflow.
+
+Codex launch/resume routes through this wrapper require the requested tmux
+session name to be unused. If that session already exists, the wrapper refuses
+before launching so the prompt cannot be lost inside a stale pane. Older
+same-repo Codex sessions do not steal these explicit launches; the wrapper tells
+the delegated helper to create the requested session. The wrapper also
+recognizes the legacy supervise-style shape `agent-tmux codex-resume-latest
+<session> <repo> -s danger-full-access -a never [prompt]` and routes it through
+the same deterministic latest-thread path.
 
 To inspect source ownership before patching an installed helper, use:
 

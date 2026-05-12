@@ -38,6 +38,8 @@ class SkillContractTests(unittest.TestCase):
         )
         self.assertIn("agent-tmux codex-resume-latest-full <session> <repo>", text)
         self.assertIn("Do not use\n`--dangerously-bypass-approvals-and-sandbox`", text)
+        self.assertIn("Codex launch/resume routes through this wrapper require the requested tmux", text)
+        self.assertIn("legacy supervise-style shape", text)
         self.assertIn("source-owned user-level wrapper", text)
         self.assertIn("/usr/local/bin/agent-tmux", text)
 
@@ -375,9 +377,50 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
             tmp_path = Path(tmp)
             capture = tmp_path / "args.txt"
+            env_capture = tmp_path / "env.txt"
             delegate = tmp_path / "delegate-agent-tmux"
             delegate.write_text(
                 "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 1\n"
+                "fi\n"
+                "printf '%s\\n' \"${AGENT_TMUX_ALLOW_DUPLICATE:-}\" >\"${AGENT_TMUX_ENV_CAPTURE}\"\n"
+                "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-full", "sess", repo, "--model", "gpt-5.5"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_ENV_CAPTURE": str(env_capture),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("-s danger-full-access -a never", result.stderr)
+            self.assertEqual(env_capture.read_text(encoding="utf-8").strip(), "1")
+            self.assertEqual(
+                capture.read_text(encoding="utf-8").splitlines(),
+                ["codex", "sess", repo, "-s", "danger-full-access", "-a", "never", "--model", "gpt-5.5"],
+            )
+
+    def test_agent_tmux_full_alias_refuses_existing_requested_session(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            capture = tmp_path / "args.txt"
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 0\n"
+                "fi\n"
                 "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
                 encoding="utf-8",
             )
@@ -395,24 +438,26 @@ class SkillContractTests(unittest.TestCase):
                     "PATH": "/usr/bin:/bin",
                 },
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("-s danger-full-access -a never", result.stderr)
-            self.assertEqual(
-                capture.read_text(encoding="utf-8").splitlines(),
-                ["codex", "sess", repo, "-s", "danger-full-access", "-a", "never", "--model", "gpt-5.5"],
-            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("requested session already exists: sess", result.stderr)
+            self.assertFalse(capture.exists())
 
     def test_agent_tmux_resume_latest_full_resolves_thread_before_prompt(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
             tmp_path = Path(tmp)
             capture = tmp_path / "args.txt"
+            env_capture = tmp_path / "env.txt"
             delegate = tmp_path / "delegate-agent-tmux"
             delegate.write_text(
                 "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 1\n"
+                "fi\n"
                 "if [ \"$1\" = codex-latest ]; then\n"
                 "  printf 'Thread Name\\tid-123\\t2026-05-12T00:00:00Z\\t/tmp/session.jsonl\\n'\n"
                 "  exit 0\n"
                 "fi\n"
+                "printf '%s\\n' \"${AGENT_TMUX_ALLOW_DUPLICATE:-}\" >\"${AGENT_TMUX_ENV_CAPTURE}\"\n"
                 "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
                 encoding="utf-8",
             )
@@ -427,10 +472,12 @@ class SkillContractTests(unittest.TestCase):
                 env={
                     "AGENT_TMUX_DELEGATE": str(delegate),
                     "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_ENV_CAPTURE": str(env_capture),
                     "PATH": "/usr/bin:/bin",
                 },
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(env_capture.read_text(encoding="utf-8").strip(), "1")
             self.assertEqual(
                 capture.read_text(encoding="utf-8").splitlines(),
                 [
@@ -447,13 +494,312 @@ class SkillContractTests(unittest.TestCase):
                 ],
             )
 
-    def test_agent_tmux_regular_command_delegates_unchanged(self):
-        with tempfile.TemporaryDirectory() as tmp:
+    def test_agent_tmux_resume_latest_full_refuses_existing_session_before_thread_lookup(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            capture = tmp_path / "args.txt"
+            latest_capture = tmp_path / "latest.txt"
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 0\n"
+                "fi\n"
+                "if [ \"$1\" = codex-latest ]; then\n"
+                "  printf 'called\\n' >\"${AGENT_TMUX_LATEST_CAPTURE}\"\n"
+                "  exit 2\n"
+                "fi\n"
+                "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-resume-latest-full", "sess", repo, "Please do work"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_LATEST_CAPTURE": str(latest_capture),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("requested session already exists: sess", result.stderr)
+            self.assertFalse(capture.exists())
+            self.assertFalse(latest_capture.exists())
+
+    def test_agent_tmux_legacy_full_profile_resume_latest_uses_deterministic_route(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            capture = tmp_path / "args.txt"
+            env_capture = tmp_path / "env.txt"
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 1\n"
+                "fi\n"
+                "if [ \"$1\" = codex-latest ]; then\n"
+                "  printf 'Thread Name\\tid-123\\t2026-05-12T00:00:00Z\\t/tmp/session.jsonl\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "printf '%s\\n' \"${AGENT_TMUX_ALLOW_DUPLICATE:-}\" >\"${AGENT_TMUX_ENV_CAPTURE}\"\n"
+                "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                [
+                    "bash",
+                    "bin/agent-tmux",
+                    "codex-resume-latest",
+                    "sess",
+                    repo,
+                    "-s",
+                    "danger-full-access",
+                    "-a",
+                    "never",
+                    "Please",
+                    "do",
+                    "work",
+                ],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_ENV_CAPTURE": str(env_capture),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(env_capture.read_text(encoding="utf-8").strip(), "1")
+            self.assertEqual(
+                capture.read_text(encoding="utf-8").splitlines(),
+                [
+                    "codex",
+                    "sess",
+                    repo,
+                    "-s",
+                    "danger-full-access",
+                    "-a",
+                    "never",
+                    "resume",
+                    "Thread Name",
+                    "Please do work",
+                ],
+            )
+
+    def test_agent_tmux_legacy_full_profile_resume_latest_refuses_existing_session_before_thread_lookup(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            capture = tmp_path / "args.txt"
+            latest_capture = tmp_path / "latest.txt"
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 0\n"
+                "fi\n"
+                "if [ \"$1\" = codex-latest ]; then\n"
+                "  printf 'called\\n' >\"${AGENT_TMUX_LATEST_CAPTURE}\"\n"
+                "  exit 2\n"
+                "fi\n"
+                "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                [
+                    "bash",
+                    "bin/agent-tmux",
+                    "codex-resume-latest",
+                    "sess",
+                    repo,
+                    "-s",
+                    "danger-full-access",
+                    "-a",
+                    "never",
+                    "Please do work",
+                ],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_LATEST_CAPTURE": str(latest_capture),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("requested session already exists: sess", result.stderr)
+            self.assertFalse(capture.exists())
+            self.assertFalse(latest_capture.exists())
+
+    def test_agent_tmux_legacy_full_profile_resume_uses_deterministic_route(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            capture = tmp_path / "args.txt"
+            env_capture = tmp_path / "env.txt"
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 1\n"
+                "fi\n"
+                "printf '%s\\n' \"${AGENT_TMUX_ALLOW_DUPLICATE:-}\" >\"${AGENT_TMUX_ENV_CAPTURE}\"\n"
+                "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                [
+                    "bash",
+                    "bin/agent-tmux",
+                    "codex-resume",
+                    "sess",
+                    repo,
+                    "Thread Name",
+                    "-s",
+                    "danger-full-access",
+                    "-a",
+                    "never",
+                    "Please",
+                    "do",
+                    "work",
+                ],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_ENV_CAPTURE": str(env_capture),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(env_capture.read_text(encoding="utf-8").strip(), "1")
+            self.assertEqual(
+                capture.read_text(encoding="utf-8").splitlines(),
+                [
+                    "codex",
+                    "sess",
+                    repo,
+                    "-s",
+                    "danger-full-access",
+                    "-a",
+                    "never",
+                    "resume",
+                    "Thread Name",
+                    "Please do work",
+                ],
+            )
+
+    def test_agent_tmux_non_full_codex_commands_use_requested_session(self):
+        cases = [
+            (
+                ["codex", "sess", "{repo}", "--model", "gpt-5.5"],
+                ["codex", "sess", "{repo}", "--model", "gpt-5.5"],
+            ),
+            (
+                ["codex-resume", "sess", "{repo}", "Thread Name", "Please", "do", "work"],
+                ["codex-resume", "sess", "{repo}", "Thread Name", "Please", "do", "work"],
+            ),
+            (
+                ["codex-resume-latest", "sess", "{repo}", "Please", "do", "work"],
+                ["codex-resume-latest", "sess", "{repo}", "Please", "do", "work"],
+            ),
+        ]
+        for argv_template, expected_template in cases:
+            with self.subTest(command=argv_template[0]):
+                with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+                    argv = [repo if arg == "{repo}" else arg for arg in argv_template]
+                    expected = [repo if arg == "{repo}" else arg for arg in expected_template]
+                    tmp_path = Path(tmp)
+                    capture = tmp_path / "args.txt"
+                    env_capture = tmp_path / "env.txt"
+                    delegate = tmp_path / "delegate-agent-tmux"
+                    delegate.write_text(
+                        "#!/usr/bin/env bash\n"
+                        "if [ \"$1\" = has ]; then\n"
+                        "  exit 1\n"
+                        "fi\n"
+                        "printf '%s\\n' \"${AGENT_TMUX_ALLOW_DUPLICATE:-}\" >\"${AGENT_TMUX_ENV_CAPTURE}\"\n"
+                        "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                        encoding="utf-8",
+                    )
+                    delegate.chmod(0o755)
+                    result = subprocess.run(
+                        ["bash", "bin/agent-tmux", *argv],
+                        cwd=ROOT,
+                        check=False,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env={
+                            "AGENT_TMUX_DELEGATE": str(delegate),
+                            "AGENT_TMUX_CAPTURE": str(capture),
+                            "AGENT_TMUX_ENV_CAPTURE": str(env_capture),
+                            "PATH": "/usr/bin:/bin",
+                        },
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(env_capture.read_text(encoding="utf-8").strip(), "1")
+                    self.assertEqual(capture.read_text(encoding="utf-8").splitlines(), expected)
+
+    def test_agent_tmux_non_full_codex_commands_refuse_existing_requested_session(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
             tmp_path = Path(tmp)
             capture = tmp_path / "args.txt"
             delegate = tmp_path / "delegate-agent-tmux"
             delegate.write_text(
                 "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 0\n"
+                "fi\n"
+                "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-resume-latest", "sess", repo, "Please do work"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("requested session already exists: sess", result.stderr)
+            self.assertFalse(capture.exists())
+
+    def test_agent_tmux_regular_command_delegates_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            capture = tmp_path / "args.txt"
+            env_capture = tmp_path / "env.txt"
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf '%s\\n' \"${AGENT_TMUX_ALLOW_DUPLICATE:-}\" >\"${AGENT_TMUX_ENV_CAPTURE}\"\n"
                 "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
                 encoding="utf-8",
             )
@@ -468,10 +814,12 @@ class SkillContractTests(unittest.TestCase):
                 env={
                     "AGENT_TMUX_DELEGATE": str(delegate),
                     "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_ENV_CAPTURE": str(env_capture),
                     "PATH": "/usr/bin:/bin",
                 },
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(env_capture.read_text(encoding="utf-8").strip(), "")
             self.assertEqual(capture.read_text(encoding="utf-8").splitlines(), ["log", "sess"])
 
     def test_agent_tmux_full_alias_rejects_bypass_flag(self):
