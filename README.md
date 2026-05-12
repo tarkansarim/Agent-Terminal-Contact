@@ -92,4 +92,48 @@ bash scripts/install.sh --check
 ```
 
 `--check` verifies the installed skill matches this repo source and that
-`agent-contact` resolves on `PATH`.
+`agent-contact` and the source-owned `agent-tmux` wrapper resolve on `PATH`.
+
+## Installed Artifact Ownership
+
+Use `artifact-info` to identify whether an installed command, skill, hook, or
+wrapper is owned by this source repo before patching anything in place:
+
+```bash
+agent-contact artifact-info agent-contact --json
+agent-contact artifact-info agent-tmux --json
+agent-contact artifact-info /usr/local/bin/agent-tmux --json
+agent-contact artifact-info --all --json
+```
+
+The ownership manifest is `artifact_ownership.json`. Each entry declares the
+installed path, source path when owned, install/check commands, and whether this
+repo explicitly owns or does not own the artifact. Other repos can follow the
+same pattern: keep a source manifest at the repo root, make installed wrappers
+or CLIs report it as JSON, and distinguish `owned` from `not_owned` instead of
+guessing from filenames.
+
+This repo owns:
+
+- `~/.local/bin/agent-contact`
+- `~/.local/bin/agent-tmux`, a wrapper that delegates normal commands to
+  `/usr/local/bin/agent-tmux`
+- `${CODEX_HOME:-~/.codex}/skills/agent-tmux-control/SKILL.md`
+
+It explicitly does not own `/usr/local/bin/agent-tmux`.
+
+## Full-Permission Codex Workers
+
+The source-owned `agent-tmux` wrapper adds full-permission aliases without
+patching the delegated system helper:
+
+```bash
+agent-tmux codex-full <session> <repo> [codex-args...]
+agent-tmux codex-resume-full <session> <repo> <thread-name-or-id> [prompt]
+agent-tmux codex-resume-latest-full <session> <repo> [prompt]
+```
+
+These aliases expand to Codex CLI args `-s danger-full-access -a never` and
+refuse `--dangerously-bypass-approvals-and-sandbox`. The latest-resume alias
+resolves the latest thread first, then launches `codex ... resume <thread>
+[prompt]` so a prompt is not misread as the resume session id.

@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DELEGATE="${AGENT_TMUX_DELEGATE:-/usr/local/bin/agent-tmux}"
+FULL_PERMISSION_ARGS=(-s danger-full-access -a never)
+
+usage() {
+    cat <<'EOF'
+Usage:
+  agent-tmux codex-full <session> <workdir> [codex-args...]
+  agent-tmux codex-resume-full <session> <workdir> <thread-name-or-id> [prompt...]
+  agent-tmux codex-resume-latest-full <session> <workdir> [prompt...]
+  agent-tmux <regular-agent-tmux-command> [...]
+
+Full-permission aliases expand visibly to Codex args:
+  -s danger-full-access -a never
+
+Regular commands are delegated unchanged to /usr/local/bin/agent-tmux by default.
+Set AGENT_TMUX_DELEGATE to test or override the delegated helper path.
+EOF
+}
+
+die() {
+    echo "agent-tmux: $*" >&2
+    exit 2
+}
+
+resolved_path() {
+    local path="$1"
+    if command -v realpath >/dev/null 2>&1; then
+        realpath -m "${path}"
+        return
+    fi
+    case "${path}" in
+        /*) printf "%s\n" "${path}" ;;
+        *) printf "%s/%s\n" "${PWD}" "${path}" ;;
+    esac
+}
+
+quote_command() {
+    local quoted=""
+    local arg
+    for arg in "$@"; do
+        if [[ -n "${quoted}" ]]; then
+            quoted+=" "
+        fi
+        printf -v arg "%q" "${arg}"
+        quoted+="${arg}"
+    done
+    printf "%s" "${quoted}"
+}
+
+require_delegate() {
+    [[ -x "${DELEGATE}" ]] || die "delegated agent-tmux helper is not executable: ${DELEGATE}"
+    if [[ "$(resolved_path "${DELEGATE}")" == "$(resolved_path "$0")" ]]; then
+        die "AGENT_TMUX_DELEGATE resolves to this wrapper; refusing recursive delegation"
+    fi
+}
+
+reject_bypass_arg() {
+    local arg
+    for arg in "$@"; do
+        if [[ "${arg}" == "--dangerously-bypass-approvals-and-sandbox" ]]; then
+            die "full-permission aliases must use -s danger-full-access -a never, not --dangerously-bypass-approvals-and-sandbox"
+        fi
+    done
+}
+
+delegate() {
+    require_delegate
+    if [[ "${AGENT_TMUX_SHOW_EFFECTIVE_COMMAND:-1}" != "0" ]]; then
+        echo "agent-tmux: delegated command: $(quote_command "${DELEGATE}" "$@")" >&2
+    fi
+    exec "${DELEGATE}" "$@"
+}
+
+latest_thread_for_workdir() {
+    local workdir="$1"
+    local latest_line
+    latest_line="$("${DELEGATE}" codex-latest "${workdir}")"
+    [[ -n "${latest_line}" ]] || die "codex-latest returned no session for workdir: ${workdir}"
+    local thread_name
+    IFS=$'\t' read -r thread_name _ <<<"${latest_line}"
+    [[ -n "${thread_name}" ]] || die "codex-latest returned malformed output: ${latest_line}"
+    printf "%s\n" "${thread_name}"
+}
+
+main() {
+    local command="${1:-}"
+    [[ -n "${command}" ]] || {
+        usage
+        exit 2
+    }
+    shift
+
+    case "${command}" in
+        codex-full)
+            (($# >= 2)) || die "codex-full requires <session> <workdir> [codex-args...]"
+            reject_bypass_arg "$@"
+            local session="$1"
+            local workdir="$2"
+            shift 2
+            delegate codex "${session}" "${workdir}" "${FULL_PERMISSION_ARGS[@]}" "$@"
+            ;;
+        codex-resume-full)
+            (($# >= 3)) || die "codex-resume-full requires <session> <workdir> <thread-name-or-id> [prompt...]"
+            reject_bypass_arg "$@"
+            local session="$1"
+            local workdir="$2"
+            local thread_name="$3"
+            shift 3
+            local prompt_args=()
+            if (($# > 0)); then
+                prompt_args=("$*")
+            fi
+            delegate codex "${session}" "${workdir}" "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
+            ;;
+        codex-resume-latest-full)
+            (($# >= 2)) || die "codex-resume-latest-full requires <session> <workdir> [prompt...]"
+            reject_bypass_arg "$@"
+            local session="$1"
+            local workdir="$2"
+            shift 2
+            require_delegate
+            local thread_name
+            thread_name="$(latest_thread_for_workdir "${workdir}")"
+            local prompt_args=()
+            if (($# > 0)); then
+                prompt_args=("$*")
+            fi
+            delegate codex "${session}" "${workdir}" "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
+            ;;
+        -h|--help|help)
+            usage
+            ;;
+        *)
+            require_delegate
+            exec "${DELEGATE}" "${command}" "$@"
+            ;;
+    esac
+}
+
+main "$@"

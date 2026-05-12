@@ -31,13 +31,15 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("If `agent-contact` refuses, stop", text)
         self.assertIn("agent-contact trust-roots", text)
         self.assertIn("## Codex Worker Permission Profile", text)
-        self.assertIn("agent-tmux codex <session> <repo> -s danger-full-access -a never", text)
+        self.assertIn("agent-tmux codex-full <session> <repo>", text)
         self.assertIn(
-            "agent-tmux codex-resume <session> <repo> <thread-name-or-id> -s danger-full-access -a never",
+            "agent-tmux codex-resume-full <session> <repo> <thread-name-or-id>",
             text,
         )
-        self.assertIn("agent-tmux codex-resume-latest <session> <repo> -s danger-full-access -a never", text)
+        self.assertIn("agent-tmux codex-resume-latest-full <session> <repo>", text)
         self.assertIn("Do not use\n`--dangerously-bypass-approvals-and-sandbox`", text)
+        self.assertIn("source-owned user-level wrapper", text)
+        self.assertIn("/usr/local/bin/agent-tmux", text)
 
     def test_install_dry_run_names_non_invasive_targets(self):
         with tempfile.TemporaryDirectory() as home:
@@ -52,6 +54,7 @@ class SkillContractTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(".local/bin/agent-contact", result.stdout)
+            self.assertIn(".local/bin/agent-tmux", result.stdout)
             self.assertIn(".codex/skills/agent-tmux-control/SKILL.md", result.stdout)
             self.assertNotIn("/usr/local/bin/agent-tmux", result.stdout)
 
@@ -85,6 +88,7 @@ class SkillContractTests(unittest.TestCase):
             )
             self.assertEqual(check.returncode, 0, check.stderr)
             self.assertIn("agent-contact install check: ok", check.stdout)
+            self.assertIn("agent-tmux wrapper:", check.stdout)
 
     def test_install_check_refuses_when_agent_contact_is_not_on_path(self):
         with tempfile.TemporaryDirectory() as home:
@@ -313,6 +317,31 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("refusing to overwrite divergent agent-contact target", result.stderr)
             self.assertEqual(existing_bin.read_text(encoding="utf-8"), "existing command\n")
 
+    def test_install_refuses_divergent_existing_agent_tmux_wrapper_without_force(self):
+        with tempfile.TemporaryDirectory() as home:
+            codex_home = Path(home) / ".codex"
+            bin_dir = Path(home) / ".local" / "bin"
+            bin_dir.mkdir(parents=True)
+            existing_bin = bin_dir / "agent-tmux"
+            existing_bin.write_text("existing wrapper\n", encoding="utf-8")
+            skill_dir = codex_home / "skills" / "agent-tmux-control"
+            skill_dir.mkdir(parents=True)
+            source_skill = ROOT / "skills" / "agent-tmux-control" / "SKILL.md"
+            (skill_dir / "SKILL.md").write_text(source_skill.read_text(encoding="utf-8"), encoding="utf-8")
+            (bin_dir / "agent-contact").symlink_to(ROOT / "bin" / "agent-contact")
+            result = subprocess.run(
+                ["bash", "scripts/install.sh"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"HOME": home, "CODEX_HOME": str(codex_home), "PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(result.returncode, 3)
+            self.assertIn("refusing to overwrite divergent agent-tmux wrapper target", result.stderr)
+            self.assertEqual(existing_bin.read_text(encoding="utf-8"), "existing wrapper\n")
+
     def test_install_force_backs_up_divergent_existing_bin_symlink(self):
         with tempfile.TemporaryDirectory() as home:
             codex_home = Path(home) / ".codex"
@@ -341,6 +370,144 @@ class SkillContractTests(unittest.TestCase):
             self.assertTrue(backups[0].is_symlink())
             self.assertEqual(backups[0].resolve(), other_target)
             self.assertEqual(existing_bin.resolve(), ROOT / "bin" / "agent-contact")
+
+    def test_agent_tmux_full_alias_expands_permission_args(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            capture = tmp_path / "args.txt"
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-full", "sess", repo, "--model", "gpt-5.5"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("-s danger-full-access -a never", result.stderr)
+            self.assertEqual(
+                capture.read_text(encoding="utf-8").splitlines(),
+                ["codex", "sess", repo, "-s", "danger-full-access", "-a", "never", "--model", "gpt-5.5"],
+            )
+
+    def test_agent_tmux_resume_latest_full_resolves_thread_before_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            capture = tmp_path / "args.txt"
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = codex-latest ]; then\n"
+                "  printf 'Thread Name\\tid-123\\t2026-05-12T00:00:00Z\\t/tmp/session.jsonl\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-resume-latest-full", "sess", repo, "Please", "do", "work"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                capture.read_text(encoding="utf-8").splitlines(),
+                [
+                    "codex",
+                    "sess",
+                    repo,
+                    "-s",
+                    "danger-full-access",
+                    "-a",
+                    "never",
+                    "resume",
+                    "Thread Name",
+                    "Please do work",
+                ],
+            )
+
+    def test_agent_tmux_regular_command_delegates_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            capture = tmp_path / "args.txt"
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "log", "sess"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(capture.read_text(encoding="utf-8").splitlines(), ["log", "sess"])
+
+    def test_agent_tmux_full_alias_rejects_bypass_flag(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            capture = tmp_path / "args.txt"
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                [
+                    "bash",
+                    "bin/agent-tmux",
+                    "codex-full",
+                    "sess",
+                    repo,
+                    "--dangerously-bypass-approvals-and-sandbox",
+                ],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("must use -s danger-full-access -a never", result.stderr)
+            self.assertFalse(capture.exists())
 
 
 if __name__ == "__main__":

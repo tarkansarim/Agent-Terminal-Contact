@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "project": "AgentTerminalContact",
+  "rollout_command": "cd {source_repo} && bash scripts/install.sh --force && bash scripts/install.sh --check",
+  "artifacts": [
+    {
+      "id": "agent-contact",
+      "kind": "command",
+      "ownership": "owned",
+      "installed_path": "$HOME/.local/bin/agent-contact",
+      "source_path": "bin/agent-contact",
+      "install_command": "cd {source_repo} && bash scripts/install.sh --force",
+      "check_command": "cd {source_repo} && bash scripts/install.sh --check",
+      "command_names": ["agent-contact"]
+    },
+    {
+      "id": "agent-tmux-wrapper",
+      "kind": "wrapper",
+      "ownership": "owned",
+      "installed_path": "$HOME/.local/bin/agent-tmux",
+      "source_path": "bin/agent-tmux",
+      "install_command": "cd {source_repo} && bash scripts/install.sh --force",
+      "check_command": "cd {source_repo} && bash scripts/install.sh --check",
+      "command_names": ["agent-tmux"],
+      "delegates_to": "/usr/local/bin/agent-tmux",
+      "notes": "Source-owned user wrapper that preserves normal agent-tmux behavior and adds explicit full-permission Codex worker aliases."
+    },
+    {
+      "id": "agent-tmux-control-skill",
+      "kind": "skill",
+      "ownership": "owned",
+      "installed_path": "$CODEX_HOME/skills/agent-tmux-control/SKILL.md",
+      "source_path": "skills/agent-tmux-control/SKILL.md",
+      "install_command": "cd {source_repo} && bash scripts/install.sh --force",
+      "check_command": "cd {source_repo} && bash scripts/install.sh --check"
+    },
+    {
+      "id": "system-agent-tmux-helper",
+      "kind": "command",
+      "ownership": "not_owned",
+      "installed_path": "/usr/local/bin/agent-tmux",
+      "source_path": null,
+      "command_names": [],
+      "notes": "AgentTerminalContact does not own or patch this system helper; the source-owned ~/.local/bin/agent-tmux wrapper delegates to it."
+    }
+  ]
+}

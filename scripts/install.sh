@@ -10,6 +10,7 @@ Usage:
 Installs AgentTerminalContact without modifying Codex, Claude, tmux, or
 /usr/local/bin/agent-tmux:
   - symlink ~/.local/bin/agent-contact to this repo's bin/agent-contact
+  - symlink ~/.local/bin/agent-tmux to this repo's bin/agent-tmux wrapper
   - copy skills/agent-tmux-control/SKILL.md into ${CODEX_HOME:-~/.codex}/skills/agent-tmux-control/SKILL.md
 
 If an existing installed SKILL.md differs from the repo source, or is a symlink,
@@ -55,6 +56,7 @@ SKILL_SOURCE="${ROOT}/skills/agent-tmux-control/SKILL.md"
 SKILL_DIR="${CODEX_HOME}/skills/agent-tmux-control"
 SKILL_TARGET="${SKILL_DIR}/SKILL.md"
 AGENT_CONTACT_TARGET="${BIN_DIR}/agent-contact"
+AGENT_TMUX_TARGET="${BIN_DIR}/agent-tmux"
 
 require_file() {
     local path="$1"
@@ -75,9 +77,12 @@ run() {
 }
 
 require_file "${ROOT}/bin/agent-contact"
+require_file "${ROOT}/bin/agent-tmux"
 require_file "${SKILL_SOURCE}"
+require_file "${ROOT}/artifact_ownership.json"
 
 desired_agent_contact="${ROOT}/bin/agent-contact"
+desired_agent_tmux="${ROOT}/bin/agent-tmux"
 if ((check)); then
     if [[ ! -L "${AGENT_CONTACT_TARGET}" ]]; then
         echo "install.sh: agent-contact is not installed as a symlink: ${AGENT_CONTACT_TARGET}" >&2
@@ -97,6 +102,24 @@ if ((check)); then
         echo "install.sh: PATH resolves agent-contact to a different command: ${resolved_agent_contact}" >&2
         exit 3
     fi
+    if [[ ! -L "${AGENT_TMUX_TARGET}" ]]; then
+        echo "install.sh: agent-tmux wrapper is not installed as a symlink: ${AGENT_TMUX_TARGET}" >&2
+        exit 3
+    fi
+    if [[ "$(readlink "${AGENT_TMUX_TARGET}")" != "${desired_agent_tmux}" ]]; then
+        echo "install.sh: agent-tmux wrapper points somewhere else: ${AGENT_TMUX_TARGET}" >&2
+        exit 3
+    fi
+    resolved_agent_tmux="$(command -v agent-tmux || true)"
+    if [[ -z "${resolved_agent_tmux}" ]]; then
+        echo "install.sh: agent-tmux is not discoverable on PATH" >&2
+        echo "install.sh: add ${BIN_DIR} to PATH before relying on the installed wrapper" >&2
+        exit 3
+    fi
+    if [[ "${resolved_agent_tmux}" != "${AGENT_TMUX_TARGET}" ]]; then
+        echo "install.sh: PATH resolves agent-tmux to a different command: ${resolved_agent_tmux}" >&2
+        exit 3
+    fi
     if [[ -L "${SKILL_DIR}" ]]; then
         echo "install.sh: installed skill directory is a symlink: ${SKILL_DIR}" >&2
         exit 3
@@ -112,6 +135,7 @@ if ((check)); then
     fi
     echo "agent-contact install check: ok"
     echo "agent-contact: ${AGENT_CONTACT_TARGET}"
+    echo "agent-tmux wrapper: ${AGENT_TMUX_TARGET}"
     echo "agent-tmux-control skill: ${SKILL_TARGET}"
     exit 0
 fi
@@ -124,6 +148,18 @@ if [[ -e "${AGENT_CONTACT_TARGET}" || -L "${AGENT_CONTACT_TARGET}" ]]; then
     if [[ "${current_agent_contact}" != "${desired_agent_contact}" ]]; then
         if ((force == 0)); then
             echo "install.sh: refusing to overwrite divergent agent-contact target without --force: ${AGENT_CONTACT_TARGET}" >&2
+            exit 3
+        fi
+    fi
+fi
+if [[ -e "${AGENT_TMUX_TARGET}" || -L "${AGENT_TMUX_TARGET}" ]]; then
+    current_agent_tmux=""
+    if [[ -L "${AGENT_TMUX_TARGET}" ]]; then
+        current_agent_tmux="$(readlink "${AGENT_TMUX_TARGET}")"
+    fi
+    if [[ "${current_agent_tmux}" != "${desired_agent_tmux}" ]]; then
+        if ((force == 0)); then
+            echo "install.sh: refusing to overwrite divergent agent-tmux wrapper target without --force: ${AGENT_TMUX_TARGET}" >&2
             exit 3
         fi
     fi
@@ -180,6 +216,23 @@ if [[ "${agent_contact_divergent:-0}" == "1" && "${force}" == "1" ]]; then
 fi
 run ln -sfn "${ROOT}/bin/agent-contact" "${AGENT_CONTACT_TARGET}"
 
+if [[ -e "${AGENT_TMUX_TARGET}" || -L "${AGENT_TMUX_TARGET}" ]]; then
+    current_agent_tmux=""
+    if [[ -L "${AGENT_TMUX_TARGET}" ]]; then
+        current_agent_tmux="$(readlink "${AGENT_TMUX_TARGET}")"
+    fi
+    agent_tmux_divergent=0
+    if [[ "${current_agent_tmux}" != "${desired_agent_tmux}" ]]; then
+        agent_tmux_divergent=1
+    fi
+fi
+if [[ "${agent_tmux_divergent:-0}" == "1" && "${force}" == "1" ]]; then
+    backup="${AGENT_TMUX_TARGET}.bak-$(date +%Y%m%dT%H%M%S)"
+    run cp -P "${AGENT_TMUX_TARGET}" "${backup}"
+    echo "backup: ${backup}"
+fi
+run ln -sfn "${ROOT}/bin/agent-tmux" "${AGENT_TMUX_TARGET}"
+
 if ((skill_dir_symlink && force)); then
     backup="${SKILL_DIR}.bak-$(date +%Y%m%dT%H%M%S)"
     run cp -P "${SKILL_DIR}" "${backup}"
@@ -199,4 +252,5 @@ fi
 run cp "${SKILL_SOURCE}" "${SKILL_TARGET}"
 
 echo "agent-contact: ${AGENT_CONTACT_TARGET}"
+echo "agent-tmux wrapper: ${AGENT_TMUX_TARGET}"
 echo "agent-tmux-control skill: ${SKILL_TARGET}"

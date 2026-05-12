@@ -20,6 +20,12 @@ V0 must prove:
 - the message payload contains no bracketed-paste markers or terminal control characters except newline and tab
 - the pasted payload is a single line containing a generated `CONTACT_ID` and `MESSAGE_JSON`, without tmux bracketed-paste wrapping
 - the post-send capture gives delivery evidence, or the result is reported as unproven after mutation
+- installed AgentTerminalContact artifacts can be resolved through a source
+  manifest that reports installed path, source path, install/check commands,
+  ownership, and source-match status in JSON
+- the source-owned `~/.local/bin/agent-tmux` wrapper delegates normal commands
+  unchanged to `/usr/local/bin/agent-tmux` and adds explicit full-permission
+  Codex aliases using `-s danger-full-access -a never`
 
 ## Refusals
 
@@ -39,9 +45,11 @@ The command refuses before sending when:
 - the target pane shows pending user text
 - the target pane shows a trust or approval prompt
 - the target pane is working, dead, or unknown
+- a full-permission `agent-tmux` alias is asked to pass
+  `--dangerously-bypass-approvals-and-sandbox`
 
 ## Non-Goals
 
 V0 does not patch Codex, Claude, or tmux internals. It does not contact
-non-tmux live terminals. It does not update installed skills until this source
-tool is tested.
+non-tmux live terminals. It does not patch `/usr/local/bin/agent-tmux`; the
+source-owned user wrapper delegates to that explicitly non-owned helper.

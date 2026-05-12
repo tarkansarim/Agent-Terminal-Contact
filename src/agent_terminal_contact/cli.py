@@ -12,6 +12,7 @@ import sys
 import time
 from typing import TextIO
 
+from .artifact_ownership import ArtifactLookupError, artifact_info_payload
 from .classifier import PaneState, classify_pane, current_prompt_body
 from .runner import Runner, SubprocessRunner
 from .session import DiscoveryError, revalidate_target, select_target, suggest_trusted_roots
@@ -53,6 +54,8 @@ def main(
         return _send(args, runner, stdout, stderr)
     if args.command == "trust-roots":
         return _trust_roots(args, runner, stdout)
+    if args.command == "artifact-info":
+        return _artifact_info(args, stdout, stderr)
 
     parser.print_help(stderr)
     return EXIT_USAGE
@@ -81,7 +84,66 @@ def _build_parser() -> argparse.ArgumentParser:
     trust_roots.add_argument("--provider", required=True, choices=("codex", "claude"))
     trust_roots.add_argument("--session", help="explicit tmux session name to validate and inspect")
     trust_roots.add_argument("--json", action="store_true", help="emit JSON output")
+
+    artifact_info = subparsers.add_parser(
+        "artifact-info",
+        help="report source ownership for installed AgentTerminalContact artifacts",
+    )
+    artifact_info.add_argument("artifact", nargs="?", help="installed path, command name, or manifest artifact id")
+    artifact_info.add_argument("--all", action="store_true", help="report every artifact in the source manifest")
+    artifact_info.add_argument("--json", action="store_true", help="emit JSON output")
+    artifact_info.add_argument("--manifest", help="artifact ownership manifest path")
     return parser
+
+
+def _artifact_info(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
+    try:
+        payload = artifact_info_payload(
+            args.artifact,
+            all_artifacts=args.all,
+            manifest_path=args.manifest,
+        )
+    except ArtifactLookupError as exc:
+        payload = {
+            "status": "error",
+            "stage": "artifact_lookup",
+            "reason": str(exc),
+        }
+        if args.json:
+            stdout.write(json.dumps(payload, sort_keys=True) + "\n")
+        else:
+            stderr.write(f"agent-contact: artifact lookup error: {exc}\n")
+        return EXIT_USAGE
+
+    if args.json:
+        stdout.write(json.dumps(payload, sort_keys=True) + "\n")
+        return EXIT_OK if payload["matches"] else EXIT_DISCOVERY
+
+    if not payload["matches"]:
+        stdout.write("agent-contact artifact-info: unknown\n")
+        stdout.write(f"query: {args.artifact}\n")
+        stdout.write(f"manifest: {payload['manifest_path']}\n")
+        return EXIT_DISCOVERY
+
+    stdout.write(f"agent-contact artifact-info: {payload['status']}\n")
+    for match in payload["matches"]:
+        stdout.write(f"artifact: {match['id']}\n")
+        stdout.write(f"kind: {match['kind']}\n")
+        stdout.write(f"ownership: {match['ownership']}\n")
+        stdout.write(f"installed_path: {match['installed_path']}\n")
+        stdout.write(f"source_repo: {match['source_repo']}\n")
+        stdout.write(f"source_path: {match['source_path']}\n")
+        stdout.write(f"installed_matches_source: {match['installed_matches_source']}\n")
+        stdout.write(f"match_reason: {match['match_reason']}\n")
+        if match.get("delegates_to"):
+            stdout.write(f"delegates_to: {match['delegates_to']}\n")
+        if match.get("install_command"):
+            stdout.write(f"install_command: {match['install_command']}\n")
+        if match.get("check_command"):
+            stdout.write(f"check_command: {match['check_command']}\n")
+        if match.get("notes"):
+            stdout.write(f"notes: {match['notes']}\n")
+    return EXIT_OK
 
 
 def _trust_roots(args: argparse.Namespace, runner: Runner, stdout: TextIO) -> int:

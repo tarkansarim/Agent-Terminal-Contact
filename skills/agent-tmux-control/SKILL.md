@@ -8,6 +8,10 @@ description: "Use when an agent needs to launch, resume, monitor, message, captu
 Source: AgentTerminalContact guarded-contact skill, version 0.1.0.
 
 Use `agent-tmux` for launch, resume, capture, transcript, attach, and stop.
+On this workstation, the `agent-tmux` command should resolve to the
+AgentTerminalContact source-owned user-level wrapper at `~/.local/bin/agent-tmux`,
+which delegates normal commands unchanged to the non-owned
+`/usr/local/bin/agent-tmux` helper.
 
 Use `agent-contact send` for sending messages to another live terminal agent.
 Raw `agent-tmux send` is a low-level transport primitive and must not be used for
@@ -105,32 +109,45 @@ explicit full-permission work, make the worker permission profile visible in the
 launch command. Do not rely on the supervisor's current sandbox or approval
 settings carrying into the worker.
 
-Use this explicit full-permission profile only when the user asked for it, when
-the worker was relaunched with `sandbox=danger-full-access` and
+Use the first-class full-permission aliases only when the user asked for it,
+when the worker was relaunched with `sandbox=danger-full-access` and
 `ask-for-approval=never`, or when resuming a worker that was blocked by approval
 prompts under a weaker profile:
 
 ```bash
-agent-tmux codex <session> <repo> -s danger-full-access -a never
+agent-tmux codex-full <session> <repo>
 ```
 
 Resume a known Codex thread with the same visible profile:
 
 ```bash
-agent-tmux codex-resume <session> <repo> <thread-name-or-id> -s danger-full-access -a never
+agent-tmux codex-resume-full <session> <repo> <thread-name-or-id>
 ```
 
 Resume the latest recorded Codex thread for a repo with the same visible
-profile:
+profile. This helper resolves the latest thread first and then starts
+`codex ... resume <thread> [prompt]`; it does not pass a prompt to ambiguous
+`resume --last` positional parsing:
 
 ```bash
-agent-tmux codex-resume-latest <session> <repo> -s danger-full-access -a never
+agent-tmux codex-resume-latest-full <session> <repo>
 ```
 
-These flags are Codex CLI flags forwarded by `agent-tmux`; they belong in the
-logged command line so later captures and process inspection show the worker was
-started with `danger-full-access` and `never` approval. Do not use
+The wrapper expands these aliases to Codex CLI flags `-s danger-full-access -a
+never` in the delegated command line so later captures and process inspection
+show the worker was started with `danger-full-access` and `never` approval. Do not use
 `--dangerously-bypass-approvals-and-sandbox` for this workflow.
+
+To inspect source ownership before patching an installed helper, use:
+
+```bash
+agent-contact artifact-info agent-tmux --json
+agent-contact artifact-info /usr/local/bin/agent-tmux --json
+```
+
+The first command should report the source-owned wrapper when `~/.local/bin`
+precedes `/usr/local/bin` on `PATH`; the second reports the delegated system
+helper as explicitly not owned by AgentTerminalContact.
 
 ## Contact Workflow
 
@@ -195,10 +212,23 @@ Start a Codex agent in tmux:
 agent-tmux codex sonicgroom /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2
 ```
 
+Start a full-permission Codex worker in tmux:
+
+```bash
+agent-tmux codex-full sonicgroom /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2
+```
+
 Resume the latest recorded Codex thread for a repo:
 
 ```bash
 agent-tmux codex-resume-latest sonicgroom /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2
+```
+
+Resume the latest recorded Codex thread with the explicit full-permission worker
+profile:
+
+```bash
+agent-tmux codex-resume-latest-full sonicgroom /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2
 ```
 
 Find an existing tmux-managed Codex session for a repo:
