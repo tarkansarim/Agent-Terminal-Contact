@@ -38,19 +38,16 @@ anchored by the provider command found on your current `PATH`.
 - Existing non-tmux agents cannot be safely contacted through this skill. Report that they are outside the guarded channel.
 - Before sending to another Codex/Claude chat, run `agent-contact send --dry-run` or use `agent-contact send` directly.
 - If `agent-contact` refuses, stop. Do not fall back to raw `agent-tmux send`.
-- Unexpected visible composer text in a tmux-managed agent is stale session
-  state to clear, not a message to submit. If a target composer contains text
-  that the current operator did not intentionally put there or ask to preserve,
-  run `agent-tmux clear-input <session>`, capture or dry-run again, and only
-  continue through guarded `agent-contact` after the prompt is idle. Stop
-  instead only when the text is known to be a human draft or the user asked to
-  preserve it.
+- Unexpected visible composer text in a tmux-managed agent is user-owned pending
+  text. Stop and do not clear it, submit it, or send over it unless the user or
+  current operator explicitly approves clearing that exact text.
 - Stale contact residue created by a failed `agent-contact` attempt is not a
   message bypass. If the visible composer clearly contains old guarded-contact
   residue such as `CONTACT_ID: ... MESSAGE_JSON: ...` or Codex's collapsed
   `[Pasted Content N chars]` placeholder after `agent-contact` returned
-  `mutated_unsubmitted`, clear it with `agent-tmux clear-input <session>` and
-  rerun guarded `agent-contact`.
+  `mutated_unsubmitted`, and it is not a human draft, clear only that proven
+  residue with `agent-tmux clear-input <session>` and rerun guarded
+  `agent-contact`.
 - Messages with terminal control bytes or bracketed-paste markers are refused; summarize or sanitize captured terminal output before sending it.
 - The actual paste payload is one `CONTACT_ID ... MESSAGE_JSON ...` line and does not request tmux bracketed-paste wrapping.
 - Real sends to attached tmux sessions are refused; detach or use a tmux-managed worker session for cross-agent contact.
