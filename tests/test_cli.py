@@ -223,6 +223,177 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["pane_id"], "%1")
             self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
 
+    def test_sidecar_contact_uses_artifact_dir_as_repo_selector(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_dir = Path(tmp) / "artifact"
+            artifact_dir.mkdir()
+            runner = FakeRunner(artifact_dir, CODEX_IDLE)
+            runner.responses[("tmux", "list-panes", "-s", "-t", "codex-demo", "-F", PANE_FORMAT)] = CommandResult(
+                (), 0, pane_line("codex-demo", "%1", artifact_dir), ""
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    str(artifact_dir),
+                    "--provider",
+                    "codex",
+                    "--session",
+                    "codex-demo",
+                    "--message",
+                    "follow up",
+                    "--dry-run",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "would_send")
+            self.assertEqual(payload["repo"], str(artifact_dir.resolve()))
+
+    def test_sidecar_contact_uses_repo_root_with_manifest_and_exact_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            artifact_dir = tmp_path / "artifact"
+            repo.mkdir()
+            artifact_dir.mkdir()
+            (artifact_dir / "SIDECAR_REQUEST.txt").write_text(
+                f"session=codex-demo\nrepo={repo}\nallowed_output_dir={artifact_dir}\n",
+                encoding="utf-8",
+            )
+            runner = FakeRunner(repo, CODEX_IDLE)
+            sidecar_pane = pane_line("codex-demo", "%1", artifact_dir)
+            runner.responses[("tmux", "list-panes", "-s", "-t", "codex-demo", "-F", PANE_FORMAT)] = CommandResult(
+                (), 0, sidecar_pane, ""
+            )
+            runner.default_display_message = CommandResult((), 0, sidecar_pane, "")
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    str(repo),
+                    "--provider",
+                    "codex",
+                    "--session",
+                    "codex-demo",
+                    "--message",
+                    "follow up",
+                    "--dry-run",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "would_send")
+            self.assertEqual(payload["repo"], str(repo.resolve()))
+            self.assertEqual(payload["session"], "codex-demo")
+
+    def test_sidecar_contact_refuses_repo_root_when_manifest_session_mismatches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            artifact_dir = tmp_path / "artifact"
+            repo.mkdir()
+            artifact_dir.mkdir()
+            (artifact_dir / "SIDECAR_REQUEST.txt").write_text(
+                f"session=other-session\nrepo={repo}\nallowed_output_dir={artifact_dir}\n",
+                encoding="utf-8",
+            )
+            runner = FakeRunner(repo, CODEX_IDLE)
+            sidecar_pane = pane_line("codex-demo", "%1", artifact_dir)
+            runner.responses[("tmux", "list-panes", "-s", "-t", "codex-demo", "-F", PANE_FORMAT)] = CommandResult(
+                (), 0, sidecar_pane, ""
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    str(repo),
+                    "--provider",
+                    "codex",
+                    "--session",
+                    "codex-demo",
+                    "--message",
+                    "follow up",
+                    "--dry-run",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_DISCOVERY)
+            self.assertEqual(payload["status"], "refused")
+            self.assertIn("no tmux-managed codex pane found", payload["reason"])
+
+    def test_sidecar_followup_send_uses_repo_root_with_manifest_and_exact_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            artifact_dir = tmp_path / "artifact"
+            repo.mkdir()
+            artifact_dir.mkdir()
+            session = "codex-demo"
+            (artifact_dir / "SIDECAR_REQUEST.txt").write_text(
+                f"session={session}\nrepo={repo}\nallowed_output_dir={artifact_dir}\n",
+                encoding="utf-8",
+            )
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact(),
+                    f"{guarded_line()}\n{CODEX_IDLE}",
+                ],
+            )
+            sidecar_pane = pane_line(session, "%1", artifact_dir)
+            runner.responses[("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT)] = CommandResult(
+                (), 0, sidecar_pane, ""
+            )
+            runner.default_display_message = CommandResult((), 0, sidecar_pane, "")
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    str(repo),
+                    "--provider",
+                    "codex",
+                    "--session",
+                    session,
+                    "--message",
+                    "follow up",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertEqual(payload["repo"], str(repo.resolve()))
+            self.assertEqual(payload["session"], session)
+            self.assertTrue(payload["delivery_proven"])
+
     def test_dry_run_would_send_from_codex_starter_placeholder(self):
         with tempfile.TemporaryDirectory() as repo:
             runner = FakeRunner(repo, CODEX_STARTER, cursor_x=2)

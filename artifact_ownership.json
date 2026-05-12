@@ -23,7 +23,7 @@
       "check_command": "cd {source_repo} && bash scripts/install.sh --check",
       "command_names": ["agent-tmux"],
       "delegates_to": "/usr/local/bin/agent-tmux",
-      "notes": "Source-owned user wrapper that preserves normal agent-tmux behavior and adds explicit full-permission Codex worker aliases."
+      "notes": "Source-owned user wrapper that preserves normal agent-tmux behavior and adds explicit full-permission Codex worker aliases plus patch-artifact code-map sidecar aliases."
     },
     {
       "id": "agent-tmux-control-skill",

@@ -69,6 +69,15 @@ def write_provider_package(root, provider="codex"):
     return script
 
 
+def write_sidecar_request(artifact_dir, *, session, repo):
+    Path(artifact_dir, "SIDECAR_REQUEST.txt").write_text(
+        f"session={session}\n"
+        f"repo={Path(repo).resolve()}\n"
+        f"allowed_output_dir={Path(artifact_dir).resolve()}\n",
+        encoding="utf-8",
+    )
+
+
 def ps_response(pid=1234, args="node /home/tarkan/.nvm/lib/node_modules/@openai/codex/bin/codex.js --no-alt-screen"):
     return {("ps", "-p", str(pid), "-o", "args="): CommandResult((), 0, args + "\n", "")}
 
@@ -873,6 +882,131 @@ class SessionDiscoveryTests(unittest.TestCase):
                     explicit_session="agent-terminal-contact",
                 )
             self.assertEqual(selected.pane.provider_evidence, "pane process args match codex")
+
+    def test_explicit_sidecar_session_matches_original_repo_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            artifact_dir = tmp_path / "sidecar-artifact"
+            repo.mkdir()
+            artifact_dir.mkdir()
+            session = "codex-map-repo-ticket58-123456789abc"
+            write_sidecar_request(artifact_dir, session=session, repo=repo)
+            script = write_provider_package(repo)
+            args = f"node {script}"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line(session, "%1", artifact_dir), ""
+                    ),
+                    ("tmux", "display-message", "-p", "-t", "%1", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line(session, "%1", artifact_dir), ""
+                    ),
+                    **tty_response(args=args, pid=1234),
+                    **proc_response(args=args),
+                }
+            )
+            with trusted_provider_root(repo):
+                selected = select_target(
+                    repo=str(repo),
+                    provider="codex",
+                    runner=runner,
+                    explicit_session=session,
+                )
+                revalidated = revalidate_target(selected, runner)
+            self.assertEqual(selected.repo, str(repo.resolve()))
+            self.assertEqual(selected.expected_pane_path, str(artifact_dir.resolve()))
+            self.assertEqual(selected.pane.session_name, session)
+            self.assertEqual(revalidated.path, str(artifact_dir.resolve()))
+
+    def test_implicit_discovery_refuses_sidecar_manifest_repo_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            artifact_dir = tmp_path / "sidecar-artifact"
+            repo.mkdir()
+            artifact_dir.mkdir()
+            session = "codex-map-repo-ticket58-123456789abc"
+            write_sidecar_request(artifact_dir, session=session, repo=repo)
+            script = write_provider_package(repo)
+            args = f"node {script}"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-a", "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line(session, "%1", artifact_dir), ""
+                    ),
+                    **tty_response(args=args, pid=1234),
+                    **proc_response(args=args),
+                }
+            )
+            with trusted_provider_root(repo):
+                with self.assertRaisesRegex(DiscoveryError, "no tmux-managed codex pane"):
+                    select_target(repo=str(repo), provider="codex", runner=runner)
+
+    def test_explicit_sidecar_session_refuses_manifest_session_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            artifact_dir = tmp_path / "sidecar-artifact"
+            repo.mkdir()
+            artifact_dir.mkdir()
+            session = "codex-map-repo-ticket58-123456789abc"
+            write_sidecar_request(artifact_dir, session="codex-map-other-123456789abc", repo=repo)
+            script = write_provider_package(repo)
+            args = f"node {script}"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line(session, "%1", artifact_dir), ""
+                    ),
+                    **tty_response(args=args, pid=1234),
+                    **proc_response(args=args),
+                }
+            )
+            with trusted_provider_root(repo):
+                with self.assertRaisesRegex(DiscoveryError, "no tmux-managed codex pane"):
+                    select_target(
+                        repo=str(repo),
+                        provider="codex",
+                        runner=runner,
+                        explicit_session=session,
+                    )
+
+    def test_sidecar_revalidate_refuses_artifact_path_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            artifact_dir = tmp_path / "sidecar-artifact"
+            other_artifact_dir = tmp_path / "other-sidecar-artifact"
+            repo.mkdir()
+            artifact_dir.mkdir()
+            other_artifact_dir.mkdir()
+            session = "codex-map-repo-ticket58-123456789abc"
+            write_sidecar_request(artifact_dir, session=session, repo=repo)
+            write_sidecar_request(other_artifact_dir, session=session, repo=repo)
+            script = write_provider_package(repo)
+            args = f"node {script}"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line(session, "%1", artifact_dir), ""
+                    ),
+                    ("tmux", "display-message", "-p", "-t", "%1", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line(session, "%1", other_artifact_dir), ""
+                    ),
+                    **tty_response(args=args, pid=1234),
+                    **proc_response(args=args),
+                }
+            )
+            with trusted_provider_root(repo):
+                selected = select_target(
+                    repo=str(repo),
+                    provider="codex",
+                    runner=runner,
+                    explicit_session=session,
+                )
+                with self.assertRaisesRegex(DiscoveryError, "moved from"):
+                    revalidate_target(selected, runner)
 
     def test_explicit_session_refuses_matching_panes_across_windows(self):
         with tempfile.TemporaryDirectory() as repo:

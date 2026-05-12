@@ -80,6 +80,7 @@ class TargetSelection:
     provider: str
     pane: TmuxPane
     candidates: tuple[TmuxPane, ...]
+    expected_pane_path: str
 
 
 @dataclass(frozen=True)
@@ -105,23 +106,30 @@ def select_target(
     provider = _normalize_provider(provider)
 
     panes = _list_panes(runner, explicit_session=explicit_session)
-    candidates = tuple(
-        pane
-        for pane in panes
-        if not pane.dead
-        if _resolve_path(pane.path) == repo_path
-        for pane in [_with_provider_evidence(pane, provider, runner)]
-        if pane is not None
-    )
+    candidates: list[tuple[TmuxPane, str]] = []
+    for pane in panes:
+        if pane.dead:
+            continue
+        expected_pane_path = _expected_pane_path_for_repo(
+            pane,
+            repo_path,
+            explicit_session=explicit_session,
+        )
+        if expected_pane_path is None:
+            continue
+        matched = _with_provider_evidence(pane, provider, runner)
+        if matched is not None:
+            candidates.append((matched, expected_pane_path))
 
     if not candidates:
         scope = f" in session {explicit_session!r}" if explicit_session else ""
         raise DiscoveryError(f"no tmux-managed {provider} pane found for {repo_path}{scope}")
     if len(candidates) > 1:
-        names = ", ".join(f"{pane.session_name}:{pane.pane_id}" for pane in candidates)
+        names = ", ".join(f"{pane.session_name}:{pane.pane_id}" for pane, _expected in candidates)
         raise DiscoveryError(f"multiple tmux-managed {provider} panes found for {repo_path}: {names}")
 
-    return TargetSelection(repo_path, provider, candidates[0], candidates)
+    pane, expected_pane_path = candidates[0]
+    return TargetSelection(repo_path, provider, pane, tuple(candidate for candidate, _expected in candidates), expected_pane_path)
 
 
 def suggest_trusted_roots(
@@ -138,7 +146,9 @@ def suggest_trusted_roots(
     opposite = "claude" if provider == "codex" else "codex"
 
     for pane in panes:
-        if pane.dead or _resolve_path(pane.path) != repo_path:
+        if pane.dead:
+            continue
+        if _expected_pane_path_for_repo(pane, repo_path, explicit_session=explicit_session) is None:
             continue
         if opposite in pane.session_name.lower():
             continue
@@ -158,9 +168,9 @@ def revalidate_target(selection: TargetSelection, runner: Runner) -> TmuxPane:
         raise DiscoveryError(f"target pane {selection.pane.pane_id} is dead")
     if current.attached > 0:
         raise DiscoveryError(f"target pane {selection.pane.pane_id} session is attached")
-    if _resolve_path(current.path) != selection.repo:
+    if _resolve_path(current.path) != selection.expected_pane_path:
         raise DiscoveryError(
-            f"target pane {selection.pane.pane_id} moved from {selection.repo!r} to {current.path!r}"
+            f"target pane {selection.pane.pane_id} moved from {selection.expected_pane_path!r} to {current.path!r}"
         )
     if current.command != selection.pane.command or current.pid != selection.pane.pid:
         raise DiscoveryError(
@@ -213,6 +223,71 @@ def _list_panes(runner: Runner, *, explicit_session: str | None) -> tuple[TmuxPa
         detail = (result.stderr or result.stdout).strip()
         raise DiscoveryError(f"tmux pane discovery failed: {detail}")
     return tuple(_parse_pane_lines(result.stdout.splitlines(), source="list-panes"))
+
+
+def _expected_pane_path_for_repo(
+    pane: TmuxPane,
+    repo_path: str,
+    *,
+    explicit_session: str | None,
+) -> str | None:
+    pane_path = _resolve_path(pane.path)
+    if pane_path == repo_path:
+        return pane_path
+    if explicit_session is None:
+        return None
+    manifest = _sidecar_request_for_pane(pane, repo_path)
+    if manifest is None:
+        return None
+    return manifest.artifact_dir
+
+
+@dataclass(frozen=True)
+class SidecarRequest:
+    session: str
+    repo: str
+    artifact_dir: str
+
+
+def _sidecar_request_for_pane(pane: TmuxPane, repo_path: str) -> SidecarRequest | None:
+    artifact_dir = Path(pane.path).expanduser()
+    try:
+        if artifact_dir.is_symlink() or not artifact_dir.is_dir():
+            return None
+        resolved_artifact_dir = str(artifact_dir.resolve(strict=True))
+    except OSError:
+        return None
+    request_file = artifact_dir / "SIDECAR_REQUEST.txt"
+    try:
+        if request_file.is_symlink() or not request_file.is_file() or request_file.stat().st_size > 65536:
+            return None
+        text = request_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    fields: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        if not raw_line or "=" not in raw_line:
+            continue
+        key, value = raw_line.split("=", 1)
+        if key in fields:
+            return None
+        fields[key] = value
+    try:
+        manifest_repo = _resolve_existing_repo(fields["repo"])
+        manifest_artifact_dir = str(Path(fields["allowed_output_dir"]).expanduser().resolve(strict=True))
+    except (KeyError, DiscoveryError, OSError):
+        return None
+    if fields.get("session") != pane.session_name:
+        return None
+    if manifest_repo != repo_path:
+        return None
+    if manifest_artifact_dir != resolved_artifact_dir:
+        return None
+    return SidecarRequest(
+        session=pane.session_name,
+        repo=manifest_repo,
+        artifact_dir=resolved_artifact_dir,
+    )
 
 
 def _parse_pane_lines(lines: Sequence[str], *, source: str) -> list[TmuxPane]:

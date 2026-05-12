@@ -152,6 +152,109 @@ recognizes the legacy supervise-style shape `agent-tmux codex-resume-latest
 <session> <repo> -s danger-full-access -a never [prompt]` and routes it through
 the same deterministic latest-thread path.
 
+## Code-Map Sidecar Workers
+
+Use the source-owned wrapper for a code-map patch-artifact sidecar when a
+supervisor needs a short-lived Codex worker to inspect source and produce
+reviewable map-update artifacts without touching production files:
+
+```bash
+agent-tmux codex-code-map-sidecar <repo> <anchor> [focus prompt...]
+```
+
+For a Rewind/Codex fork anchor, pass the session id from the generated
+`codex fork <session-id>` command instead of pasting that command into an
+existing pane:
+
+```bash
+agent-tmux codex-code-map-sidecar-fork <repo> <anchor> <codex-session-id> [focus prompt...]
+```
+
+The sidecar session name is deterministic from the resolved repo root and
+anchor. If that session already exists, the wrapper refuses; change the anchor
+to launch a new sidecar. Do not use or overwrite old same-repo tmux sessions.
+The sidecar route does not select a live owner lane, does not send to an
+existing pane, and does not bypass `agent-contact` for follow-up messages.
+
+The wrapper launches Codex from an isolated artifact directory with a visible
+workspace-write permission profile, disabled network access for model-run shell
+commands, and artifact-local `CODEX_HOME` deny-read for model-run shell
+commands. It injects a map-only prompt. The prompt gives the repo root as a
+read-only input path and the artifact directory as the only writable output path.
+The sidecar may write
+artifacts such as `MAP_REPORT.md`, `PROPOSED_CHANGES.patch`, or proposed
+map/project-memory file contents under the artifact directory. Applyable
+patch/file artifacts may target only
+`.project-memory/**`, `docs/CODEBASE_ARCHITECTURE_INDEX.md`,
+`docs/CODEBASE_SUBSYSTEM_MANIFEST.json`, `docs/SUBSYSTEMS/*.md`, `CODE_MAP.md`,
+`PROJECT_MEMORY.md`, `docs/CODE_MAP.md`, or `docs/PROJECT_MEMORY.md`. The
+sidecar must not edit production source, tests, config, install scripts,
+user-level files, or generated artifacts in place; do not run `apply_patch`,
+commit, install, roll out, dispatch tickets, contact other agents, or mutate
+tmux sessions. The supervisor applies accepted map edits later through the
+normal source workflow, with validation and commit evidence. The final
+deterministic artifact directory must not already exist or be a symlink; the
+wrapper creates it atomically and refuses paths that resolve inside the
+repository root.
+
+The Codex process runs under `bwrap`: `/` is read-only, host home is hidden
+except for the Codex executable path, `/usr/local/bin` is hidden, `/dev` is a
+private bwrap device filesystem, `/dev/shm` is overlaid read-only, the artifact
+directory is the writable persistent bind, and `/tmp` and `/run` are private so
+tmux sockets are not exposed. Codex `HOME`/`CODEX_HOME` live under
+`.agent-tmux-runtime/` inside the artifact directory. In fork mode, the wrapper
+copies only the requested Codex session file into the artifact-local
+`CODEX_HOME` before launch. Codex auth/session files are wrapper-managed runtime
+inputs; the sidecar's permission profile deny-reads artifact-local `CODEX_HOME`
+from model-run shell commands and disables shell network access. Auth/session
+material must not be copied into sidecar artifacts. The wrapper refuses an
+artifact root that resolves inside the repository root.
+
+Before applying sidecar output, validate the artifact directory:
+
+```bash
+agent-tmux codex-code-map-validate-artifacts <artifact-dir>
+```
+
+The validator rejects `PROPOSED_CHANGES.patch` and `PROPOSED_FILES/` entries
+that target non-map paths, and rejects symlink or non-regular proposed artifact
+entries, including patch modes that would create symlinks or other non-regular
+files. It also rejects unsupported patch path header formats, symlink or
+non-regular entries anywhere in the sidecar artifact tree, binary content in
+supervisor-consumed artifacts, and direct Codex auth material or obvious
+auth/session key structures in supervisor-consumed artifacts. Regular
+`.agent-tmux-runtime/` files are ignored for map application. The artifact
+directory passed to the validator must itself be a real directory, not a
+symlink. Treat rejected artifacts as out of sidecar scope.
+
+The wrapper prints the sidecar session, artifact directory, and log path before
+launch. Capture them for audit:
+
+```bash
+agent-tmux log <sidecar-session>
+agent-tmux transcript <sidecar-session> all
+ls <artifact-dir>
+```
+
+If a follow-up message is needed after launch, target only the known sidecar
+session and dry-run guarded contact first. For wrapper-launched sidecars,
+`agent-contact` accepts the original repository root when an exact session is
+provided and validates the sidecar's artifact-local `SIDECAR_REQUEST.txt`
+manifest before selecting the pane:
+
+```bash
+agent-contact send --repo <repo> --provider codex --session <sidecar-session> --message "..." --dry-run
+# Also accepted because the sidecar pane cwd is the artifact directory:
+agent-contact send --repo <artifact-dir> --provider codex --session <sidecar-session> --message "..." --dry-run
+```
+
+If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed.
+Visible composer text is user-owned pending text unless it is narrowly proven
+guarded-contact residue from that failed send. Clear only proven residue with
+`agent-tmux clear-input <sidecar-session>` and relaunch a new sidecar with a new
+anchor for the revised focus. Do not fall back to raw `agent-tmux send` unless
+the current operator explicitly authorizes that exact bypass.
+
 To inspect source ownership before patching an installed helper, use:
 
 ```bash
