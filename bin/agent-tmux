@@ -1410,17 +1410,13 @@ def collect_normalized_keys(value) -> set[str]:
     return keys
 
 
-def looks_like_session_json_record(line: str) -> bool:
-    candidate = strip_record_prefixes(line).strip()
-    if not (candidate.startswith("{") and candidate.endswith("}")):
+JSON_DECODER = json.JSONDecoder()
+
+
+def json_value_looks_like_session(value) -> bool:
+    if not isinstance(value, (dict, list)):
         return False
-    try:
-        parsed = json.loads(candidate)
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(parsed, dict):
-        return False
-    normalized_keys = collect_normalized_keys(parsed)
+    normalized_keys = collect_normalized_keys(value)
     if {"role", "content"} <= normalized_keys:
         return True
     if "timestamp" in normalized_keys and bool(
@@ -1428,6 +1424,20 @@ def looks_like_session_json_record(line: str) -> bool:
     ):
         return True
     return "type" in normalized_keys and bool(normalized_keys & SESSION_JSON_CONTEXT_KEYS)
+
+
+def iter_json_prefix_values(text: str):
+    for match in re.finditer(r"[\{\[]", text):
+        try:
+            parsed, _ = JSON_DECODER.raw_decode(text[match.start():])
+        except json.JSONDecodeError:
+            continue
+        yield parsed
+
+
+def looks_like_session_json_record(line: str) -> bool:
+    candidate = strip_record_prefixes(line).strip()
+    return any(json_value_looks_like_session(value) for value in iter_json_prefix_values(candidate))
 
 
 def strip_record_prefixes(line: str) -> str:
@@ -1487,6 +1497,9 @@ with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
         fail()
     lines = content.splitlines()
     structured_lines = [strip_record_prefixes(line) for line in lines]
+    structured_content = "\n".join(structured_lines)
+    if any(json_value_looks_like_session(value) for value in iter_json_prefix_values(structured_content)):
+        fail()
     for index, line in enumerate(lines):
         if private_key_re.search(line) or session_record_type_re.search(line) or looks_like_session_json_record(line):
             fail()

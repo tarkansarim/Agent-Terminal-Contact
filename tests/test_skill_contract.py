@@ -2304,7 +2304,7 @@ class SkillContractTests(unittest.TestCase):
     def test_agent_tmux_code_map_artifact_validator_rejects_generic_session_jsonl_records(self):
         cases = {
             "MAP_REPORT.md": (
-                '{"timestamp":"2026-05-13T00:00:00Z","type":"user_message","message":"copied transcript"}\n'
+                '{"timestamp":"2026-05-13T00:00:00Z","type":"user_message","message":"copied transcript"},\n'
             ),
             "PROPOSED_FILES/.project-memory/code-map/session.md": (
                 '{"type":"assistant_message","content":[{"text":"copied transcript"}]}\n'
@@ -2312,14 +2312,30 @@ class SkillContractTests(unittest.TestCase):
             "PROPOSED_FILES/.project-memory/code-map/transcript.jsonl": (
                 '{"timestamp":"2026-05-13T00:00:00Z","role":"user","content":"copied transcript"}\n'
             ),
+            "PROPOSED_FILES/.project-memory/code-map/transcript.json": (
+                "[\n"
+                "  {\n"
+                '    "timestamp": "2026-05-13T00:00:00Z",\n'
+                '    "role": "user",\n'
+                '    "content": "copied transcript"\n'
+                "  }\n"
+                "]\n"
+            ),
             "PROPOSED_CHANGES.patch": (
                 "diff --git a/docs/CODE_MAP.md b/docs/CODE_MAP.md\n"
                 "--- a/docs/CODE_MAP.md\n"
                 "+++ b/docs/CODE_MAP.md\n"
-                "@@ -1 +1 @@\n"
-                "-old\n"
+                "@@ -0,0 +1,10 @@\n"
                 '+{"timestamp":"2026-05-13T00:00:00Z","type":"event","payload":{"message":"copied transcript"}}\n'
                 '+{"type":"event","data":{"timestamp":"2026-05-13T00:00:00Z","message":"copied transcript","role":"assistant","content":"text"}}\n'
+                '+{"timestamp":"2026-05-13T00:00:00Z","role":"user","content":"copied transcript"},\n'
+                "+[\n"
+                "+  {\n"
+                '+    "timestamp": "2026-05-13T00:00:00Z",\n'
+                '+    "role": "user",\n'
+                '+    "content": "copied transcript"\n'
+                "+  }\n"
+                "+]\n"
             ),
         }
         for rel_path, content in cases.items():
