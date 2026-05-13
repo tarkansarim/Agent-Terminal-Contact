@@ -666,7 +666,7 @@ is_safe_relative_path() {
     [[ -n "${path}" ]] || return 1
     [[ "${path}" != /* ]] || return 1
     [[ "${path}" != -* ]] || return 1
-    [[ "${path}" != *$'\t'* && "${path}" != *$'\r'* ]] || return 1
+    [[ "${path}" != *$'\t'* && "${path}" != *$'\r'* && "${path}" != *$'\n'* ]] || return 1
     case "/${path}/" in
         *"/../"*|*"/./"*) return 1 ;;
     esac
@@ -949,7 +949,7 @@ path_has_code_map_runtime_or_auth_component() {
     for component in "${components[@]}"; do
         normalized="${component,,}"
         case "${normalized}" in
-            .agent-tmux-runtime|.agent-tmux-sidecar-runtime|codex-home|.codex|sessions|auth.json|session_index.jsonl)
+            .agent-tmux-runtime|.agent-tmux-sidecar-runtime|codex-home|.codex|sessions|session|session.*|session-*|session_*|auth|auth.*|auth-*|auth_*|*token*|credential|credential.*|credential-*|credential_*|secret|secret.*|secret-*|secret_*|session_index.jsonl)
                 return 0
                 ;;
         esac
