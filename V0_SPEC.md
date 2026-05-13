@@ -26,6 +26,11 @@ V0 must prove:
 - the source-owned `~/.local/bin/agent-tmux` wrapper delegates normal commands
   unchanged to `/usr/local/bin/agent-tmux` and adds explicit full-permission
   Codex aliases using `-s danger-full-access -a never`
+- exact-session `agent-tmux codex-existing <repo> <session>` is source-owned
+  for the supplied session name: it verifies that exact tmux session exists, is
+  rooted at the requested repo, and is Codex-like before returning it, and exact
+  absence or mismatch is reported as precise session evidence rather than a
+  delegated multiple-session refusal
 - the source-owned `~/.local/bin/agent-tmux` wrapper provides patch-artifact
   code-map sidecar aliases that derive deterministic session names from the
   resolved repo root and anchor, launch Codex from an isolated artifact
@@ -92,6 +97,8 @@ The command refuses before sending when:
 - provider evidence relies on a broad parent trusted root instead of the exact package root
 - provider identity uses a bare Node-style launcher outside explicit trusted launcher roots
 - provider identity uses a Node executable with a spoofed provider entrypoint in `argv[0]`
+- exact-session `agent-tmux codex-existing <repo> <session>` sees the supplied
+  session is absent, rooted at a different path, or not Codex-like
 - the selected pane changes cwd, process command, pid, or provider evidence before send
 - a real send targets a tmux session currently attached to a client
 - the message contains a bracketed-paste marker or C0/C1 control character other than newline or tab

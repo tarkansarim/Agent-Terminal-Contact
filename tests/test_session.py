@@ -42,6 +42,40 @@ def trusted_provider_root(root):
             os.environ["AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS"] = old_launcher_value
 
 
+@contextmanager
+def trusted_provider_root_without_launcher(root):
+    old_value = os.environ.get("AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS")
+    old_launcher_value = os.environ.get("AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS")
+    os.environ["AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS"] = str(Path(root).resolve() / "node_modules" / "@openai" / "codex")
+    os.environ.pop("AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS", None)
+    try:
+        yield
+    finally:
+        if old_value is None:
+            os.environ.pop("AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS", None)
+        else:
+            os.environ["AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS"] = old_value
+        if old_launcher_value is None:
+            os.environ.pop("AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS", None)
+        else:
+            os.environ["AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS"] = old_launcher_value
+
+
+@contextmanager
+def without_trusted_roots():
+    old_value = os.environ.get("AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS")
+    old_launcher_value = os.environ.get("AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS")
+    os.environ.pop("AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS", None)
+    os.environ.pop("AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS", None)
+    try:
+        yield
+    finally:
+        if old_value is not None:
+            os.environ["AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS"] = old_value
+        if old_launcher_value is not None:
+            os.environ["AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS"] = old_launcher_value
+
+
 class FakeRunner:
     def __init__(self, responses):
         self.responses = responses
@@ -74,6 +108,24 @@ def write_provider_package(root, provider="codex"):
     script.write_text("#!/usr/bin/env node\n", encoding="utf-8")
     (package_root / "package.json").write_text(package_json, encoding="utf-8")
     return script
+
+
+def write_codex_native_binary(root):
+    script = write_provider_package(root, provider="codex")
+    package_root = script.parents[1]
+    native = (
+        package_root
+        / "node_modules"
+        / "@openai"
+        / "codex-linux-x64"
+        / "vendor"
+        / "x86_64-unknown-linux-musl"
+        / "codex"
+        / "codex"
+    )
+    native.parent.mkdir(parents=True)
+    native.write_text("#!/bin/sh\n", encoding="utf-8")
+    return script, native
 
 
 def write_sidecar_request(artifact_dir, *, session, repo):
@@ -897,6 +949,70 @@ class SessionDiscoveryTests(unittest.TestCase):
                     explicit_session="agent-terminal-contact",
                 )
             self.assertEqual(selected.pane.provider_evidence, "pane process args match codex")
+
+    def test_exact_node_pane_selects_native_codex_child_without_trusted_launcher_root(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = Path(root) / "repo"
+            repo.mkdir()
+            script, native = write_codex_native_binary(root)
+            node_args = f"node {script} --no-alt-screen"
+            native_args = f"{native} --no-alt-screen"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-s", "-t", "owner-ticket63", "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line("owner-ticket63", "%1", repo, command="node", pid=100), ""
+                    ),
+                    ("ps", "-t", "/dev/pts/7", "-o", "pid=,ppid=,pgid=,stat=,args="): CommandResult(
+                        (),
+                        0,
+                        f"100 1 100 Ssl+ {node_args}\n"
+                        f"200 100 100 Sl+ {native_args}\n",
+                        "",
+                    ),
+                    **proc_response(pid=100, args=node_args),
+                    **proc_response(pid=200, args=native_args, exe=str(native)),
+                }
+            )
+            with trusted_provider_root_without_launcher(root):
+                selected = select_target(
+                    repo=str(repo),
+                    provider="codex",
+                    runner=runner,
+                    explicit_session="owner-ticket63",
+                )
+            self.assertEqual(selected.pane.command, "node")
+            self.assertEqual(selected.pane.provider_pid, 200)
+            self.assertIn("codex-linux-x64", selected.pane.process_args)
+
+    def test_exact_node_pane_without_trusted_roots_reports_candidate_identity(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = Path(root) / "repo"
+            repo.mkdir()
+            script, native = write_codex_native_binary(root)
+            native_args = f"{native} --no-alt-screen"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-s", "-t", "owner-ticket63", "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line("owner-ticket63", "%1", repo, command="node", pid=100), ""
+                    ),
+                    ("ps", "-t", "/dev/pts/7", "-o", "pid=,ppid=,pgid=,stat=,args="): CommandResult(
+                        (), 0, f"200 100 100 Sl+ {native_args}\n", ""
+                    ),
+                    **proc_response(pid=200, args=native_args, exe=str(native)),
+                    ("bash", "-lc", "command -v -- codex"): CommandResult((), 0, f"{script}\n", ""),
+                }
+            )
+            with without_trusted_roots():
+                with self.assertRaisesRegex(
+                    DiscoveryError,
+                    "candidate codex pane found.*provider_pid=200.*AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS",
+                ):
+                    select_target(
+                        repo=str(repo),
+                        provider="codex",
+                        runner=runner,
+                        explicit_session="owner-ticket63",
+                    )
 
     def test_explicit_sidecar_session_matches_original_repo_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:

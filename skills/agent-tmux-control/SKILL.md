@@ -102,6 +102,10 @@ exists.
 The source-owned wrapper normalizes `agent-tmux codex-existing <repo>` for
 machine callers: a true no-existing-session result is `rc=1`, empty stdout, and
 one stderr line beginning `agent-tmux: no Codex tmux session found for workdir:`.
+When an exact preferred session is supplied with
+`agent-tmux codex-existing <repo> <session>`, the wrapper source-inspects that
+exact tmux session name; exact absence, wrong-repo, or not-Codex-like evidence
+must not collapse into a delegated multiple-session refusal.
 Treat other non-zero shapes as ambiguous or broken helper output.
 
 ## Codex Worker Permission Profile

@@ -48,6 +48,26 @@ die() {
     exit 2
 }
 
+validate_session_name() {
+    local session="$1"
+    [[ "${session}" =~ ^[A-Za-z0-9_.-]+$ ]] || die "session name must match [A-Za-z0-9_.-]+"
+}
+
+is_codex_like_session() {
+    local session="$1"
+    local command_name="$2"
+
+    case "${session}" in
+        codex-*|*-codex-*|*Codex*) return 0 ;;
+    esac
+
+    case "${command_name}" in
+        codex|node) return 0 ;;
+    esac
+
+    return 1
+}
+
 resolved_path() {
     local path="$1"
     if command -v realpath >/dev/null 2>&1; then
@@ -2150,6 +2170,10 @@ delegate_new_codex_session() {
 
 delegate_codex_existing() {
     (($# >= 1 && $# <= 2)) || die "codex-existing requires <workdir> [preferred-session]"
+    if (($# == 2)); then
+        inspect_exact_codex_existing "$@"
+        return
+    fi
     require_delegate
     local stdout_file
     local stderr_file
@@ -2175,6 +2199,55 @@ delegate_codex_existing() {
         echo "agent-tmux: no Codex tmux session found for workdir: $(resolved_path "$1")" >&2
     fi
     return "${rc}"
+}
+
+inspect_exact_codex_existing() {
+    local workdir="$1"
+    local preferred="$2"
+    validate_session_name "${preferred}"
+    local resolved_workdir
+    resolved_workdir="$(canonical_workdir "${workdir}")"
+    command -v tmux >/dev/null 2>&1 || die "tmux is required for exact codex-existing inspection"
+
+    local exact_session_target="=${preferred}"
+    local exact_display_target="=${preferred}:"
+    if ! tmux has-session -t "${exact_session_target}" >/dev/null 2>&1; then
+        echo "agent-tmux: no Codex tmux session found for workdir: ${resolved_workdir}; session: ${preferred}" >&2
+        return 1
+    fi
+
+    local pane_path
+    local pane_command
+    local detail
+    if ! pane_path="$(tmux display-message -p -t "${exact_display_target}" '#{pane_current_path}' 2>&1)"; then
+        detail="${pane_path//$'\n'/ }"
+        echo "agent-tmux: failed to inspect exact Codex session path: ${preferred}: ${detail:-tmux display-message failed}" >&2
+        return 3
+    fi
+    if [[ -z "${pane_path}" ]]; then
+        echo "agent-tmux: exact Codex session ${preferred} reported empty pane_current_path" >&2
+        return 3
+    fi
+    if ! pane_command="$(tmux display-message -p -t "${exact_display_target}" '#{pane_current_command}' 2>&1)"; then
+        detail="${pane_command//$'\n'/ }"
+        echo "agent-tmux: failed to inspect exact Codex session command: ${preferred}: ${detail:-tmux display-message failed}" >&2
+        return 3
+    fi
+    if [[ -z "${pane_command}" ]]; then
+        echo "agent-tmux: exact Codex session ${preferred} reported empty pane_current_command" >&2
+        return 3
+    fi
+    local resolved_pane_path
+    resolved_pane_path="$(resolved_path "${pane_path}")"
+    if [[ "${resolved_pane_path}" != "${resolved_workdir}" ]]; then
+        echo "agent-tmux: exact Codex session ${preferred} is not for requested workdir: ${resolved_workdir}; pane_current_path: ${resolved_pane_path}" >&2
+        return 3
+    fi
+    if ! is_codex_like_session "${preferred}" "${pane_command}"; then
+        echo "agent-tmux: exact session ${preferred} is not Codex-like for ${resolved_workdir}; pane_current_command: ${pane_command}" >&2
+        return 3
+    fi
+    printf "%s\n" "${preferred}"
 }
 
 latest_thread_for_workdir() {

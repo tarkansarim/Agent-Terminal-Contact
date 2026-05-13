@@ -200,6 +200,8 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("Codex launch/resume routes through this wrapper require the requested tmux", text)
         self.assertIn("legacy supervise-style shape", text)
         self.assertIn("a true no-existing-session result is `rc=1`, empty stdout", text)
+        self.assertIn("the wrapper source-inspects that\nexact tmux session name", text)
+        self.assertIn("must not collapse into a delegated multiple-session refusal", text)
         self.assertIn("Latest-thread parsing for these aliases is fail-closed", text)
         self.assertIn("source-owned user-level wrapper", text)
         self.assertIn("/usr/local/bin/agent-tmux", text)
@@ -3923,6 +3925,106 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual("", result.stdout)
             self.assertEqual("agent-tmux: multiple detached Codex tmux sessions\n", result.stderr)
             self.assertNotIn("no Codex tmux session found", result.stderr)
+
+    def test_agent_tmux_codex_existing_exact_missing_session_does_not_delegate_to_ambiguity(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            capture = tmp_path / "delegate-called.txt"
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            tmux = bin_dir / "tmux"
+            tmux.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has-session ]; then\n"
+                "  printf 'missing exact session\\n' >&2\n"
+                "  exit 1\n"
+                "fi\n"
+                "printf 'unexpected tmux command: %s\\n' \"$*\" >&2\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            tmux.chmod(0o755)
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf 'called\\n' >\"${AGENT_TMUX_CAPTURE}\"\n"
+                "printf 'agent-tmux: multiple detached Codex tmux sessions\\n' >&2\n"
+                "exit 3\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-existing", repo, "owner-missing-63"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "PATH": f"{bin_dir}:/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual("", result.stdout)
+            self.assertIn("no Codex tmux session found for workdir:", result.stderr)
+            self.assertIn("session: owner-missing-63", result.stderr)
+            self.assertFalse(capture.exists())
+
+    def test_agent_tmux_codex_existing_exact_existing_session_is_source_inspected(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            resolved_repo = Path(repo).resolve()
+            capture = tmp_path / "delegate-called.txt"
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            tmux = bin_dir / "tmux"
+            tmux.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has-session ]; then\n"
+                "  [ \"$3\" = '=owner-present-63' ] && exit 0\n"
+                "  exit 1\n"
+                "fi\n"
+                "if [ \"$1\" = display-message ] && [ \"$4\" = '=owner-present-63:' ] && [ \"$5\" = '#{pane_current_path}' ]; then\n"
+                f"  printf '%s\\n' '{resolved_repo}'\n"
+                "  exit 0\n"
+                "fi\n"
+                "if [ \"$1\" = display-message ] && [ \"$4\" = '=owner-present-63:' ] && [ \"$5\" = '#{pane_current_command}' ]; then\n"
+                "  printf 'node\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "printf 'unexpected tmux command: %s\\n' \"$*\" >&2\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            tmux.chmod(0o755)
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf 'called\\n' >\"${AGENT_TMUX_CAPTURE}\"\n"
+                "printf 'agent-tmux: multiple detached Codex tmux sessions\\n' >&2\n"
+                "exit 3\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-existing", repo, "owner-present-63"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "PATH": f"{bin_dir}:/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual("owner-present-63\n", result.stdout)
+            self.assertEqual("", result.stderr)
+            self.assertFalse(capture.exists())
 
     def test_agent_tmux_resume_latest_full_rejects_malformed_latest_output(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:

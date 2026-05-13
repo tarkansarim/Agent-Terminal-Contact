@@ -153,6 +153,11 @@ The wrapper also normalizes `agent-tmux codex-existing <repo>` for supervised
 machine callers. A true no-existing-session result is `rc=1`, empty stdout, and
 one stderr line beginning `agent-tmux: no Codex tmux session found for workdir:`;
 ambiguous or broken helper results keep the delegated output and return code.
+When a preferred session is supplied, `agent-tmux codex-existing <repo>
+<session>` performs an exact source-owned tmux inspection for that session name.
+If the exact session is absent, wrong-repo, or not Codex-like, the wrapper
+reports that precise session evidence instead of delegating into unrelated
+multiple-session ambiguity.
 Other non-wrapper commands are delegated unchanged.
 
 ## Code-Map Sidecar Workers

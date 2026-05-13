@@ -143,6 +143,15 @@ def select_target(
             candidates.append((matched, expected_pane_path))
 
     if not candidates:
+        untrusted_reason = _untrusted_candidate_reason(
+            repo_path=repo_path,
+            provider=provider,
+            panes=panes,
+            runner=runner,
+            explicit_session=explicit_session,
+        )
+        if untrusted_reason is not None:
+            raise DiscoveryError(untrusted_reason)
         scope = f" in session {explicit_session!r}" if explicit_session else ""
         raise DiscoveryError(f"no tmux-managed {provider} pane found for {repo_path}{scope}")
     if len(candidates) > 1:
@@ -447,16 +456,60 @@ def _with_provider_evidence(pane: TmuxPane, provider: str, runner: Runner) -> Tm
     )
 
 
+def _untrusted_candidate_reason(
+    *,
+    repo_path: str,
+    provider: str,
+    panes: Sequence[TmuxPane],
+    runner: Runner,
+    explicit_session: str | None,
+) -> str | None:
+    suggestions: list[TrustedRootSuggestion] = []
+    opposite = "claude" if provider == "codex" else "codex"
+    for pane in panes:
+        if pane.dead:
+            continue
+        if _expected_pane_path_for_repo(pane, repo_path, explicit_session=explicit_session) is None:
+            continue
+        if opposite in pane.session_name.lower():
+            continue
+        suggestion = _trusted_root_suggestion_for_pane(repo_path, provider, pane, runner)
+        if suggestion is not None:
+            suggestions.append(suggestion)
+    if not suggestions:
+        return None
+
+    scope = f" in session {explicit_session!r}" if explicit_session else ""
+    details = "; ".join(
+        f"session={suggestion.session_name} pane_id={suggestion.pane_id} "
+        f"provider_pid={suggestion.provider_pid} provider_root={suggestion.provider_root}"
+        + (f" launcher_root={suggestion.launcher_root}" if suggestion.launcher_root is not None else "")
+        for suggestion in suggestions
+    )
+    session_arg = f" --session {shlex.quote(explicit_session)}" if explicit_session else ""
+    return (
+        f"candidate {provider} pane found for {repo_path}{scope}, but provider root or launcher root is not trusted; "
+        f"{details}; set {TRUSTED_PROVIDER_ROOTS_ENV} to the exact provider_root"
+        f"{f' and {TRUSTED_LAUNCHER_ROOTS_ENV} to the exact launcher_root when present' if any(s.launcher_root for s in suggestions) else ''}, "
+        f"or run agent-contact trust-roots --repo {shlex.quote(repo_path)} --provider {provider}{session_arg}"
+    )
+
+
 def _provider_process(pane: TmuxPane, provider: str, runner: Runner) -> tuple[int, str]:
     tty_processes = _tty_processes(pane.tty, runner)
     foreground_processes = tuple(process for process in tty_processes if process.live_foreground)
     if foreground_processes:
+        matches: list[tuple[int, int, str]] = []
         for process in foreground_processes:
             identity = _process_identity(process.pid, runner)
             if identity is None:
                 continue
-            if _process_identity_matches_provider(identity, provider):
-                return process.pid, identity.display_args
+            priority = _process_identity_provider_priority(identity, provider)
+            if priority is not None:
+                matches.append((priority, process.pid, identity.display_args))
+        if matches:
+            _, pid, display_args = sorted(matches)[0]
+            return pid, display_args
         return 0, ""
 
     return 0, ""
@@ -568,37 +621,47 @@ def _process_identity(pid: int, runner: Runner) -> ProcessIdentity | None:
 
 
 def _process_identity_matches_provider(identity: ProcessIdentity, provider: str) -> bool:
+    return _process_identity_provider_priority(identity, provider) is not None
+
+
+def _process_identity_provider_priority(identity: ProcessIdentity, provider: str) -> int | None:
     tokens = identity.argv
     if not tokens:
-        return False
+        return None
 
     command = _basename(tokens[0])
     if command == "env":
         tokens = tuple(_strip_env_prefix(tokens[1:]))
         if not tokens:
-            return False
+            return None
         command = _basename(tokens[0])
 
     exe_command = Path(identity.exe).name.lower()
     if command in PROVIDER_EXECUTABLES[provider]:
         if exe_command in NODE_LAUNCHERS:
-            return False
-        if not _direct_command_matches_provider(tokens[0], provider):
-            return False
-        return _path_equals(identity.exe, tokens[0])
+            return None
+        if not _path_equals(identity.exe, tokens[0]):
+            return None
+        if _direct_command_matches_provider(tokens[0], provider):
+            return 0
+        if _native_command_matches_provider(tokens[0], provider):
+            return 0
+        return None
 
     if command in NODE_LAUNCHERS:
         if exe_command not in NODE_LAUNCHERS:
-            return False
+            return None
         if _node_environment_loads_code(identity.environ):
-            return False
+            return None
         if not _is_trusted_launcher_path(identity.exe):
-            return False
+            return None
         if "/" in tokens[0] and not _path_equals(identity.exe, tokens[0]):
-            return False
-        return _node_launch_matches_provider(tokens[1:], provider)
+            return None
+        if _node_launch_matches_provider(tokens[1:], provider):
+            return 1
+        return None
 
-    return False
+    return None
 
 
 def _process_identity_provider_roots(identity: ProcessIdentity, provider: str) -> tuple[Path, Path | None] | None:
@@ -620,6 +683,8 @@ def _process_identity_provider_roots(identity: ProcessIdentity, provider: str) -
         if not _path_equals(identity.exe, tokens[0]):
             return None
         provider_root = _script_token_provider_package_root(tokens[0], provider, require_trust=False)
+        if provider_root is None:
+            provider_root = _native_token_provider_package_root(tokens[0], provider, require_trust=False)
         if provider_root is None:
             return None
         return provider_root, None
@@ -652,7 +717,7 @@ def _process_args_match_provider(process_args: str, provider: str) -> bool:
         command = _basename(tokens[0])
 
     if command in PROVIDER_EXECUTABLES[provider]:
-        return _direct_command_matches_provider(tokens[0], provider)
+        return _direct_command_matches_provider(tokens[0], provider) or _native_command_matches_provider(tokens[0], provider)
 
     if command in NODE_LAUNCHERS:
         return _node_launch_matches_provider(tokens[1:], provider)
@@ -760,12 +825,55 @@ def _direct_command_matches_provider(token: str, provider: str) -> bool:
     return _script_token_is_provider_entrypoint(token, provider)
 
 
+def _native_command_matches_provider(token: str, provider: str) -> bool:
+    if "/" not in token:
+        return False
+    return _native_token_provider_package_root(token, provider, require_trust=True) is not None
+
+
 def _script_token_is_provider_entrypoint(token: str, provider: str) -> bool:
     return _script_token_provider_package_root(token, provider, require_trust=True) is not None
 
 
+def _native_token_provider_package_root(token: str, provider: str, *, require_trust: bool) -> Path | None:
+    if provider != "codex":
+        return None
+    path = Path(token).expanduser()
+    if not path.exists():
+        return None
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        return None
+    if resolved.name != "codex":
+        return None
+    root = _provider_package_root(resolved, provider)
+    if root is None:
+        return None
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError:
+        return None
+    parts = tuple(part.lower() for part in relative.parts)
+    if len(parts) != 7:
+        return None
+    if (
+        parts[0] != "node_modules"
+        or parts[1] != "@openai"
+        or not parts[2].startswith("codex-")
+        or parts[3] != "vendor"
+        or parts[5] != "codex"
+        or parts[6] != "codex"
+    ):
+        return None
+    if not _provider_package_name_matches(root, provider):
+        return None
+    if require_trust and not _is_trusted_provider_root(root):
+        return None
+    return root
+
+
 def _script_token_provider_package_root(token: str, provider: str, *, require_trust: bool) -> Path | None:
-    package = PROVIDER_PACKAGES[provider].name
     path = Path(token).expanduser()
     if not path.exists():
         return None
@@ -778,12 +886,8 @@ def _script_token_provider_package_root(token: str, provider: str, *, require_tr
         return None
     if require_trust and not _is_trusted_provider_root(root):
         return None
-    package_json = root / "package.json"
-    try:
-        package_data = json.loads(package_json.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if package_data.get("name") != package:
+    package_data = _provider_package_data(root, provider)
+    if package_data is None:
         return None
     if not _package_bin_matches(package_data.get("bin"), resolved, root, provider):
         return None
@@ -857,6 +961,23 @@ def _provider_package_root(script_path: Path, provider: str) -> Path | None:
         if lowered_parts[index : index + len(package_parts)] == package_parts:
             return Path(*parts[: index + len(package_parts)])
     return None
+
+
+def _provider_package_data(root: Path, provider: str) -> dict[str, object] | None:
+    package_json = root / "package.json"
+    try:
+        package_data = json.loads(package_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(package_data, dict):
+        return None
+    if package_data.get("name") != PROVIDER_PACKAGES[provider].name:
+        return None
+    return package_data
+
+
+def _provider_package_name_matches(root: Path, provider: str) -> bool:
+    return _provider_package_data(root, provider) is not None
 
 
 def _is_trusted_provider_root(package_root: Path) -> bool:
