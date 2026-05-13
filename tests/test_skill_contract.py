@@ -112,7 +112,6 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("change the anchor\nto launch a new sidecar", text)
         self.assertIn("validates the sidecar's artifact-local `SIDECAR_REQUEST.txt`\nmanifest", text)
         self.assertIn("agent-contact send --repo <repo> --provider codex --session <sidecar-session>", text)
-        self.assertIn("agent-contact send --repo <artifact-dir> --provider codex --session <sidecar-session>", text)
         self.assertIn("If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed", text)
         self.assertIn("Do not fall back to raw `agent-tmux send`", text)
         self.assertIn("Do not use\n`--dangerously-bypass-approvals-and-sandbox`", text)
@@ -857,6 +856,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("invalid code-map artifact target (proposed file): docs/CODE_MAP.md\tshadow", result.stderr)
             self.assertIn("invalid code-map artifact target (diff old path): docs/CODE_MAP.md\tshadow", result.stderr)
+            self.assertIn("invalid code-map artifact target (--- path): docs/CODE_MAP.md\tshadow", result.stderr)
 
     def test_agent_tmux_code_map_artifact_validator_rejects_codex_auth_material(self):
         with tempfile.TemporaryDirectory() as tmp:

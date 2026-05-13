@@ -203,12 +203,13 @@ private bwrap device filesystem, `/dev/shm` is overlaid read-only, the artifact
 directory is the writable persistent bind, and `/tmp` and `/run` are private so
 tmux sockets are not exposed. Codex `HOME`/`CODEX_HOME` live under
 `.agent-tmux-runtime/` inside the artifact directory. In fork mode, the wrapper
-copies only the requested Codex session file into the artifact-local
-`CODEX_HOME` before launch. Codex auth/session files are wrapper-managed runtime
-inputs; the sidecar's permission profile deny-reads artifact-local `CODEX_HOME`
-from model-run shell commands and disables shell network access. Auth/session
-material must not be copied into sidecar artifacts. The wrapper refuses an
-artifact root that resolves inside the repository root.
+copies the requested Codex session file plus the matching `session_index.jsonl`
+entry when present into the artifact-local `CODEX_HOME` before launch. Codex
+auth/session files are wrapper-managed runtime inputs; the sidecar's permission
+profile deny-reads artifact-local `CODEX_HOME` from model-run shell commands and
+disables shell network access. Auth/session material must not be copied into
+sidecar artifacts. The wrapper refuses an artifact root that resolves inside the
+repository root.
 
 Before applying sidecar output, validate the artifact directory:
 
@@ -244,8 +245,6 @@ manifest before selecting the pane:
 
 ```bash
 agent-contact send --repo <repo> --provider codex --session <sidecar-session> --message "..." --dry-run
-# Also accepted because the sidecar pane cwd is the artifact directory:
-agent-contact send --repo <artifact-dir> --provider codex --session <sidecar-session> --message "..." --dry-run
 ```
 
 If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed.

@@ -359,8 +359,8 @@ class AgentContactCliTests(unittest.TestCase):
                     CODEX_IDLE,
                     CODEX_IDLE,
                     CODEX_IDLE,
-                    codex_pending_contact(),
-                    f"{guarded_line()}\n{CODEX_IDLE}",
+                    codex_pending_contact("follow up"),
+                    f"{guarded_line('follow up')}\n{CODEX_IDLE}",
                 ],
             )
             sidecar_pane = pane_line(session, "%1", artifact_dir)

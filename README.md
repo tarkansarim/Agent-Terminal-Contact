@@ -256,8 +256,6 @@ manifest before selecting the pane:
 
 ```bash
 agent-contact send --repo /path/to/repo --provider codex --session <sidecar-session> --message "..." --dry-run
-# Also accepted because the sidecar pane cwd is the artifact directory:
-agent-contact send --repo <artifact-dir> --provider codex --session <sidecar-session> --message "..." --dry-run
 ```
 
 If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed and

@@ -251,7 +251,7 @@ Repository root (read-only input): ${resolved_workdir}
 Patch artifact directory (only writable output): ${artifact_dir}
 Anchor/checkpoint: ${anchor}
 Permission profile: workspace-write rooted at the artifact directory, approval policy never, shell-command network access disabled.
-Filesystem isolation: bwrap read-only root filesystem with host home hidden except for the Codex executable path, private /dev, read-only /dev/shm, private /tmp and /run, read-only repository path, writable artifact directory only. Codex HOME/CODEX_HOME are artifact-local under .agent-tmux-runtime. For fork mode, only the requested Codex session file is copied into the artifact-local CODEX_HOME before launch.
+Filesystem isolation: bwrap read-only root filesystem with host home hidden except for the Codex executable path, private /dev, read-only /dev/shm, private /tmp and /run, read-only repository path, writable artifact directory only. Codex HOME/CODEX_HOME are artifact-local under .agent-tmux-runtime. For fork mode, the requested Codex session file plus the matching session_index.jsonl entry when present are copied into the artifact-local CODEX_HOME before launch.
 Codex auth/session files are wrapper-managed runtime inputs. The sidecar permission profile deny-reads artifact-local CODEX_HOME from model-run shell commands and disables network access for model-run shell commands. Do not read them, summarize them, contact localhost services, or copy credential contents into MAP_REPORT.md, PROPOSED_CHANGES.patch, or PROPOSED_FILES/.
 Allowed map/project-memory target paths for applyable patch artifacts:
 - .project-memory/**
@@ -377,13 +377,6 @@ copy_code_map_fork_session() {
     return 0
 }
 
-strip_patch_path_suffix() {
-    local path="$1"
-    path="${path%$'\r'}"
-    path="${path%%$'\t'*}"
-    printf "%s\n" "${path}"
-}
-
 is_safe_relative_path() {
     local path="$1"
     [[ -n "${path}" ]] || return 1
@@ -436,7 +429,6 @@ validate_code_map_patch_header_path() {
     local path="$1"
     local expected_prefix="$2"
     local context="$3"
-    path="$(strip_patch_path_suffix "${path}")"
     if [[ "${path}" == "/dev/null" ]]; then
         return 0
     fi

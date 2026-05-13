@@ -272,12 +272,17 @@ def _sidecar_request_for_pane(pane: TmuxPane, repo_path: str) -> SidecarRequest 
         if key in fields:
             return None
         fields[key] = value
-    try:
-        manifest_repo = _resolve_existing_repo(fields["repo"])
-        manifest_artifact_dir = str(Path(fields["allowed_output_dir"]).expanduser().resolve(strict=True))
-    except (KeyError, DiscoveryError, OSError):
+    manifest_session = fields.get("session", "")
+    manifest_repo_raw = fields.get("repo", "")
+    manifest_artifact_raw = fields.get("allowed_output_dir", "")
+    if not manifest_session or not manifest_repo_raw or not manifest_artifact_raw:
         return None
-    if fields.get("session") != pane.session_name:
+    try:
+        manifest_repo = _resolve_existing_repo(manifest_repo_raw)
+        manifest_artifact_dir = str(Path(manifest_artifact_raw).expanduser().resolve(strict=True))
+    except (DiscoveryError, OSError):
+        return None
+    if manifest_session != pane.session_name:
         return None
     if manifest_repo != repo_path:
         return None

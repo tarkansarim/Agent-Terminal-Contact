@@ -65,9 +65,6 @@ V0 must prove:
   command into an existing pane
 - `codex-code-map-sidecar-fork` accepts only a Codex session UUID; flags, thread
   names, and raw `codex fork ...` command text are refused before launch
-- guarded sidecar follow-up contact can use the original repo plus exact
-  `--session <sidecar-session>` by validating the artifact-local
-  `SIDECAR_REQUEST.txt` manifest against both values
 - sidecar sessions are created with `tmux new-session`, so an exact session-name
   race fails instead of reusing an existing pane
 
