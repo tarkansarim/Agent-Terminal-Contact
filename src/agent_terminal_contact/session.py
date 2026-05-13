@@ -294,6 +294,8 @@ def _sidecar_request_for_pane(pane: TmuxPane, repo_path: str) -> SidecarRequest 
         return None
     if registry_session != pane.session_name:
         return None
+    if resolved_artifact_path.name != registry_session:
+        return None
     if manifest_repo != repo_path:
         return None
     if manifest_artifact_path != resolved_artifact_path:

@@ -239,8 +239,8 @@ class AgentContactCliTests(unittest.TestCase):
     def test_sidecar_contact_refuses_artifact_dir_as_repo_selector(self):
         with tempfile.TemporaryDirectory() as tmp:
             original_repo = Path(tmp) / "repo"
-            artifact_dir = Path(tmp) / "artifact"
             session = "codex-map-repo-ticket58-123456789abc"
+            artifact_dir = Path(tmp) / session
             original_repo.mkdir()
             artifact_dir.mkdir()
             write_sidecar_request(artifact_dir, session=session, repo=original_repo)
@@ -280,8 +280,8 @@ class AgentContactCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
-            artifact_dir = tmp_path / "artifact"
             session = "codex-map-repo-ticket58-123456789abc"
+            artifact_dir = tmp_path / session
             repo.mkdir()
             artifact_dir.mkdir()
             write_sidecar_request(artifact_dir, session=session, repo=repo)
@@ -324,8 +324,8 @@ class AgentContactCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
-            artifact_dir = tmp_path / "artifact"
             session = "codex-map-repo-ticket58-123456789abc"
+            artifact_dir = tmp_path / session
             repo.mkdir()
             artifact_dir.mkdir()
             write_sidecar_request(artifact_dir, session="codex-map-other-123456789abc", repo=repo)
@@ -363,10 +363,10 @@ class AgentContactCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
-            artifact_dir = tmp_path / "artifact"
+            session = "codex-map-repo-ticket58-123456789abc"
+            artifact_dir = tmp_path / session
             repo.mkdir()
             artifact_dir.mkdir()
-            session = "codex-map-repo-ticket58-123456789abc"
             write_sidecar_request(artifact_dir, session=session, repo=repo)
             runner = FakeRunner(
                 repo,

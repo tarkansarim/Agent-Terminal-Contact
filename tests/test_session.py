@@ -891,10 +891,10 @@ class SessionDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
-            artifact_dir = tmp_path / "sidecar-artifact"
+            session = "codex-map-repo-ticket58-123456789abc"
+            artifact_dir = tmp_path / session
             repo.mkdir()
             artifact_dir.mkdir()
-            session = "codex-map-repo-ticket58-123456789abc"
             write_sidecar_request(artifact_dir, session=session, repo=repo)
             script = write_provider_package(repo)
             args = f"node {script}"
@@ -922,6 +922,35 @@ class SessionDiscoveryTests(unittest.TestCase):
             self.assertEqual(selected.expected_pane_path, str(artifact_dir.resolve()))
             self.assertEqual(selected.pane.session_name, session)
             self.assertEqual(revalidated.path, str(artifact_dir.resolve()))
+
+    def test_explicit_sidecar_session_refuses_artifact_basename_session_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            artifact_dir = tmp_path / "not-the-session-name"
+            repo.mkdir()
+            artifact_dir.mkdir()
+            session = "codex-map-repo-ticket58-123456789abc"
+            write_sidecar_request(artifact_dir, session=session, repo=repo)
+            script = write_provider_package(repo)
+            args = f"node {script}"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line(session, "%1", artifact_dir), ""
+                    ),
+                    **tty_response(args=args, pid=1234),
+                    **proc_response(args=args),
+                }
+            )
+            with trusted_provider_root(repo):
+                with self.assertRaisesRegex(DiscoveryError, "no tmux-managed codex pane"):
+                    select_target(
+                        repo=str(repo),
+                        provider="codex",
+                        runner=runner,
+                        explicit_session=session,
+                    )
 
     def test_implicit_discovery_refuses_sidecar_manifest_repo_match(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1100,12 +1129,12 @@ class SessionDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
-            artifact_dir = tmp_path / "sidecar-artifact"
+            session = "codex-map-repo-ticket58-123456789abc"
+            artifact_dir = tmp_path / session
             other_artifact_dir = tmp_path / "other-sidecar-artifact"
             repo.mkdir()
             artifact_dir.mkdir()
             other_artifact_dir.mkdir()
-            session = "codex-map-repo-ticket58-123456789abc"
             write_sidecar_request(artifact_dir, session=session, repo=repo)
             script = write_provider_package(repo)
             args = f"node {script}"
