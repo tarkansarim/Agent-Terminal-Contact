@@ -24,14 +24,17 @@ def code_map_session_name(repo, anchor):
 def write_validator_sidecar_manifest(artifact_dir, *, repo=None):
     artifact_path = Path(artifact_dir)
     repo_path = Path(repo) if repo is not None else artifact_path.parent / "repo"
+    registry_dir = artifact_path.parent / ".agent-tmux-sidecar-registry"
     repo_path.mkdir(parents=True, exist_ok=True)
     artifact_path.mkdir(parents=True, exist_ok=True)
-    (artifact_path / "SIDECAR_REQUEST.txt").write_text(
+    content = (
         f"session={artifact_path.name}\n"
         f"repo={repo_path.resolve()}\n"
-        f"allowed_output_dir={artifact_path.resolve()}\n",
-        encoding="utf-8",
+        f"allowed_output_dir={artifact_path.resolve()}\n"
     )
+    (artifact_path / "SIDECAR_REQUEST.txt").write_text(content, encoding="utf-8")
+    registry_dir.mkdir(parents=True, exist_ok=True)
+    (registry_dir / f"{artifact_path.name}.txt").write_text(content, encoding="utf-8")
     return repo_path
 
 
@@ -122,10 +125,11 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("must not edit production source, tests, config, install scripts", text)
         self.assertIn("writable output path", text)
         self.assertIn("PROPOSED_CHANGES.patch", text)
-        self.assertIn("requires the wrapper-written `SIDECAR_REQUEST.txt` manifest", text)
-        self.assertIn("It rejects `PROPOSED_CHANGES.patch` and `PROPOSED_FILES/` entries", text)
+        self.assertIn("requires the wrapper-written sidecar registry", text)
+        self.assertIn("outside the sidecar-writable tree", text)
+        self.assertIn("It rejects\n`PROPOSED_CHANGES.patch` and `PROPOSED_FILES/` entries", text)
         self.assertIn("change the anchor\nto launch a new sidecar", text)
-        self.assertIn("validates the sidecar's artifact-local `SIDECAR_REQUEST.txt`\nmanifest", text)
+        self.assertIn("validates the sidecar registry outside the writable artifact tree", text)
         self.assertIn("agent-contact send --repo <repo> --provider codex --session <sidecar-session>", text)
         self.assertIn("If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed", text)
         self.assertIn("Do not fall back to raw `agent-tmux send`", text)
@@ -608,6 +612,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("Patch artifact directory (only writable output):", command)
             self.assertIn(str(artifact_dir), command)
             self.assertIn("Filesystem isolation: bwrap read-only root filesystem with host home hidden", command)
+            self.assertIn("supervisor keeps a sidecar registry outside this writable artifact directory", command)
             self.assertIn("Write files only under the patch artifact directory", command)
             self.assertIn("Do not use .agent-tmux-runtime/ for map output", command)
             self.assertIn("Allowed map/project-memory target paths", command)
@@ -624,9 +629,13 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("permission=-c sandbox_mode=workspace-write -c sandbox_workspace_write.network_access=false -a never", manifest)
             self.assertIn("filesystem_isolation=bwrap read-only root", manifest)
             self.assertIn("validator=agent-tmux codex-code-map-validate-artifacts", manifest)
+            registry_file = artifact_root / ".agent-tmux-sidecar-registry" / f"{session}.txt"
+            registry = registry_file.read_text(encoding="utf-8")
+            self.assertEqual(registry, manifest)
             self.assertTrue((artifact_dir / ".agent-tmux-runtime" / "codex-home").is_dir())
             self.assertIn(f"code-map sidecar session: {session}", result.stderr)
             self.assertIn(f"code-map sidecar artifact-dir: {artifact_dir}", result.stderr)
+            self.assertIn(f"code-map sidecar registry: {registry_file}", result.stderr)
             self.assertIn(f"code-map sidecar log: /tmp/agent-tmux/{session}.log", result.stderr)
 
             env["AGENT_TMUX_CAPTURE"] = str(capture_second)
@@ -736,7 +745,7 @@ class SkillContractTests(unittest.TestCase):
                 result.stderr,
             )
 
-    def test_agent_tmux_code_map_artifact_validator_requires_sidecar_manifest(self):
+    def test_agent_tmux_code_map_artifact_validator_requires_sidecar_registry(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = Path(tmp) / "artifact"
             artifact_dir.mkdir()
@@ -751,7 +760,49 @@ class SkillContractTests(unittest.TestCase):
                 env={"PATH": "/usr/bin:/bin"},
             )
             self.assertEqual(result.returncode, 2)
-            self.assertIn("missing sidecar request manifest: SIDECAR_REQUEST.txt", result.stderr)
+            self.assertIn("missing code-map sidecar registry directory", result.stderr)
+
+    def test_agent_tmux_code_map_artifact_validator_rejects_missing_artifact_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_dir = Path(tmp) / "artifact"
+            write_validator_sidecar_manifest(artifact_dir)
+            (artifact_dir / "SIDECAR_REQUEST.txt").unlink()
+            (artifact_dir / "MAP_REPORT.md").write_text("map report\n", encoding="utf-8")
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("missing sidecar request manifest", result.stderr)
+
+    def test_agent_tmux_code_map_artifact_validator_rejects_tampered_artifact_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            artifact_dir = tmp_path / "artifact"
+            other_repo = tmp_path / "other-repo"
+            other_repo.mkdir()
+            write_validator_sidecar_manifest(artifact_dir)
+            (artifact_dir / "SIDECAR_REQUEST.txt").write_text(
+                f"session={artifact_dir.name}\nrepo={other_repo.resolve()}\nallowed_output_dir={artifact_dir.resolve()}\n",
+                encoding="utf-8",
+            )
+            (artifact_dir / "MAP_REPORT.md").write_text("map report\n", encoding="utf-8")
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("sidecar request manifest does not match code-map sidecar registry", result.stderr)
 
     def test_agent_tmux_code_map_artifact_validator_rejects_manifest_repo_containing_artifact_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -776,7 +827,7 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             artifact_dir = tmp_path / "artifact"
-            artifact_dir.mkdir()
+            write_validator_sidecar_manifest(artifact_dir)
             (artifact_dir / "PROPOSED_CHANGES.patch").write_text(
                 "diff --git a/docs/CODE_MAP.md b/docs/CODE_MAP.md\n"
                 "--- a/docs/CODE_MAP.md\n"
@@ -808,7 +859,7 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             artifact_dir = tmp_path / "artifact"
-            artifact_dir.mkdir()
+            write_validator_sidecar_manifest(artifact_dir)
             (artifact_dir / "PROPOSED_CHANGES.patch").write_text(
                 "--- a/docs/CODE_MAP.md\n"
                 "+++ b/docs/CODE_MAP.md\n"
@@ -834,7 +885,7 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             artifact_dir = tmp_path / "artifact"
-            artifact_dir.mkdir()
+            write_validator_sidecar_manifest(artifact_dir)
             (artifact_dir / "PROPOSED_CHANGES.patch").write_text(
                 "diff --git a/src/agent_terminal_contact/cli.py b/src/agent_terminal_contact/cli.py\n"
                 "--- a/src/agent_terminal_contact/cli.py\n"
@@ -871,7 +922,7 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             artifact_dir = tmp_path / "artifact"
-            artifact_dir.mkdir()
+            write_validator_sidecar_manifest(artifact_dir)
             (artifact_dir / "PROPOSED_CHANGES.patch").write_text(
                 "diff --git a/docs/CODEBASE_ARCHITECTURE_INDEX.md b/docs/CODEBASE_ARCHITECTURE_INDEX.md\n"
                 "--- a/docs/CODEBASE_ARCHITECTURE_INDEX.md\n"
@@ -903,7 +954,7 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             artifact_dir = tmp_path / "artifact"
-            artifact_dir.mkdir()
+            write_validator_sidecar_manifest(artifact_dir)
             (artifact_dir / "PROPOSED_CHANGES.patch").write_text(
                 "diff --git a/docs/CODE_MAP.md b/docs/CODE_MAP.md\n"
                 "GIT binary patch\n"
@@ -928,6 +979,7 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             artifact_dir = tmp_path / "artifact"
+            write_validator_sidecar_manifest(artifact_dir)
             proposed = artifact_dir / "PROPOSED_FILES" / "docs"
             proposed.mkdir(parents=True)
             (proposed / "CODE_MAP.md\tshadow").write_text("bad\n", encoding="utf-8")
@@ -965,7 +1017,7 @@ class SkillContractTests(unittest.TestCase):
                 encoding="utf-8",
             )
             artifact_dir = tmp_path / "artifact"
-            artifact_dir.mkdir()
+            write_validator_sidecar_manifest(artifact_dir)
             (artifact_dir / "MAP_REPORT.md").write_text(
                 f"leaked token: {token}\n",
                 encoding="utf-8",
@@ -986,6 +1038,7 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             artifact_dir = tmp_path / "artifact"
+            write_validator_sidecar_manifest(artifact_dir)
             proposed = artifact_dir / "PROPOSED_FILES" / ".project-memory"
             proposed.mkdir(parents=True)
             (proposed / "auth.json").write_text(
@@ -1060,7 +1113,7 @@ class SkillContractTests(unittest.TestCase):
             scratch_tmp = tmp_path / "scratch-tmp"
             scratch_tmp.mkdir()
             artifact_dir = tmp_path / "artifact"
-            artifact_dir.mkdir()
+            write_validator_sidecar_manifest(artifact_dir)
             (artifact_dir / "PROPOSED_CHANGES.patch").write_text(
                 "not a patch\n",
                 encoding="utf-8",
@@ -1082,6 +1135,7 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             artifact_dir = tmp_path / "artifact"
+            write_validator_sidecar_manifest(artifact_dir)
             proposed = artifact_dir / "PROPOSED_FILES" / "docs" / "SUBSYSTEMS"
             proposed.mkdir(parents=True)
             (proposed / "sidecar.md").symlink_to("/etc/passwd")
@@ -1101,6 +1155,7 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             artifact_dir = tmp_path / "artifact"
+            write_validator_sidecar_manifest(artifact_dir)
             runtime = artifact_dir / ".agent-tmux-runtime" / "codex-home"
             runtime.mkdir(parents=True)
             (runtime / "unsafe-link").symlink_to("/etc/passwd")
@@ -1167,7 +1222,7 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             artifact_dir = tmp_path / "artifact"
-            artifact_dir.mkdir()
+            write_validator_sidecar_manifest(artifact_dir)
             (artifact_dir / "PROPOSED_CHANGES.patch").write_text(
                 "diff --git a/docs/SUBSYSTEMS/sidecar.md b/docs/SUBSYSTEMS/sidecar.md\n"
                 "new file mode 120000\n"

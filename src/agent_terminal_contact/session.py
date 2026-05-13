@@ -233,31 +233,17 @@ def _expected_pane_path_for_repo(
 ) -> str | None:
     pane_path = _resolve_path(pane.path)
     if explicit_session is not None and _is_code_map_sidecar_session(pane.session_name):
-        manifest = _sidecar_request_for_pane(pane, repo_path)
-        if manifest is None:
+        request = _sidecar_request_for_pane(pane, repo_path)
+        if request is None:
             return None
-        return manifest.artifact_dir
+        return request.artifact_dir
     if pane_path == repo_path:
-        if explicit_session is not None and _sidecar_request_file_present(pane):
-            return None
         return pane_path
-    if explicit_session is None:
-        return None
-    manifest = _sidecar_request_for_pane(pane, repo_path)
-    if manifest is None:
-        return None
-    return manifest.artifact_dir
+    return None
 
 
 def _is_code_map_sidecar_session(session_name: str) -> bool:
     return session_name.startswith("codex-map-")
-
-
-def _sidecar_request_file_present(pane: TmuxPane) -> bool:
-    try:
-        return os.path.lexists(Path(pane.path).expanduser() / "SIDECAR_REQUEST.txt")
-    except OSError:
-        return False
 
 
 @dataclass(frozen=True)
@@ -272,10 +258,12 @@ def _sidecar_request_for_pane(pane: TmuxPane, repo_path: str) -> SidecarRequest 
     try:
         if artifact_dir.is_symlink() or not artifact_dir.is_dir():
             return None
-        resolved_artifact_dir = str(artifact_dir.resolve(strict=True))
+        resolved_artifact_path = artifact_dir.resolve(strict=True)
     except OSError:
         return None
-    request_file = artifact_dir / "SIDECAR_REQUEST.txt"
+    request_file = _sidecar_registry_path(resolved_artifact_path, pane.session_name)
+    if request_file is None:
+        return None
     try:
         if request_file.is_symlink() or not request_file.is_file() or request_file.stat().st_size > 65536:
             return None
@@ -297,20 +285,36 @@ def _sidecar_request_for_pane(pane: TmuxPane, repo_path: str) -> SidecarRequest 
         return None
     try:
         manifest_repo = _resolve_existing_repo(manifest_repo_raw)
-        manifest_artifact_dir = str(Path(manifest_artifact_raw).expanduser().resolve(strict=True))
+        manifest_artifact_path = Path(manifest_artifact_raw).expanduser().resolve(strict=True)
     except (DiscoveryError, OSError):
         return None
     if manifest_session != pane.session_name:
         return None
     if manifest_repo != repo_path:
         return None
-    if manifest_artifact_dir != resolved_artifact_dir:
+    if manifest_artifact_path != resolved_artifact_path:
+        return None
+    if _path_is_relative_to(resolved_artifact_path, Path(manifest_repo)):
         return None
     return SidecarRequest(
         session=pane.session_name,
         repo=manifest_repo,
-        artifact_dir=resolved_artifact_dir,
+        artifact_dir=str(resolved_artifact_path),
     )
+
+
+def _sidecar_registry_path(artifact_dir: Path, session_name: str) -> Path | None:
+    try:
+        validate_session_name(session_name)
+    except DiscoveryError:
+        return None
+    registry_dir = artifact_dir.parent / ".agent-tmux-sidecar-registry"
+    try:
+        if registry_dir.is_symlink() or not registry_dir.is_dir():
+            return None
+    except OSError:
+        return None
+    return registry_dir / f"{session_name}.txt"
 
 
 def _parse_pane_lines(lines: Sequence[str], *, source: str) -> list[TmuxPane]:

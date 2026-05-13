@@ -86,6 +86,19 @@ def pane_line(session, pane_id, repo, command="node", pid=1234, attached=0):
     return f"{session}\t{pane_id}\t/dev/pts/7\t{Path(repo).resolve()}\t{command}\t{pid}\t1\t0\t10\t{attached}\n"
 
 
+def write_sidecar_request(artifact_dir, *, session, repo):
+    artifact_path = Path(artifact_dir)
+    content = (
+        f"session={session}\n"
+        f"repo={Path(repo).resolve()}\n"
+        f"allowed_output_dir={artifact_path.resolve()}\n"
+    )
+    artifact_path.joinpath("SIDECAR_REQUEST.txt").write_text(content, encoding="utf-8")
+    registry_dir = artifact_path.parent / ".agent-tmux-sidecar-registry"
+    registry_dir.mkdir(parents=True, exist_ok=True)
+    (registry_dir / f"{session}.txt").write_text(content, encoding="utf-8")
+
+
 class FakeRunner:
     def __init__(
         self,
@@ -227,15 +240,16 @@ class AgentContactCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             original_repo = Path(tmp) / "repo"
             artifact_dir = Path(tmp) / "artifact"
+            session = "codex-map-repo-ticket58-123456789abc"
             original_repo.mkdir()
             artifact_dir.mkdir()
-            (artifact_dir / "SIDECAR_REQUEST.txt").write_text(
-                f"session=codex-demo\nrepo={original_repo}\nallowed_output_dir={artifact_dir}\n",
-                encoding="utf-8",
-            )
+            write_sidecar_request(artifact_dir, session=session, repo=original_repo)
             runner = FakeRunner(artifact_dir, CODEX_IDLE)
-            runner.responses[("tmux", "list-panes", "-s", "-t", "codex-demo", "-F", PANE_FORMAT)] = CommandResult(
-                (), 0, pane_line("codex-demo", "%1", artifact_dir), ""
+            runner.responses[("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT)] = CommandResult(
+                (), 0, pane_line(session, "%1", artifact_dir), ""
+            )
+            runner.responses[("agent-tmux", "log", session)] = CommandResult(
+                (), 0, f"/tmp/agent-tmux/{session}.log\n", ""
             )
             stdout = io.StringIO()
             code = main(
@@ -246,7 +260,7 @@ class AgentContactCliTests(unittest.TestCase):
                     "--provider",
                     "codex",
                     "--session",
-                    "codex-demo",
+                    session,
                     "--message",
                     "follow up",
                     "--dry-run",
@@ -267,16 +281,17 @@ class AgentContactCliTests(unittest.TestCase):
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
             artifact_dir = tmp_path / "artifact"
+            session = "codex-map-repo-ticket58-123456789abc"
             repo.mkdir()
             artifact_dir.mkdir()
-            (artifact_dir / "SIDECAR_REQUEST.txt").write_text(
-                f"session=codex-demo\nrepo={repo}\nallowed_output_dir={artifact_dir}\n",
-                encoding="utf-8",
-            )
+            write_sidecar_request(artifact_dir, session=session, repo=repo)
             runner = FakeRunner(repo, CODEX_IDLE)
-            sidecar_pane = pane_line("codex-demo", "%1", artifact_dir)
-            runner.responses[("tmux", "list-panes", "-s", "-t", "codex-demo", "-F", PANE_FORMAT)] = CommandResult(
+            sidecar_pane = pane_line(session, "%1", artifact_dir)
+            runner.responses[("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT)] = CommandResult(
                 (), 0, sidecar_pane, ""
+            )
+            runner.responses[("agent-tmux", "log", session)] = CommandResult(
+                (), 0, f"/tmp/agent-tmux/{session}.log\n", ""
             )
             runner.default_display_message = CommandResult((), 0, sidecar_pane, "")
             stdout = io.StringIO()
@@ -288,7 +303,7 @@ class AgentContactCliTests(unittest.TestCase):
                     "--provider",
                     "codex",
                     "--session",
-                    "codex-demo",
+                    session,
                     "--message",
                     "follow up",
                     "--dry-run",
@@ -303,22 +318,20 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(code, EXIT_OK)
             self.assertEqual(payload["status"], "would_send")
             self.assertEqual(payload["repo"], str(repo.resolve()))
-            self.assertEqual(payload["session"], "codex-demo")
+            self.assertEqual(payload["session"], session)
 
     def test_sidecar_contact_refuses_repo_root_when_manifest_session_mismatches(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
             artifact_dir = tmp_path / "artifact"
+            session = "codex-map-repo-ticket58-123456789abc"
             repo.mkdir()
             artifact_dir.mkdir()
-            (artifact_dir / "SIDECAR_REQUEST.txt").write_text(
-                f"session=other-session\nrepo={repo}\nallowed_output_dir={artifact_dir}\n",
-                encoding="utf-8",
-            )
+            write_sidecar_request(artifact_dir, session="codex-map-other-123456789abc", repo=repo)
             runner = FakeRunner(repo, CODEX_IDLE)
-            sidecar_pane = pane_line("codex-demo", "%1", artifact_dir)
-            runner.responses[("tmux", "list-panes", "-s", "-t", "codex-demo", "-F", PANE_FORMAT)] = CommandResult(
+            sidecar_pane = pane_line(session, "%1", artifact_dir)
+            runner.responses[("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT)] = CommandResult(
                 (), 0, sidecar_pane, ""
             )
             stdout = io.StringIO()
@@ -330,7 +343,7 @@ class AgentContactCliTests(unittest.TestCase):
                     "--provider",
                     "codex",
                     "--session",
-                    "codex-demo",
+                    session,
                     "--message",
                     "follow up",
                     "--dry-run",
@@ -353,11 +366,8 @@ class AgentContactCliTests(unittest.TestCase):
             artifact_dir = tmp_path / "artifact"
             repo.mkdir()
             artifact_dir.mkdir()
-            session = "codex-demo"
-            (artifact_dir / "SIDECAR_REQUEST.txt").write_text(
-                f"session={session}\nrepo={repo}\nallowed_output_dir={artifact_dir}\n",
-                encoding="utf-8",
-            )
+            session = "codex-map-repo-ticket58-123456789abc"
+            write_sidecar_request(artifact_dir, session=session, repo=repo)
             runner = FakeRunner(
                 repo,
                 [
@@ -372,6 +382,9 @@ class AgentContactCliTests(unittest.TestCase):
             sidecar_pane = pane_line(session, "%1", artifact_dir)
             runner.responses[("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT)] = CommandResult(
                 (), 0, sidecar_pane, ""
+            )
+            runner.responses[("agent-tmux", "log", session)] = CommandResult(
+                (), 0, f"/tmp/agent-tmux/{session}.log\n", ""
             )
             runner.default_display_message = CommandResult((), 0, sidecar_pane, "")
             stdout = io.StringIO()

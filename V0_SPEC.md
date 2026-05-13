@@ -55,13 +55,15 @@ V0 must prove:
   pre-existing final directories, symlink final directories, and paths that
   resolve inside the repository root are refused before launch
 - guarded contact to an exact wrapper-launched sidecar session accepts the
-  original repository root only after validating the sidecar artifact
-  `SIDECAR_REQUEST.txt` manifest for session, repo, and artifact directory
+  original repository root only after validating the wrapper sidecar registry
+  outside the writable artifact tree for session, repo, and artifact directory
 - `codex-code-map-validate-artifacts` validates the sidecar artifact directory
-  before supervisor application, requires the wrapper manifest to bind session,
-  repo, and allowed output directory, rejects artifact directories inside the
-  manifest repo, and rejects proposed patch or mirrored file targets outside the
-  narrow code-map/project-memory allowlist
+  before supervisor application, requires the wrapper sidecar registry outside
+  the writable artifact tree to bind session, repo, and allowed output
+  directory, checks it against the artifact-local `SIDECAR_REQUEST.txt` audit
+  copy, rejects artifact directories inside the registry repo, and rejects
+  proposed patch or mirrored file targets outside the narrow
+  code-map/project-memory allowlist
 - `codex-code-map-sidecar-fork` maps a Rewind/Codex fork session id into a new
   deterministic tmux sidecar instead of requiring callers to paste a fork
   command into an existing pane

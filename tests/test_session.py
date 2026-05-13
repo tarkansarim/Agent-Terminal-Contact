@@ -70,12 +70,16 @@ def write_provider_package(root, provider="codex"):
 
 
 def write_sidecar_request(artifact_dir, *, session, repo):
-    Path(artifact_dir, "SIDECAR_REQUEST.txt").write_text(
+    artifact_path = Path(artifact_dir)
+    content = (
         f"session={session}\n"
         f"repo={Path(repo).resolve()}\n"
-        f"allowed_output_dir={Path(artifact_dir).resolve()}\n",
-        encoding="utf-8",
+        f"allowed_output_dir={artifact_path.resolve()}\n"
     )
+    artifact_path.joinpath("SIDECAR_REQUEST.txt").write_text(content, encoding="utf-8")
+    registry_dir = artifact_path.parent / ".agent-tmux-sidecar-registry"
+    registry_dir.mkdir(parents=True, exist_ok=True)
+    (registry_dir / f"{session}.txt").write_text(content, encoding="utf-8")
 
 
 def ps_response(pid=1234, args="node /home/tarkan/.nvm/lib/node_modules/@openai/codex/bin/codex.js --no-alt-screen"):
@@ -998,6 +1002,100 @@ class SessionDiscoveryTests(unittest.TestCase):
                         explicit_session=session,
                     )
 
+    def test_explicit_sidecar_session_refuses_missing_registry_even_with_artifact_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            artifact_dir = tmp_path / "sidecar-artifact"
+            repo.mkdir()
+            artifact_dir.mkdir()
+            session = "codex-map-repo-ticket58-123456789abc"
+            write_sidecar_request(artifact_dir, session=session, repo=repo)
+            (artifact_dir.parent / ".agent-tmux-sidecar-registry" / f"{session}.txt").unlink()
+            script = write_provider_package(repo)
+            args = f"node {script}"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line(session, "%1", artifact_dir), ""
+                    ),
+                    **tty_response(args=args, pid=1234),
+                    **proc_response(args=args),
+                }
+            )
+            with trusted_provider_root(repo):
+                with self.assertRaisesRegex(DiscoveryError, "no tmux-managed codex pane"):
+                    select_target(
+                        repo=str(repo),
+                        provider="codex",
+                        runner=runner,
+                        explicit_session=session,
+                    )
+
+    def test_explicit_sidecar_session_refuses_artifact_dir_inside_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            artifact_dir = repo / ".sidecars" / "codex-map-repo-ticket58-123456789abc"
+            repo.mkdir()
+            artifact_dir.mkdir(parents=True)
+            session = artifact_dir.name
+            write_sidecar_request(artifact_dir, session=session, repo=repo)
+            script = write_provider_package(repo)
+            args = f"node {script}"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line(session, "%1", artifact_dir), ""
+                    ),
+                    **tty_response(args=args, pid=1234),
+                    **proc_response(args=args),
+                }
+            )
+            with trusted_provider_root(repo):
+                with self.assertRaisesRegex(DiscoveryError, "no tmux-managed codex pane"):
+                    select_target(
+                        repo=str(repo),
+                        provider="codex",
+                        runner=runner,
+                        explicit_session=session,
+                    )
+
+    def test_explicit_sidecar_session_uses_registry_when_artifact_manifest_is_tampered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            other_repo = tmp_path / "other"
+            artifact_dir = tmp_path / "sidecar-artifact"
+            repo.mkdir()
+            other_repo.mkdir()
+            artifact_dir.mkdir()
+            session = "codex-map-repo-ticket58-123456789abc"
+            write_sidecar_request(artifact_dir, session=session, repo=repo)
+            (artifact_dir / "SIDECAR_REQUEST.txt").write_text(
+                f"session={session}\nrepo={other_repo.resolve()}\nallowed_output_dir={artifact_dir.resolve()}\n",
+                encoding="utf-8",
+            )
+            script = write_provider_package(repo)
+            args = f"node {script}"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line(session, "%1", artifact_dir), ""
+                    ),
+                    **tty_response(args=args, pid=1234),
+                    **proc_response(args=args),
+                }
+            )
+            with trusted_provider_root(repo):
+                selected = select_target(
+                    repo=str(repo),
+                    provider="codex",
+                    runner=runner,
+                    explicit_session=session,
+                )
+            self.assertEqual(selected.expected_pane_path, str(artifact_dir.resolve()))
+
     def test_sidecar_revalidate_refuses_artifact_path_drift(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -1009,7 +1107,6 @@ class SessionDiscoveryTests(unittest.TestCase):
             other_artifact_dir.mkdir()
             session = "codex-map-repo-ticket58-123456789abc"
             write_sidecar_request(artifact_dir, session=session, repo=repo)
-            write_sidecar_request(other_artifact_dir, session=session, repo=repo)
             script = write_provider_package(repo)
             args = f"node {script}"
             runner = FakeRunner(

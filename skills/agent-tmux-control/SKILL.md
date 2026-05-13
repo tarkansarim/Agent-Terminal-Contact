@@ -218,22 +218,23 @@ Before applying sidecar output, validate the artifact directory:
 agent-tmux codex-code-map-validate-artifacts <artifact-dir>
 ```
 
-The validator requires the wrapper-written `SIDECAR_REQUEST.txt` manifest and
-checks that its session, repo, and allowed output directory match the artifact
-directory. It rejects `PROPOSED_CHANGES.patch` and `PROPOSED_FILES/` entries
-that target non-map paths, and rejects symlink or non-regular proposed artifact
-entries, including patch modes that would create symlinks or other non-regular
-files. It also rejects unsupported patch path header formats, symlink or
-non-regular entries anywhere in the sidecar artifact tree, binary content in
-supervisor-consumed artifacts, and direct Codex auth material or obvious
-auth/session key structures in supervisor-consumed artifacts. Regular
-`.agent-tmux-runtime/` files are ignored for map application. The artifact
-directory passed to the validator must itself be a real directory, not a
-symlink, and must not resolve inside the manifest repo. Treat rejected artifacts
-as out of sidecar scope.
+The validator requires the wrapper-written sidecar registry stored as a sibling
+of the artifact directory, outside the sidecar-writable tree, and checks it
+against the artifact-local `SIDECAR_REQUEST.txt` audit copy. The registry binds
+the session, repo, and allowed output directory. It rejects
+`PROPOSED_CHANGES.patch` and `PROPOSED_FILES/` entries that target non-map paths,
+and rejects symlink or non-regular proposed artifact entries, including patch
+modes that would create symlinks or other non-regular files. It also rejects
+unsupported patch path header formats, symlink or non-regular entries anywhere
+in the sidecar artifact tree, binary content in supervisor-consumed artifacts,
+and direct Codex auth material or obvious auth/session key structures in
+supervisor-consumed artifacts. Regular `.agent-tmux-runtime/` files are ignored
+for map application. The artifact directory passed to the validator must itself
+be a real directory, not a symlink, and must not resolve inside the registry
+repo. Treat rejected artifacts as out of sidecar scope.
 
-The wrapper prints the sidecar session, artifact directory, and log path before
-launch. Capture them for audit:
+The wrapper prints the sidecar session, artifact directory, sidecar registry
+path, and log path before launch. Capture them for audit:
 
 ```bash
 agent-tmux log <sidecar-session>
@@ -244,8 +245,8 @@ ls <artifact-dir>
 If a follow-up message is needed after launch, target only the known sidecar
 session and dry-run guarded contact first. For wrapper-launched sidecars,
 `agent-contact` accepts the original repository root when an exact session is
-provided and validates the sidecar's artifact-local `SIDECAR_REQUEST.txt`
-manifest before selecting the pane:
+provided and validates the sidecar registry outside the writable artifact tree
+before selecting the pane:
 
 ```bash
 agent-contact send --repo <repo> --provider codex --session <sidecar-session> --message "..." --dry-run

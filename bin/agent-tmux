@@ -135,6 +135,18 @@ path_is_same_or_child() {
     [[ "${child}" == "${parent}" || "${child}" == "${parent}/"* ]]
 }
 
+code_map_sidecar_registry_dir() {
+    local artifact_dir="$1"
+    printf "%s/.agent-tmux-sidecar-registry\n" "$(dirname "${artifact_dir}")"
+}
+
+code_map_sidecar_registry_file() {
+    local artifact_dir="$1"
+    local session
+    session="$(basename "${artifact_dir}")"
+    printf "%s/%s.txt\n" "$(code_map_sidecar_registry_dir "${artifact_dir}")" "${session}"
+}
+
 require_bwrap() {
     command -v bwrap >/dev/null 2>&1 || die "bwrap is required for code-map sidecar filesystem isolation"
 }
@@ -252,6 +264,7 @@ Patch artifact directory (only writable output): ${artifact_dir}
 Anchor/checkpoint: ${anchor}
 Permission profile: workspace-write rooted at the artifact directory, approval policy never, shell-command network access disabled.
 Filesystem isolation: bwrap read-only root filesystem with host home hidden except for the Codex executable path, private /dev, read-only /dev/shm, private /tmp and /run, read-only repository path, writable artifact directory only. Codex HOME/CODEX_HOME are artifact-local under .agent-tmux-runtime. For fork mode, the requested Codex session file plus the matching session_index.jsonl entry when present are copied into the artifact-local CODEX_HOME before launch.
+Artifact identity: the supervisor keeps a sidecar registry outside this writable artifact directory; SIDECAR_REQUEST.txt is an audit copy and not the trust anchor.
 Codex auth/session files are wrapper-managed runtime inputs. The sidecar permission profile deny-reads artifact-local CODEX_HOME from model-run shell commands and disables network access for model-run shell commands. Do not read them, summarize them, contact localhost services, or copy credential contents into MAP_REPORT.md, PROPOSED_CHANGES.patch, or PROPOSED_FILES/.
 Allowed map/project-memory target paths for applyable patch artifacts:
 - .project-memory/**
@@ -295,6 +308,9 @@ prepare_code_map_artifact_dir() {
     local artifact_parent_real
     local artifact_real
     local owner_token
+    local registry_dir
+    local registry_file
+    local noclobber_was_set=0
     artifact_parent="$(dirname "${artifact_dir}")"
     artifact_base="$(basename "${artifact_dir}")"
     artifact_parent_resolved="$(resolved_path "${artifact_parent}")"
@@ -319,6 +335,25 @@ prepare_code_map_artifact_dir() {
         rmdir "${artifact_dir}" 2>/dev/null || true
         die "code-map artifact directory must not resolve inside the repository root: ${artifact_dir}"
     fi
+    registry_dir="$(code_map_sidecar_registry_dir "${artifact_dir}")"
+    if [[ -L "${registry_dir}" ]]; then
+        rmdir "${artifact_dir}" 2>/dev/null || true
+        die "code-map sidecar registry directory must not be a symlink: ${registry_dir}"
+    fi
+    mkdir -p "${registry_dir}" || {
+        rmdir "${artifact_dir}" 2>/dev/null || true
+        die "failed to create code-map sidecar registry directory: ${registry_dir}"
+    }
+    if [[ -L "${registry_dir}" || ! -d "${registry_dir}" ]]; then
+        rmdir "${artifact_dir}" 2>/dev/null || true
+        die "code-map sidecar registry directory is not a real directory: ${registry_dir}"
+    fi
+    chmod 700 "${registry_dir}" 2>/dev/null || true
+    registry_file="$(code_map_sidecar_registry_file "${artifact_dir}")"
+    if [[ -e "${registry_file}" || -L "${registry_file}" ]]; then
+        rmdir "${artifact_dir}" 2>/dev/null || true
+        die "code-map sidecar registry already exists: ${registry_file}; use a new anchor"
+    fi
     chmod 700 "${artifact_dir}" 2>/dev/null || true
     mkdir -p "${artifact_dir}/.agent-tmux-runtime/home" \
         "${artifact_dir}/.agent-tmux-runtime/codex-home" \
@@ -332,15 +367,18 @@ prepare_code_map_artifact_dir() {
         "${artifact_dir}/.agent-tmux-runtime/codex-home" 2>/dev/null || true
     owner_token="$(stable_hash "${artifact_dir}"$'\n'"${session}"$'\n'"${BASHPID:-$$}"$'\n'"$(date +%s%N 2>/dev/null || date +%s)")"
     printf "%s\n" "${owner_token}" >"${artifact_dir}/.agent-tmux-runtime/owner-token"
-    cat >"${artifact_dir}/SIDECAR_REQUEST.txt" <<EOF
-session=${session}
-repo=${resolved_workdir}
-anchor=${anchor}
-allowed_output_dir=${artifact_dir}
-permission=-c sandbox_mode=workspace-write -c sandbox_workspace_write.network_access=false -a never
-filesystem_isolation=bwrap read-only root, private /tmp and /run, artifact directory writable
-validator=agent-tmux codex-code-map-validate-artifacts ${artifact_dir}
-EOF
+    case "$-" in
+        *C*) noclobber_was_set=1 ;;
+    esac
+    set -o noclobber
+    if ! write_code_map_sidecar_request_content "${session}" "${resolved_workdir}" "${anchor}" "${artifact_dir}" >"${registry_file}"; then
+        ((noclobber_was_set == 1)) || set +o noclobber
+        rm -rf --one-file-system -- "${artifact_dir}"
+        die "failed to create code-map sidecar registry: ${registry_file}"
+    fi
+    ((noclobber_was_set == 1)) || set +o noclobber
+    chmod 600 "${registry_file}" 2>/dev/null || true
+    write_code_map_sidecar_request_content "${session}" "${resolved_workdir}" "${anchor}" "${artifact_dir}" >"${artifact_dir}/SIDECAR_REQUEST.txt"
     CODE_MAP_PREPARED_ARTIFACT_DIR="${artifact_dir}"
     CODE_MAP_ARTIFACT_OWNER_TOKEN="${owner_token}"
 }
@@ -577,6 +615,22 @@ validate_code_map_patch_artifact() {
     fi
 }
 
+write_code_map_sidecar_request_content() {
+    local session="$1"
+    local resolved_workdir="$2"
+    local anchor="$3"
+    local artifact_dir="$4"
+    cat <<EOF
+session=${session}
+repo=${resolved_workdir}
+anchor=${anchor}
+allowed_output_dir=${artifact_dir}
+permission=-c sandbox_mode=workspace-write -c sandbox_workspace_write.network_access=false -a never
+filesystem_isolation=bwrap read-only root, private /tmp and /run, artifact directory writable
+validator=agent-tmux codex-code-map-validate-artifacts ${artifact_dir}
+EOF
+}
+
 write_codex_auth_patterns() {
     local patterns_file="$1"
     local source_codex_home="${CODEX_HOME:-${HOME:-}/.codex}"
@@ -642,9 +696,9 @@ strip_trailing_slashes() {
     printf "%s\n" "${path}"
 }
 
-validate_code_map_sidecar_manifest() {
-    local artifact_dir="$1"
-    local manifest="${artifact_dir}/SIDECAR_REQUEST.txt"
+load_code_map_request_file() {
+    local request_file="$1"
+    local label="$2"
     local session=""
     local repo=""
     local allowed_output_dir=""
@@ -654,12 +708,12 @@ validate_code_map_sidecar_manifest() {
     local line
     local key
     local value
-    [[ -f "${manifest}" ]] || {
-        echo "agent-tmux: missing sidecar request manifest: SIDECAR_REQUEST.txt" >&2
+    [[ -f "${request_file}" ]] || {
+        echo "agent-tmux: missing ${label}: ${request_file}" >&2
         return 1
     }
-    [[ ! -L "${manifest}" ]] || {
-        echo "agent-tmux: sidecar request manifest must not be a symlink: SIDECAR_REQUEST.txt" >&2
+    [[ ! -L "${request_file}" ]] || {
+        echo "agent-tmux: ${label} must not be a symlink: ${request_file}" >&2
         return 1
     }
     while IFS= read -r line || [[ -n "${line}" ]]; do
@@ -670,7 +724,7 @@ validate_code_map_sidecar_manifest() {
                 case "${key}" in
                     session)
                         ((seen_session == 0)) || {
-                            echo "agent-tmux: duplicate sidecar request manifest field: session" >&2
+                            echo "agent-tmux: duplicate ${label} field: session" >&2
                             return 1
                         }
                         seen_session=1
@@ -678,7 +732,7 @@ validate_code_map_sidecar_manifest() {
                         ;;
                     repo)
                         ((seen_repo == 0)) || {
-                            echo "agent-tmux: duplicate sidecar request manifest field: repo" >&2
+                            echo "agent-tmux: duplicate ${label} field: repo" >&2
                             return 1
                         }
                         seen_repo=1
@@ -686,7 +740,7 @@ validate_code_map_sidecar_manifest() {
                         ;;
                     allowed_output_dir)
                         ((seen_allowed_output_dir == 0)) || {
-                            echo "agent-tmux: duplicate sidecar request manifest field: allowed_output_dir" >&2
+                            echo "agent-tmux: duplicate ${label} field: allowed_output_dir" >&2
                             return 1
                         }
                         seen_allowed_output_dir=1
@@ -694,34 +748,69 @@ validate_code_map_sidecar_manifest() {
                         ;;
                 esac
                 ;;
-        esac
-    done <"${manifest}"
+            esac
+    done <"${request_file}"
     if [[ -z "${session}" || -z "${repo}" || -z "${allowed_output_dir}" ]]; then
-        echo "agent-tmux: sidecar request manifest missing session, repo, or allowed_output_dir" >&2
+        echo "agent-tmux: ${label} missing session, repo, or allowed_output_dir" >&2
+        return 1
+    fi
+    CODE_MAP_REQUEST_SESSION="${session}"
+    CODE_MAP_REQUEST_REPO="${repo}"
+    CODE_MAP_REQUEST_ALLOWED_OUTPUT_DIR="${allowed_output_dir}"
+    return 0
+}
+
+validate_code_map_sidecar_registry() {
+    local artifact_dir="$1"
+    local registry_dir
+    local registry_file
+    local manifest="${artifact_dir}/SIDECAR_REQUEST.txt"
+    local session
+    local repo
+    local allowed_output_dir
+    local manifest_session
+    local manifest_repo
+    local manifest_allowed_output_dir
+    registry_dir="$(code_map_sidecar_registry_dir "${artifact_dir}")"
+    registry_file="$(code_map_sidecar_registry_file "${artifact_dir}")"
+    if [[ -L "${registry_dir}" || ! -d "${registry_dir}" ]]; then
+        echo "agent-tmux: missing code-map sidecar registry directory: ${registry_dir}" >&2
+        return 1
+    fi
+    load_code_map_request_file "${registry_file}" "code-map sidecar registry" || return 1
+    session="${CODE_MAP_REQUEST_SESSION}"
+    repo="${CODE_MAP_REQUEST_REPO}"
+    allowed_output_dir="${CODE_MAP_REQUEST_ALLOWED_OUTPUT_DIR}"
+    load_code_map_request_file "${manifest}" "sidecar request manifest" || return 1
+    manifest_session="${CODE_MAP_REQUEST_SESSION}"
+    manifest_repo="${CODE_MAP_REQUEST_REPO}"
+    manifest_allowed_output_dir="${CODE_MAP_REQUEST_ALLOWED_OUTPUT_DIR}"
+    if [[ "${manifest_session}" != "${session}" || "${manifest_repo}" != "${repo}" || "${manifest_allowed_output_dir}" != "${allowed_output_dir}" ]]; then
+        echo "agent-tmux: sidecar request manifest does not match code-map sidecar registry" >&2
         return 1
     fi
     if [[ "${session}" != "$(basename "${artifact_dir}")" ]]; then
-        echo "agent-tmux: sidecar request manifest session does not match artifact directory: ${session}" >&2
+        echo "agent-tmux: code-map sidecar registry session does not match artifact directory: ${session}" >&2
         return 1
     fi
     [[ -d "${repo}" ]] || {
-        echo "agent-tmux: sidecar request manifest repo is not a directory: ${repo}" >&2
+        echo "agent-tmux: code-map sidecar registry repo is not a directory: ${repo}" >&2
         return 1
     }
     repo="$(cd "${repo}" 2>/dev/null && pwd -P)" || {
-        echo "agent-tmux: sidecar request manifest repo is not a directory: ${repo}" >&2
+        echo "agent-tmux: code-map sidecar registry repo is not a directory: ${repo}" >&2
         return 1
     }
     [[ -d "${allowed_output_dir}" ]] || {
-        echo "agent-tmux: sidecar request manifest allowed_output_dir is not a directory: ${allowed_output_dir}" >&2
+        echo "agent-tmux: code-map sidecar registry allowed_output_dir is not a directory: ${allowed_output_dir}" >&2
         return 1
     }
     allowed_output_dir="$(cd "${allowed_output_dir}" 2>/dev/null && pwd -P)" || {
-        echo "agent-tmux: sidecar request manifest allowed_output_dir is not a directory: ${allowed_output_dir}" >&2
+        echo "agent-tmux: code-map sidecar registry allowed_output_dir is not a directory: ${allowed_output_dir}" >&2
         return 1
     }
     if [[ "${allowed_output_dir}" != "${artifact_dir}" ]]; then
-        echo "agent-tmux: sidecar request manifest allowed_output_dir does not match artifact directory: ${allowed_output_dir}" >&2
+        echo "agent-tmux: code-map sidecar registry allowed_output_dir does not match artifact directory: ${allowed_output_dir}" >&2
         return 1
     fi
     if path_is_same_or_child "${artifact_dir}" "${repo}"; then
@@ -746,7 +835,7 @@ validate_code_map_artifacts() {
     local auth_patterns
     auth_patterns="$(mktemp)"
     write_codex_auth_patterns "${auth_patterns}"
-    validate_code_map_sidecar_manifest "${artifact_dir}" || failed=1
+    validate_code_map_sidecar_registry "${artifact_dir}" || failed=1
     while IFS= read -r -d '' file_path; do
         rel="${file_path#${artifact_dir}/}"
         if [[ -L "${file_path}" ]]; then
@@ -836,6 +925,14 @@ cleanup_code_map_artifact_dir() {
     local artifact_dir="$1"
     local owner_token="$2"
     [[ -n "${artifact_dir}" && -n "${owner_token}" ]] || return 0
+    local registry_file
+    registry_file="$(code_map_sidecar_registry_file "${artifact_dir}")"
+    if [[ ! -L "${registry_file}" && -f "${registry_file}" ]] \
+        && grep -Fxq "session=$(basename "${artifact_dir}")" "${registry_file}" \
+        && grep -Fxq "allowed_output_dir=${artifact_dir}" "${registry_file}"; then
+        rm -f -- "${registry_file}"
+        rmdir "$(code_map_sidecar_registry_dir "${artifact_dir}")" 2>/dev/null || true
+    fi
     [[ ! -L "${artifact_dir}" && -d "${artifact_dir}" ]] || return 0
     local marker="${artifact_dir}/.agent-tmux-runtime/owner-token"
     [[ -f "${marker}" ]] || return 0
@@ -859,6 +956,7 @@ emit_code_map_launch_report() {
     echo "agent-tmux: code-map sidecar anchor: ${anchor}" >&2
     echo "agent-tmux: code-map sidecar permission: workspace-write, approval never, shell network disabled, CODEX_HOME deny-read for shell commands" >&2
     echo "agent-tmux: code-map sidecar artifact-dir: ${artifact_dir}" >&2
+    echo "agent-tmux: code-map sidecar registry: $(code_map_sidecar_registry_file "${artifact_dir}")" >&2
     echo "agent-tmux: code-map sidecar log: ${log_path}" >&2
 }
 
