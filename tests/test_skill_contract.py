@@ -1396,6 +1396,57 @@ class SkillContractTests(unittest.TestCase):
                 result.stderr,
             )
 
+    def test_agent_tmux_code_map_artifact_validator_rejects_ssh_private_key_path_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            artifact_dir = tmp_path / "artifact"
+            write_validator_sidecar_manifest(artifact_dir)
+            proposed = artifact_dir / "PROPOSED_FILES" / ".project-memory"
+            proposed.mkdir(parents=True)
+            (proposed / "ssh-key.md").write_text("map note\n", encoding="utf-8")
+            (proposed / "key.md").write_text("map note\n", encoding="utf-8")
+            (artifact_dir / "PROPOSED_CHANGES.patch").write_text(
+                "diff --git a/.project-memory/ssh_key.md b/.project-memory/ssh_key.md\n"
+                "--- a/.project-memory/ssh_key.md\n"
+                "+++ b/.project-memory/ssh_key.md\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new\n"
+                "diff --git a/.project-memory/private key.md b/.project-memory/private key.md\n"
+                "--- a/.project-memory/private key.md\n"
+                "+++ b/.project-memory/private key.md\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn(
+                "invalid code-map artifact runtime/auth path: PROPOSED_FILES/.project-memory/ssh-key.md",
+                result.stderr,
+            )
+            self.assertIn(
+                "invalid code-map artifact runtime/auth path: PROPOSED_FILES/.project-memory/key.md",
+                result.stderr,
+            )
+            self.assertIn(
+                "invalid code-map artifact target (diff old path): .project-memory/ssh_key.md",
+                result.stderr,
+            )
+            self.assertIn(
+                "invalid code-map artifact target (diff old path): .project-memory/private key.md",
+                result.stderr,
+            )
+
     def test_agent_tmux_code_map_artifact_validator_rejects_newline_path_names(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -1512,6 +1563,9 @@ class SkillContractTests(unittest.TestCase):
             ("service.secret.token", "PROPOSED_FILES/.project-memory/state.md"),
             ("'aws-secret-access-key'", "MAP_REPORT.md"),
             ("'github_token'", "PROPOSED_FILES/.project-memory/state.md"),
+            ("ssh_key", "PROPOSED_FILES/.project-memory/state.md"),
+            ("ssh-key", "PROPOSED_FILES/.project-memory/state.md"),
+            ("private key", "MAP_REPORT.md"),
         ]
         for key, rel_path in cases:
             with self.subTest(key=key, rel_path=rel_path):
@@ -1534,6 +1588,35 @@ class SkillContractTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 2)
                     self.assertIn(
                         f"code-map artifact appears to contain Codex auth/session structure: {rel_path}",
+                        result.stderr,
+                    )
+
+    def test_agent_tmux_code_map_artifact_validator_rejects_private_key_blocks(self):
+        cases = [
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nopaque\n-----END OPENSSH PRIVATE KEY-----\n",
+            "-----BEGIN RSA PRIVATE KEY-----\nopaque\n-----END RSA PRIVATE KEY-----\n",
+        ]
+        for content in cases:
+            with self.subTest(content=content.splitlines()[0]):
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_path = Path(tmp)
+                    artifact_dir = tmp_path / "artifact"
+                    write_validator_sidecar_manifest(artifact_dir)
+                    proposed = artifact_dir / "PROPOSED_FILES" / ".project-memory"
+                    proposed.mkdir(parents=True)
+                    (proposed / "state.md").write_text(content, encoding="utf-8")
+                    result = subprocess.run(
+                        ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                        cwd=ROOT,
+                        check=False,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env={"PATH": "/usr/bin:/bin"},
+                    )
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn(
+                        "code-map artifact appears to contain Codex auth/session structure: PROPOSED_FILES/.project-memory/state.md",
                         result.stderr,
                     )
 
