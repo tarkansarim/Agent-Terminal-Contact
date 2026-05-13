@@ -1111,6 +1111,30 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("invalid code-map sidecar registry line: aws_secret_access_key: local-secret", result.stderr)
 
+    def test_agent_tmux_code_map_artifact_validator_rejects_blank_sidecar_request_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            artifact_dir = tmp_path / "artifact"
+            write_validator_sidecar_manifest(artifact_dir)
+            manifest = artifact_dir / "SIDECAR_REQUEST.txt"
+            content = manifest.read_text(encoding="utf-8")
+            tampered = content.replace("repo=", "\nrepo=", 1)
+            manifest.write_text(tampered, encoding="utf-8")
+            registry = artifact_dir.parent / ".agent-tmux-sidecar-registry" / f"{artifact_dir.name}.txt"
+            registry.write_text(tampered, encoding="utf-8")
+            (artifact_dir / "MAP_REPORT.md").write_text("map report\n", encoding="utf-8")
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("invalid code-map sidecar registry blank line", result.stderr)
+
     def test_agent_tmux_code_map_artifact_validator_rejects_permission_manifest_tamper(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = Path(tmp) / "artifact"
@@ -1708,6 +1732,8 @@ class SkillContractTests(unittest.TestCase):
             proposed.mkdir(parents=True)
             (proposed / "ssh-key.md").write_text("map note\n", encoding="utf-8")
             (proposed / "key.md").write_text("map note\n", encoding="utf-8")
+            (proposed / "id_ecdsa.md").write_text("map note\n", encoding="utf-8")
+            (proposed / "id-dsa.md").write_text("map note\n", encoding="utf-8")
             (artifact_dir / "PROPOSED_CHANGES.patch").write_text(
                 "diff --git a/.project-memory/ssh_key.md b/.project-memory/ssh_key.md\n"
                 "--- a/.project-memory/ssh_key.md\n"
@@ -1718,6 +1744,18 @@ class SkillContractTests(unittest.TestCase):
                 "diff --git a/.project-memory/private key.md b/.project-memory/private key.md\n"
                 "--- a/.project-memory/private key.md\n"
                 "+++ b/.project-memory/private key.md\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new\n"
+                "diff --git a/.project-memory/id_ecdsa.md b/.project-memory/id_ecdsa.md\n"
+                "--- a/.project-memory/id_ecdsa.md\n"
+                "+++ b/.project-memory/id_ecdsa.md\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new\n"
+                "diff --git a/.project-memory/id-dsa.md b/.project-memory/id-dsa.md\n"
+                "--- a/.project-memory/id-dsa.md\n"
+                "+++ b/.project-memory/id-dsa.md\n"
                 "@@ -1 +1 @@\n"
                 "-old\n"
                 "+new\n",
@@ -1742,11 +1780,27 @@ class SkillContractTests(unittest.TestCase):
                 result.stderr,
             )
             self.assertIn(
+                "invalid code-map artifact runtime/auth path: PROPOSED_FILES/.project-memory/id_ecdsa.md",
+                result.stderr,
+            )
+            self.assertIn(
+                "invalid code-map artifact runtime/auth path: PROPOSED_FILES/.project-memory/id-dsa.md",
+                result.stderr,
+            )
+            self.assertIn(
                 "invalid code-map artifact target (diff old path): .project-memory/ssh_key.md",
                 result.stderr,
             )
             self.assertIn(
                 "invalid code-map artifact target (diff old path): .project-memory/private key.md",
+                result.stderr,
+            )
+            self.assertIn(
+                "invalid code-map artifact target (diff old path): .project-memory/id_ecdsa.md",
+                result.stderr,
+            )
+            self.assertIn(
+                "invalid code-map artifact target (diff old path): .project-memory/id-dsa.md",
                 result.stderr,
             )
 
@@ -1934,6 +1988,82 @@ class SkillContractTests(unittest.TestCase):
                     target = artifact_dir / rel_path
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(f"{key}: local-secret\n", encoding="utf-8")
+                    result = subprocess.run(
+                        ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                        cwd=ROOT,
+                        check=False,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env={"PATH": "/usr/bin:/bin"},
+                    )
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn(
+                        f"code-map artifact appears to contain Codex auth/session structure: {rel_path}",
+                        result.stderr,
+                    )
+
+    def test_agent_tmux_code_map_artifact_validator_rejects_escaped_auth_structure_keys(self):
+        cases = {
+            "MAP_REPORT.md": r'{"aws_\u0073ecret_\u0061ccess_\u006bey":"local-secret"}' + "\n",
+            "PROPOSED_FILES/.project-memory/code-map/state.md": r'"\u0073sh_\u006bey": local-secret' + "\n",
+            "PROPOSED_FILES/.project-memory/routing/state.md": r"private\u0020key: local-secret" + "\n",
+            "PROPOSED_CHANGES.patch": (
+                "diff --git a/docs/CODE_MAP.md b/docs/CODE_MAP.md\n"
+                "--- a/docs/CODE_MAP.md\n"
+                "+++ b/docs/CODE_MAP.md\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                r'+"\u0069d_rsa": "local-secret"'
+                "\n"
+            ),
+        }
+        for rel_path, content in cases.items():
+            with self.subTest(rel_path=rel_path):
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / "artifact"
+                    write_validator_sidecar_manifest(artifact_dir)
+                    target = artifact_dir / rel_path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(content, encoding="utf-8")
+                    result = subprocess.run(
+                        ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                        cwd=ROOT,
+                        check=False,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env={"PATH": "/usr/bin:/bin"},
+                    )
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn(
+                        f"code-map artifact appears to contain Codex auth/session structure: {rel_path}",
+                        result.stderr,
+                    )
+
+    def test_agent_tmux_code_map_artifact_validator_rejects_split_line_auth_structure_keys(self):
+        cases = {
+            "MAP_REPORT.md": "AWS_SECRET_ACCESS_KEY\n: local-secret\n",
+            "PROPOSED_FILES/.project-memory/code-map/state.md": '"AWS_SECRET_ACCESS_KEY"\n= local-secret\n',
+            "PROPOSED_FILES/.project-memory/routing/state.md": "'id_ecdsa'\n: local-secret\n",
+            "PROPOSED_CHANGES.patch": (
+                "diff --git a/docs/CODE_MAP.md b/docs/CODE_MAP.md\n"
+                "--- a/docs/CODE_MAP.md\n"
+                "+++ b/docs/CODE_MAP.md\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+AWS_SECRET_ACCESS_KEY\n"
+                "+= local-secret\n"
+            ),
+        }
+        for rel_path, content in cases.items():
+            with self.subTest(rel_path=rel_path):
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / "artifact"
+                    write_validator_sidecar_manifest(artifact_dir)
+                    target = artifact_dir / rel_path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(content, encoding="utf-8")
                     result = subprocess.run(
                         ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
                         cwd=ROOT,

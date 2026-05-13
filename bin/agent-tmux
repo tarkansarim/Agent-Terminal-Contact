@@ -768,6 +768,8 @@ readonly -a CODE_MAP_RESERVED_COMPONENT_EXACT=(
     sessionid
     conversationid
     encryptedcontent
+    iddsa
+    idecdsa
     idrsa
     ided25519
 )
@@ -785,6 +787,8 @@ readonly -a CODE_MAP_RESERVED_COMPONENT_CONTAINS=(
     idtoken
     conversationid
     encryptedcontent
+    iddsa
+    idecdsa
     idrsa
     ided25519
 )
@@ -1203,6 +1207,7 @@ validate_code_map_content_policy() {
         return 1
     fi
     PYTHONPATH= PYTHONHOME= "${python_bin}" -I -S - "${rel}" "${file_path}" <<'PY'
+import codecs
 import re
 import sys
 
@@ -1229,6 +1234,8 @@ RESERVED_RECORD_KEY_EXACT = {
     "sessionid",
     "conversationid",
     "encryptedcontent",
+    "iddsa",
+    "idecdsa",
     "idrsa",
     "ided25519",
 }
@@ -1247,6 +1254,8 @@ RESERVED_RECORD_KEY_CONTAINS = (
     "sessionid",
     "conversationid",
     "encryptedcontent",
+    "iddsa",
+    "idecdsa",
     "idrsa",
     "ided25519",
 )
@@ -1256,7 +1265,21 @@ def normalize(value: str) -> str:
     return re.sub(r"[^0-9a-z]+", "", value.casefold())
 
 
+def key_variants(value: str) -> set[str]:
+    variants = {value}
+    if "\\" in value:
+        try:
+            variants.add(codecs.decode(value, "unicode_escape"))
+        except UnicodeDecodeError:
+            pass
+    return variants
+
+
 def key_is_reserved(value: str) -> bool:
+    return any(_key_variant_is_reserved(variant) for variant in key_variants(value))
+
+
+def _key_variant_is_reserved(value: str) -> bool:
     normalized = normalize(value)
     return normalized in RESERVED_RECORD_KEY_EXACT or any(
         marker in normalized for marker in RESERVED_RECORD_KEY_CONTAINS
@@ -1292,6 +1315,8 @@ private_key_re = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----", re.IGNOREC
 session_record_type_re = re.compile(r'"type"\s*:\s*"(session_meta|response_item)"', re.IGNORECASE)
 multiline_quoted_key_re = re.compile(r"""["']([^"']{1,128})["']\s*:""", re.MULTILINE)
 multiline_session_record_type_re = re.compile(r'"type"\s*:\s*"(session_meta|response_item)"', re.IGNORECASE | re.MULTILINE)
+split_assignment_key_re = re.compile(r"""^["']?([^"'\s:=][^"':=\n]{0,127}?)["']?\s*$""")
+split_assignment_separator_re = re.compile(r"""^[:=]\s*""")
 
 with open(path, "r", encoding="utf-8", errors="replace") as handle:
     content = handle.read()
@@ -1301,18 +1326,25 @@ with open(path, "r", encoding="utf-8", errors="replace") as handle:
         fail()
     if any(key_is_reserved(match) for match in multiline_quoted_key_re.findall(content)):
         fail()
-    for line in content.splitlines():
+    lines = content.splitlines()
+    structured_lines = [strip_record_prefixes(line) for line in lines]
+    for index, line in enumerate(lines):
         if private_key_re.search(line) or session_record_type_re.search(line):
             fail()
         if any(key_is_reserved(match) for match in quoted_key_re.findall(line)):
             fail()
-        structured_line = strip_record_prefixes(line)
+        structured_line = structured_lines[index]
         colon_match = colon_assignment_key_re.match(structured_line)
         equals_match = equals_assignment_key_re.match(structured_line)
         if colon_match and key_is_reserved(colon_match.group(1)):
             fail()
         if equals_match and key_is_reserved(equals_match.group(1)):
             fail()
+        split_match = split_assignment_key_re.match(structured_line)
+        if split_match and index + 1 < len(structured_lines):
+            next_line = structured_lines[index + 1].lstrip()
+            if split_assignment_separator_re.match(next_line) and key_is_reserved(split_match.group(1)):
+                fail()
 PY
     return $?
 }
@@ -1466,6 +1498,8 @@ load_code_map_request_file() {
                 esac
                 ;;
             "")
+                echo "agent-tmux: invalid ${label} blank line" >&2
+                return 1
                 ;;
             *)
                 echo "agent-tmux: invalid ${label} line: ${line}" >&2
