@@ -666,11 +666,15 @@ is_safe_relative_path() {
     [[ -n "${path}" ]] || return 1
     [[ "${path}" != /* ]] || return 1
     [[ "${path}" != -* ]] || return 1
-    [[ "${path}" != *$'\t'* && "${path}" != *$'\r'* && "${path}" != *$'\n'* ]] || return 1
+    ! string_has_control_chars "${path}" || return 1
     case "/${path}/" in
         *"/../"*|*"/./"*) return 1 ;;
     esac
     return 0
+}
+
+string_has_control_chars() {
+    [[ "$1" == *[$'\001'-$'\037'$'\177']* ]]
 }
 
 is_allowed_code_map_target_path() {
@@ -930,8 +934,8 @@ validate_no_codex_auth_structure() {
     local artifact_dir="$1"
     local file_path="$2"
     local rel="${file_path#${artifact_dir}/}"
-    if LC_ALL=C grep -Eiq '"(access_token|refresh_token|id_token|api_key)"[[:space:]]*:' "${file_path}" \
-        || LC_ALL=C grep -Eiq '(^|[^A-Za-z0-9_])(access_token|refresh_token|id_token|api_key)[[:space:]]*=' "${file_path}" \
+    if LC_ALL=C grep -Eiq '"(access_token|refresh_token|id_token|api_key|client_secret|credential|credentials|secret|secrets|token|auth_token|session_token|private_key|password)"[[:space:]]*:' "${file_path}" \
+        || LC_ALL=C grep -Eiq '(^|[^A-Za-z0-9_])(access_token|refresh_token|id_token|api_key|client_secret|credential|credentials|secret|secrets|token|auth_token|session_token|private_key|password)[[:space:]]*=' "${file_path}" \
         || LC_ALL=C grep -Eiq '"type"[[:space:]]*:[[:space:]]*"session_meta"' "${file_path}" \
         || LC_ALL=C grep -Eiq '"(encrypted_content|session_id|conversation_id)"[[:space:]]*:' "${file_path}"; then
         echo "agent-tmux: code-map artifact appears to contain Codex auth/session structure: ${rel}" >&2
@@ -949,7 +953,7 @@ path_has_code_map_runtime_or_auth_component() {
     for component in "${components[@]}"; do
         normalized="${component,,}"
         case "${normalized}" in
-            .agent-tmux-runtime|.agent-tmux-sidecar-runtime|codex-home|.codex|sessions|session|session.*|session-*|session_*|auth|auth.*|auth-*|auth_*|*token*|credential|credential.*|credential-*|credential_*|secret|secret.*|secret-*|secret_*|session_index.jsonl)
+            .agent-tmux-runtime|.agent-tmux-sidecar-runtime|codex-home|.codex|session*|auth|auth.*|auth-*|auth_*|*token*|credential*|secret*|session_index.jsonl)
                 return 0
                 ;;
         esac
