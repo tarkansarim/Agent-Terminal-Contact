@@ -936,6 +936,7 @@ validate_no_codex_auth_structure() {
     local rel="${file_path#${artifact_dir}/}"
     local sensitive_key_fragment='(access[-_.]?key[-_.]?id|access[-_.]?key|access[-_.]?token|refresh[-_.]?token|id[-_.]?token|api[-_.]?key|client[-_.]?secret|private[-_.]?key|auth|credential|secret|token|password|session[-_.]?id|conversation[-_.]?id|encrypted[-_.]?content)'
     if LC_ALL=C grep -Eiq "\"[A-Za-z0-9_.-]*${sensitive_key_fragment}[A-Za-z0-9_.-]*\"[[:space:]]*:" "${file_path}" \
+        || LC_ALL=C grep -Eiq "'[A-Za-z0-9_.-]*${sensitive_key_fragment}[A-Za-z0-9_.-]*'[[:space:]]*:" "${file_path}" \
         || LC_ALL=C grep -Eiq "(^|[^A-Za-z0-9_.-])[A-Za-z0-9_.-]*${sensitive_key_fragment}[A-Za-z0-9_.-]*[[:space:]]*=" "${file_path}" \
         || LC_ALL=C grep -Eiq "(^|[^A-Za-z0-9_.-])[A-Za-z0-9_.-]*${sensitive_key_fragment}[A-Za-z0-9_.-]*[[:space:]]*:" "${file_path}" \
         || LC_ALL=C grep -Eiq '"type"[[:space:]]*:[[:space:]]*"session_meta"' "${file_path}" \

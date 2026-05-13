@@ -1510,6 +1510,8 @@ class SkillContractTests(unittest.TestCase):
             ("aws-secret-access-key", "PROPOSED_FILES/.project-memory/state.md"),
             ("aws-access-key-id", "PROPOSED_FILES/.project-memory/state.md"),
             ("service.secret.token", "PROPOSED_FILES/.project-memory/state.md"),
+            ("'aws-secret-access-key'", "MAP_REPORT.md"),
+            ("'github_token'", "PROPOSED_FILES/.project-memory/state.md"),
         ]
         for key, rel_path in cases:
             with self.subTest(key=key, rel_path=rel_path):
