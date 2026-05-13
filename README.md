@@ -213,11 +213,20 @@ artifacts such as `MAP_REPORT.md`, `PROPOSED_CHANGES.patch`, or proposed file
 contents under `PROPOSED_FILES/` inside the artifact directory. Applyable
 artifacts are limited to these map/project-memory targets:
 
-- `.project-memory/**`
+- `.project-memory/code-map-state.json`, `.project-memory/project-memory-state.json`
+- `.project-memory/code-map/**`, `.project-memory/project-memory/**`,
+  `.project-memory/routing/**`, `.project-memory/indexes/**`,
+  `.project-memory/subsystems/**`
+- files under `.project-memory/` policy namespaces must use `.md`, `.json`, or
+  `.jsonl` extensions and must not use runtime/credential/key/token-looking path
+  components such as `codex-home`, `.codex`, `session_index.jsonl`,
+  `credential`, `secret`, `token`, `password`, `private-key`, `access-key`,
+  `ssh-key`, or `api-key`
 - `docs/CODEBASE_ARCHITECTURE_INDEX.md`
 - `docs/CODEBASE_SUBSYSTEM_MANIFEST.json`
 - direct Markdown files under `docs/SUBSYSTEMS/` (`docs/SUBSYSTEMS/*.md`)
-- `CODE_MAP.md`, `PROJECT_MEMORY.md`, `docs/CODE_MAP.md`, `docs/PROJECT_MEMORY.md`
+- `CODE_MAP.md`, `PROJECT_MEMORY.md`, `docs/CODE_MAP.md`,
+  `docs/PROJECT_MEMORY.md`
 
 The supervisor validates sidecar artifacts before applying them:
 
@@ -230,14 +239,20 @@ of the artifact directory, outside the sidecar-writable tree, and checks it
 against the artifact-local `SIDECAR_REQUEST.txt` audit copy. The registry binds
 the session, repo, and allowed output directory. The wrapper cleanup owner
 marker is also stored beside that registry, outside the sidecar-writable
-artifact and runtime directories. The validator rejects any
-proposed patch or mirrored proposed file targeting source, tests, config, install
-scripts, user-level files, generated artifacts, or other non-map paths. It also
-rejects unsupported patch path header formats, symlink/non-regular entries
+artifact and runtime directories. A `MAP_REPORT.md` without proposed changes is
+the report-only lane; otherwise the artifact must contain a proposed map update.
+The validator rejects an empty sidecar artifact with neither `MAP_REPORT.md` nor
+a proposed update, and rejects any
+proposed patch or mirrored proposed file outside the explicit map target policy,
+including source, tests, config, install scripts, user-level files, generated
+artifacts, or open-ended `.project-memory/` paths. It also rejects unsupported
+patch path header formats, symlink/non-regular entries
 anywhere in the sidecar artifact tree, patch modes that would create symlinks or
 other non-regular files, binary content in supervisor-consumed artifacts, and
 direct Codex auth material or obvious auth/session key structures in
-supervisor-consumed artifacts. Runtime-looking paths such as
+supervisor-consumed artifacts. Ordinary Codex/auth/session map topics are
+allowed when they do not look like runtime files or credential material.
+Runtime-looking paths such as
 `.agent-tmux-runtime/` inside the artifact directory are rejected; wrapper-owned
 runtime state lives outside the artifact tree. The artifact directory passed to
 the validator must itself be a real directory, not a symlink, and must not

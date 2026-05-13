@@ -186,10 +186,19 @@ The sidecar may write
 artifacts such as `MAP_REPORT.md`, `PROPOSED_CHANGES.patch`, or proposed
 map/project-memory file contents under the artifact directory. Applyable
 patch/file artifacts may target only
-`.project-memory/**`, `docs/CODEBASE_ARCHITECTURE_INDEX.md`,
+`.project-memory/code-map-state.json`, `.project-memory/project-memory-state.json`,
+bounded `.project-memory/` policy namespaces
+(`code-map/`, `project-memory/`, `routing/`, `indexes/`, `subsystems/`) with
+`.md`, `.json`, or `.jsonl` files, `docs/CODEBASE_ARCHITECTURE_INDEX.md`,
 `docs/CODEBASE_SUBSYSTEM_MANIFEST.json`, direct Markdown files under
 `docs/SUBSYSTEMS/` (`docs/SUBSYSTEMS/*.md`), `CODE_MAP.md`, `PROJECT_MEMORY.md`,
-`docs/CODE_MAP.md`, or `docs/PROJECT_MEMORY.md`. The
+`docs/CODE_MAP.md`, or `docs/PROJECT_MEMORY.md`. Runtime/credential/key/token
+path components such as `codex-home`, `.codex`, `session_index.jsonl`,
+`credential`, `secret`, `token`, `password`, `private-key`, `access-key`,
+`ssh-key`, or `api-key` are rejected even inside the allowed namespaces;
+ordinary Codex/auth/session map topics are allowed when they do not look like
+runtime files or credential material. `MAP_REPORT.md` alone is the report-only
+lane; otherwise an artifact must contain a proposed map update. The
 sidecar must not edit production source, tests, config, install scripts,
 user-level files, or generated artifacts in place; do not run `apply_patch`,
 commit, install, roll out, dispatch tickets, contact other agents, or mutate

@@ -373,7 +373,9 @@ Filesystem isolation: bwrap minimal root without a host / bind, host home hidden
 Artifact identity: the supervisor keeps a sidecar registry outside this writable artifact directory; SIDECAR_REQUEST.txt is an audit copy and not the trust anchor.
 Codex auth/session files are wrapper-managed runtime inputs. The sidecar permission profile deny-reads wrapper-owned CODEX_HOME from model-run shell commands and disables network access for model-run shell commands. Do not read them, summarize them, contact localhost services, or copy credential contents into MAP_REPORT.md, PROPOSED_CHANGES.patch, or PROPOSED_FILES/.
 Allowed map/project-memory target paths for applyable patch artifacts:
-- .project-memory/**
+- .project-memory/code-map-state.json, .project-memory/project-memory-state.json
+- .project-memory/code-map/**, .project-memory/project-memory/**, .project-memory/routing/**, .project-memory/indexes/**, .project-memory/subsystems/**
+- project-memory namespace files must use .md, .json, or .jsonl extensions and may not use runtime/credential/key/token-looking path components such as codex-home, .codex, session_index.jsonl, credential, secret, token, password, private-key, access-key, ssh-key, or api-key
 - docs/CODEBASE_ARCHITECTURE_INDEX.md
 - docs/CODEBASE_SUBSYSTEM_MANIFEST.json
 - direct Markdown files under docs/SUBSYSTEMS/ (docs/SUBSYSTEMS/*.md)
@@ -674,22 +676,216 @@ is_safe_relative_path() {
 }
 
 string_has_control_chars() {
-    [[ "$1" == *[$'\001'-$'\037'$'\177']* ]]
+    local LC_ALL=C
+    [[ "$1" == *[$'\001'-$'\037'$'\177'-$'\237']* ]]
+}
+
+trusted_system_tool() {
+    local tool="$1"
+    local candidate
+    case "${tool}" in
+        awk|cmp|find|grep|mktemp|rm|sed|sort)
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    for candidate in "/usr/bin/${tool}" "/bin/${tool}"; do
+        if [[ -x "${candidate}" ]]; then
+            printf "%s\n" "${candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+readonly -a CODE_MAP_TARGET_EXACT_PATHS=(
+    CODE_MAP.md
+    PROJECT_MEMORY.md
+    docs/CODE_MAP.md
+    docs/PROJECT_MEMORY.md
+    docs/CODEBASE_ARCHITECTURE_INDEX.md
+    docs/CODEBASE_SUBSYSTEM_MANIFEST.json
+    .project-memory/code-map-state.json
+    .project-memory/project-memory-state.json
+)
+
+readonly -a CODE_MAP_DIRECT_MARKDOWN_DIRS=(
+    docs/SUBSYSTEMS
+)
+
+readonly -a CODE_MAP_PROJECT_MEMORY_TREE_DIRS=(
+    .project-memory/code-map
+    .project-memory/project-memory
+    .project-memory/routing
+    .project-memory/indexes
+    .project-memory/subsystems
+)
+
+readonly -a CODE_MAP_TARGET_EXTENSIONS=(
+    md
+    json
+    jsonl
+)
+
+readonly -a CODE_MAP_RESERVED_COMPONENT_EXACT=(
+    sessionindex
+    sessions
+    credential
+    credentials
+    secret
+    secrets
+    token
+    tokens
+    password
+    passwords
+    key
+    privatekey
+    accesskey
+    accesskeyid
+    sshkey
+    apikey
+    clientsecret
+    refreshtoken
+    idtoken
+    sessionid
+    conversationid
+    encryptedcontent
+    idrsa
+    ided25519
+)
+
+readonly -a CODE_MAP_RESERVED_COMPONENT_CONTAINS=(
+    credential
+    secret
+    password
+    privatekey
+    accesskey
+    sshkey
+    apikey
+    clientsecret
+    refreshtoken
+    idtoken
+    conversationid
+    encryptedcontent
+    idrsa
+    ided25519
+)
+
+code_map_normalize_policy_token() {
+    local LC_ALL=C
+    local token="${1,,}"
+    token="${token//[^[:alnum:]]/}"
+    printf "%s\n" "${token}"
+}
+
+code_map_policy_token_is_reserved_component() {
+    local normalized="$1"
+    local reserved
+    for reserved in "${CODE_MAP_RESERVED_COMPONENT_EXACT[@]}"; do
+        [[ "${normalized}" == "${reserved}" ]] && return 0
+    done
+    case "${normalized}" in
+        *token) return 0 ;;
+    esac
+    for reserved in "${CODE_MAP_RESERVED_COMPONENT_CONTAINS[@]}"; do
+        case "${normalized}" in
+            *"${reserved}"*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+code_map_component_is_reserved() {
+    local component="$1"
+    local lower="${component,,}"
+    local stem="${component}"
+    local normalized
+    case "${lower}" in
+        .agent-tmux-runtime|.agent-tmux-sidecar-runtime|codex-home|.codex|session_index.jsonl|.ssh)
+            return 0
+            ;;
+    esac
+    if [[ "${stem}" == *.* ]]; then
+        stem="${stem%.*}"
+    fi
+    normalized="$(code_map_normalize_policy_token "${component}")"
+    code_map_policy_token_is_reserved_component "${normalized}" && return 0
+    normalized="$(code_map_normalize_policy_token "${stem}")"
+    code_map_policy_token_is_reserved_component "${normalized}" && return 0
+    return 1
+}
+
+path_has_code_map_runtime_or_auth_component() {
+    local path="$1"
+    local component
+    local -a components=()
+    IFS='/' read -r -a components <<<"${path}"
+    for component in "${components[@]}"; do
+        code_map_component_is_reserved "${component}" && return 0
+    done
+    return 1
+}
+
+code_map_target_extension_is_allowed() {
+    local path="$1"
+    local extension="${path##*.}"
+    local allowed
+    [[ "${path}" == *.* ]] || return 1
+    for allowed in "${CODE_MAP_TARGET_EXTENSIONS[@]}"; do
+        [[ "${extension}" == "${allowed}" ]] && return 0
+    done
+    return 1
+}
+
+code_map_path_is_under_project_memory_tree() {
+    local path="$1"
+    local prefix
+    local rest
+    for prefix in "${CODE_MAP_PROJECT_MEMORY_TREE_DIRS[@]}"; do
+        case "${path}" in
+            "${prefix}"/*)
+                rest="${path#${prefix}/}"
+                [[ -n "${rest}" ]] || continue
+                code_map_target_extension_is_allowed "${path}" || continue
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+code_map_dir_is_allowed_project_memory_namespace() {
+    local path="$1"
+    local prefix
+    for prefix in "${CODE_MAP_PROJECT_MEMORY_TREE_DIRS[@]}"; do
+        [[ "${path}" == "${prefix}" ]] && return 0
+        case "${path}" in
+            "${prefix}"/*) return 0 ;;
+        esac
+    done
+    return 1
 }
 
 is_allowed_code_map_target_path() {
     local path="$1"
+    local exact
+    local direct_dir
+    local rest
     is_safe_relative_path "${path}" || return 1
     path_has_code_map_runtime_or_auth_component "${path}" && return 1
-    case "${path}" in
-        .project-memory/*) return 0 ;;
-        docs/CODEBASE_ARCHITECTURE_INDEX.md) return 0 ;;
-        docs/CODEBASE_SUBSYSTEM_MANIFEST.json) return 0 ;;
-        docs/SUBSYSTEMS/*.md)
-            [[ "${path#docs/SUBSYSTEMS/}" != */* ]] && return 0
-            ;;
-        CODE_MAP.md|PROJECT_MEMORY.md|docs/CODE_MAP.md|docs/PROJECT_MEMORY.md) return 0 ;;
-    esac
+    for exact in "${CODE_MAP_TARGET_EXACT_PATHS[@]}"; do
+        [[ "${path}" == "${exact}" ]] && return 0
+    done
+    for direct_dir in "${CODE_MAP_DIRECT_MARKDOWN_DIRS[@]}"; do
+        case "${path}" in
+            "${direct_dir}"/*.md)
+                rest="${path#${direct_dir}/}"
+                [[ "${rest}" != */* ]] && return 0
+                ;;
+        esac
+    done
+    code_map_path_is_under_project_memory_tree "${path}" && return 0
     return 1
 }
 
@@ -697,10 +893,10 @@ is_allowed_code_map_proposed_dir() {
     local path="$1"
     is_safe_relative_path "${path}" || return 1
     path_has_code_map_runtime_or_auth_component "${path}" && return 1
-    case "${path}" in
-        .project-memory|.project-memory/*) return 0 ;;
-        docs|docs/SUBSYSTEMS) return 0 ;;
-    esac
+    [[ "${path}" == "docs" ]] && return 0
+    [[ "${path}" == "docs/SUBSYSTEMS" ]] && return 0
+    [[ "${path}" == ".project-memory" ]] && return 0
+    code_map_dir_is_allowed_project_memory_namespace "${path}" && return 0
     return 1
 }
 
@@ -744,9 +940,11 @@ validate_code_map_patch_artifact() {
     fi
     local failed=0
     local found_path=0
+    local found_hunk=0
     local in_git_diff=0
     local minus_seen=0
     local plus_seen=0
+    local current_diff_has_hunk=0
     local line
     local mode
     local path
@@ -756,6 +954,10 @@ validate_code_map_patch_artifact() {
     while IFS= read -r line || [[ -n "${line}" ]]; do
         case "${line}" in
             "diff --git a/"*" b/"*)
+                if ((in_git_diff == 1 && current_diff_has_hunk != 1)); then
+                    echo "agent-tmux: code-map patch diff contains no hunks before next diff header: ${line}" >&2
+                    failed=1
+                fi
                 rest="${line#diff --git a/}"
                 left="${rest%% b/*}"
                 right="${rest#* b/}"
@@ -763,6 +965,7 @@ validate_code_map_patch_artifact() {
                 in_git_diff=1
                 minus_seen=0
                 plus_seen=0
+                current_diff_has_hunk=0
                 validate_code_map_target_or_record "${left}" "diff old path" || failed=1
                 validate_code_map_target_or_record "${right}" "diff new path" || failed=1
                 ;;
@@ -786,6 +989,15 @@ validate_code_map_patch_artifact() {
                 else
                     plus_seen=1
                     validate_code_map_patch_header_path "${path}" "b/" "+++ path" || failed=1
+                fi
+                ;;
+            "@@ "*)
+                if ((in_git_diff != 1 || minus_seen != 1 || plus_seen != 1)); then
+                    echo "agent-tmux: unsupported code-map patch hunk before complete headers: ${line}" >&2
+                    failed=1
+                else
+                    found_hunk=1
+                    current_diff_has_hunk=1
                 fi
                 ;;
             "diff "*)
@@ -865,6 +1077,14 @@ validate_code_map_patch_artifact() {
         echo "agent-tmux: code-map patch artifact contains no target paths: ${patch_file}" >&2
         return 1
     fi
+    if ((in_git_diff == 1 && current_diff_has_hunk != 1)); then
+        echo "agent-tmux: code-map patch diff contains no hunks: ${patch_file}" >&2
+        failed=1
+    fi
+    if ((found_hunk != 1)); then
+        echo "agent-tmux: code-map patch artifact contains no hunks: ${patch_file}" >&2
+        return 1
+    fi
     if ((failed != 0)); then
         echo "agent-tmux: code-map patch artifact contains non-map or unsupported content: ${patch_file}" >&2
         return 1
@@ -891,9 +1111,19 @@ write_codex_auth_patterns() {
     local patterns_file="$1"
     local source_codex_home="${CODEX_HOME:-${HOME:-}/.codex}"
     local auth_file="${source_codex_home}/auth.json"
+    local awk_bin
+    local sort_bin
+    awk_bin="$(trusted_system_tool awk)" || {
+        echo "agent-tmux: trusted awk is required for code-map auth validation" >&2
+        return 1
+    }
+    sort_bin="$(trusted_system_tool sort)" || {
+        echo "agent-tmux: trusted sort is required for code-map auth validation" >&2
+        return 1
+    }
     : >"${patterns_file}"
     [[ -s "${auth_file}" ]] || return 0
-    awk '
+    "${awk_bin}" '
         length($0) >= 64 { print $0 }
         {
             line = $0
@@ -903,7 +1133,7 @@ write_codex_auth_patterns() {
                 line = substr(line, RSTART + RLENGTH)
             }
         }
-    ' "${auth_file}" | awk 'length($0) >= 32' | sort -u >"${patterns_file}"
+    ' "${auth_file}" | "${awk_bin}" 'length($0) >= 32' | "${sort_bin}" -u >"${patterns_file}"
 }
 
 validate_no_codex_auth_material() {
@@ -911,8 +1141,13 @@ validate_no_codex_auth_material() {
     local patterns_file="$2"
     local file_path="$3"
     local rel="${file_path#${artifact_dir}/}"
+    local grep_bin
     [[ -s "${patterns_file}" ]] || return 0
-    if grep -F -q -f "${patterns_file}" "${file_path}"; then
+    grep_bin="$(trusted_system_tool grep)" || {
+        echo "agent-tmux: trusted grep is required for code-map auth validation" >&2
+        return 1
+    }
+    if "${grep_bin}" -F -q -f "${patterns_file}" "${file_path}"; then
         echo "agent-tmux: code-map artifact appears to contain Codex auth material: ${rel}" >&2
         return 1
     fi
@@ -923,46 +1158,146 @@ validate_text_artifact() {
     local artifact_dir="$1"
     local file_path="$2"
     local rel="${file_path#${artifact_dir}/}"
-    if [[ -s "${file_path}" ]] && ! LC_ALL=C grep -Iq '' "${file_path}"; then
+    local grep_bin
+    grep_bin="$(trusted_system_tool grep)" || {
+        echo "agent-tmux: trusted grep is required for code-map text validation" >&2
+        return 1
+    }
+    if [[ -s "${file_path}" ]] && ! LC_ALL=C "${grep_bin}" -Iq '' "${file_path}"; then
         echo "agent-tmux: code-map artifact must be text, not binary: ${rel}" >&2
         return 1
     fi
     return 0
 }
 
-validate_no_codex_auth_structure() {
+validate_code_map_content_policy() {
     local artifact_dir="$1"
     local file_path="$2"
     local rel="${file_path#${artifact_dir}/}"
-    local sensitive_key_fragment='(access[-_. ]?key[-_. ]?id|access[-_. ]?key|ssh[-_. ]?key|access[-_.]?token|refresh[-_.]?token|id[-_.]?token|api[-_.]?key|client[-_.]?secret|private[-_. ]?key|auth|credential|secret|token|password|session[-_.]?id|conversation[-_.]?id|encrypted[-_.]?content)'
-    if LC_ALL=C grep -Eiq "\"[A-Za-z0-9_.-]*${sensitive_key_fragment}[A-Za-z0-9_.-]*\"[[:space:]]*:" "${file_path}" \
-        || LC_ALL=C grep -Eiq "'[A-Za-z0-9_.-]*${sensitive_key_fragment}[A-Za-z0-9_.-]*'[[:space:]]*:" "${file_path}" \
-        || LC_ALL=C grep -Eiq "(^|[^A-Za-z0-9_.-])[A-Za-z0-9_.-]*${sensitive_key_fragment}[A-Za-z0-9_.-]*[[:space:]]*=" "${file_path}" \
-        || LC_ALL=C grep -Eiq "(^|[^A-Za-z0-9_.-])[A-Za-z0-9_.-]*${sensitive_key_fragment}[A-Za-z0-9_.-]*[[:space:]]*:" "${file_path}" \
-        || LC_ALL=C grep -Eiq -- '-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----' "${file_path}" \
-        || LC_ALL=C grep -Eiq '"type"[[:space:]]*:[[:space:]]*"session_meta"' "${file_path}" \
-        || LC_ALL=C grep -Eiq '"(encrypted_content|session_id|conversation_id)"[[:space:]]*:' "${file_path}"; then
-        echo "agent-tmux: code-map artifact appears to contain Codex auth/session structure: ${rel}" >&2
+    local python_bin
+    python_bin=""
+    if [[ -x /usr/bin/python3 ]]; then
+        python_bin="/usr/bin/python3"
+    elif [[ -x /bin/python3 ]]; then
+        python_bin="/bin/python3"
+    fi
+    if [[ -z "${python_bin}" ]]; then
+        echo "agent-tmux: python3 is required for code-map content validation" >&2
         return 1
     fi
-    return 0
+    PYTHONPATH= PYTHONHOME= "${python_bin}" -I -S - "${rel}" "${file_path}" <<'PY'
+import re
+import sys
+
+rel, path = sys.argv[1:3]
+
+RESERVED_RECORD_KEY_EXACT = {
+    "credential",
+    "credentials",
+    "secret",
+    "secrets",
+    "token",
+    "tokens",
+    "password",
+    "passwords",
+    "key",
+    "privatekey",
+    "accesskey",
+    "accesskeyid",
+    "sshkey",
+    "apikey",
+    "clientsecret",
+    "refreshtoken",
+    "idtoken",
+    "sessionid",
+    "conversationid",
+    "encryptedcontent",
+    "idrsa",
+    "ided25519",
 }
 
-path_has_code_map_runtime_or_auth_component() {
-    local path="$1"
-    local component
-    local normalized
-    local -a components=()
-    IFS='/' read -r -a components <<<"${path}"
-    for component in "${components[@]}"; do
-        normalized="${component,,}"
-        case "${normalized}" in
-            .agent-tmux-runtime|.agent-tmux-sidecar-runtime|codex-home|.codex|session_index.jsonl|*session*|*auth*|*token*|*credential*|*secret*|*password*|*api*key*|*private*key*|*access*key*|*ssh*key*|key|key.*|key-*|key_*|id_rsa|id_rsa.*|id_ed25519|id_ed25519.*|.ssh)
-                return 0
-                ;;
-        esac
-    done
-    return 1
+RESERVED_RECORD_KEY_CONTAINS = (
+    "credential",
+    "secret",
+    "password",
+    "privatekey",
+    "accesskey",
+    "sshkey",
+    "apikey",
+    "clientsecret",
+    "refreshtoken",
+    "idtoken",
+    "sessionid",
+    "conversationid",
+    "encryptedcontent",
+    "idrsa",
+    "ided25519",
+)
+
+
+def normalize(value: str) -> str:
+    return re.sub(r"[^0-9a-z]+", "", value.casefold())
+
+
+def key_is_reserved(value: str) -> bool:
+    normalized = normalize(value)
+    return normalized in RESERVED_RECORD_KEY_EXACT or any(
+        marker in normalized for marker in RESERVED_RECORD_KEY_CONTAINS
+    ) or normalized.endswith("token")
+
+
+def strip_record_prefixes(line: str) -> str:
+    stripped = line.lstrip()
+    if stripped.startswith(("+", "-")) and not stripped.startswith(("+++", "---")):
+        stripped = stripped[1:].lstrip()
+    while True:
+        before = stripped
+        if stripped.startswith(">"):
+            stripped = stripped[1:].lstrip()
+        elif stripped.startswith(("- ", "* ")):
+            stripped = stripped[2:].lstrip()
+        if stripped == before:
+            return stripped
+
+
+def fail() -> None:
+    print(
+        f"agent-tmux: code-map artifact appears to contain Codex auth/session structure: {rel}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+quoted_key_re = re.compile(r"""["']([^"']{1,128})["']\s*:""")
+colon_assignment_key_re = re.compile(r"""^["']?([^"'\s][^"']{0,127})["']?\s*:\s*""")
+equals_assignment_key_re = re.compile(r"""^["']?([^"'=\s][^"'=]{0,127}?)["']?\s*=""")
+private_key_re = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----", re.IGNORECASE)
+session_record_type_re = re.compile(r'"type"\s*:\s*"(session_meta|response_item)"', re.IGNORECASE)
+multiline_quoted_key_re = re.compile(r"""["']([^"']{1,128})["']\s*:""", re.MULTILINE)
+multiline_session_record_type_re = re.compile(r'"type"\s*:\s*"(session_meta|response_item)"', re.IGNORECASE | re.MULTILINE)
+
+with open(path, "r", encoding="utf-8", errors="replace") as handle:
+    content = handle.read()
+    if "\ufffd" in content:
+        fail()
+    if multiline_session_record_type_re.search(content):
+        fail()
+    if any(key_is_reserved(match) for match in multiline_quoted_key_re.findall(content)):
+        fail()
+    for line in content.splitlines():
+        if private_key_re.search(line) or session_record_type_re.search(line):
+            fail()
+        if any(key_is_reserved(match) for match in quoted_key_re.findall(line)):
+            fail()
+        structured_line = strip_record_prefixes(line)
+        colon_match = colon_assignment_key_re.match(structured_line)
+        equals_match = equals_assignment_key_re.match(structured_line)
+        if colon_match and key_is_reserved(colon_match.group(1)):
+            fail()
+        if equals_match and key_is_reserved(equals_match.group(1)):
+            fail()
+PY
+    return $?
 }
 
 strip_trailing_slashes() {
@@ -1004,6 +1339,7 @@ path_contains_symlink_component() {
 load_code_map_request_file() {
     local request_file="$1"
     local label="$2"
+    local expected_file="${3:-}"
     local session=""
     local repo=""
     local allowed_output_dir=""
@@ -1021,6 +1357,17 @@ load_code_map_request_file() {
         echo "agent-tmux: ${label} must not be a symlink: ${request_file}" >&2
         return 1
     }
+    if [[ -n "${expected_file}" ]]; then
+        local cmp_bin
+        cmp_bin="$(trusted_system_tool cmp)" || {
+            echo "agent-tmux: trusted cmp is required for code-map sidecar validation" >&2
+            return 1
+        }
+        if ! "${cmp_bin}" -s "${request_file}" "${expected_file}"; then
+            echo "agent-tmux: ${label} does not byte-match code-map sidecar registry" >&2
+            return 1
+        fi
+    fi
     while IFS= read -r line || [[ -n "${line}" ]]; do
         case "${line}" in
             *=*)
@@ -1051,9 +1398,19 @@ load_code_map_request_file() {
                         seen_allowed_output_dir=1
                         allowed_output_dir="${value}"
                         ;;
+                    *)
+                        echo "agent-tmux: invalid ${label} field: ${key}" >&2
+                        return 1
+                        ;;
                 esac
                 ;;
-            esac
+            "")
+                ;;
+            *)
+                echo "agent-tmux: invalid ${label} line: ${line}" >&2
+                return 1
+                ;;
+        esac
     done <"${request_file}"
     if [[ -z "${session}" || -z "${repo}" || -z "${allowed_output_dir}" ]]; then
         echo "agent-tmux: ${label} missing session, repo, or allowed_output_dir" >&2
@@ -1086,7 +1443,7 @@ validate_code_map_sidecar_registry() {
     session="${CODE_MAP_REQUEST_SESSION}"
     repo="${CODE_MAP_REQUEST_REPO}"
     allowed_output_dir="${CODE_MAP_REQUEST_ALLOWED_OUTPUT_DIR}"
-    load_code_map_request_file "${manifest}" "sidecar request manifest" || return 1
+    load_code_map_request_file "${manifest}" "sidecar request manifest" "${registry_file}" || return 1
     manifest_session="${CODE_MAP_REQUEST_SESSION}"
     manifest_repo="${CODE_MAP_REQUEST_REPO}"
     manifest_allowed_output_dir="${CODE_MAP_REQUEST_ALLOWED_OUTPUT_DIR}"
@@ -1134,6 +1491,7 @@ validate_code_map_artifacts() {
     [[ -d "${artifact_dir}" ]] || die "code-map artifact directory does not exist: ${artifact_dir}"
     artifact_dir="$(cd "${artifact_dir}" 2>/dev/null && pwd -P)" || die "code-map artifact directory does not exist: ${artifact_dir}"
     local failed=0
+    local found_report=0
     local found_update=0
     local rel
     local target
@@ -1141,14 +1499,22 @@ validate_code_map_artifacts() {
     local auth_patterns
     local find_output
     local find_errors
-    auth_patterns="$(mktemp)"
-    find_output="$(mktemp)"
-    find_errors="$(mktemp)"
-    write_codex_auth_patterns "${auth_patterns}"
+    local find_bin
+    local mktemp_bin
+    local rm_bin
+    local sed_bin
+    find_bin="$(trusted_system_tool find)" || die "trusted find is required for code-map artifact validation"
+    mktemp_bin="$(trusted_system_tool mktemp)" || die "trusted mktemp is required for code-map artifact validation"
+    rm_bin="$(trusted_system_tool rm)" || die "trusted rm is required for code-map artifact validation"
+    sed_bin="$(trusted_system_tool sed)" || die "trusted sed is required for code-map artifact validation"
+    auth_patterns="$("${mktemp_bin}")"
+    find_output="$("${mktemp_bin}")"
+    find_errors="$("${mktemp_bin}")"
+    write_codex_auth_patterns "${auth_patterns}" || failed=1
     validate_code_map_sidecar_registry "${artifact_dir}" || failed=1
-    if ! find "${artifact_dir}" -mindepth 1 -print0 >"${find_output}" 2>"${find_errors}"; then
+    if ! "${find_bin}" "${artifact_dir}" -mindepth 1 -print0 >"${find_output}" 2>"${find_errors}"; then
         if [[ -s "${find_errors}" ]]; then
-            sed 's/^/agent-tmux: /' "${find_errors}" >&2
+            "${sed_bin}" 's/^/agent-tmux: /' "${find_errors}" >&2
         fi
         echo "agent-tmux: code-map artifact traversal failed: ${artifact_dir}" >&2
         failed=1
@@ -1185,10 +1551,21 @@ validate_code_map_artifacts() {
         fi
         if [[ -f "${file_path}" ]]; then
             case "${rel}" in
-                SIDECAR_REQUEST.txt|MAP_REPORT.md|PROPOSED_CHANGES.patch)
+                SIDECAR_REQUEST.txt)
                     validate_text_artifact "${artifact_dir}" "${file_path}" || failed=1
                     validate_no_codex_auth_material "${artifact_dir}" "${auth_patterns}" "${file_path}" || failed=1
-                    validate_no_codex_auth_structure "${artifact_dir}" "${file_path}" || failed=1
+                    validate_code_map_content_policy "${artifact_dir}" "${file_path}" || failed=1
+                    ;;
+                MAP_REPORT.md)
+                    found_report=1
+                    validate_text_artifact "${artifact_dir}" "${file_path}" || failed=1
+                    validate_no_codex_auth_material "${artifact_dir}" "${auth_patterns}" "${file_path}" || failed=1
+                    validate_code_map_content_policy "${artifact_dir}" "${file_path}" || failed=1
+                    ;;
+                PROPOSED_CHANGES.patch)
+                    validate_text_artifact "${artifact_dir}" "${file_path}" || failed=1
+                    validate_no_codex_auth_material "${artifact_dir}" "${auth_patterns}" "${file_path}" || failed=1
+                    validate_code_map_content_policy "${artifact_dir}" "${file_path}" || failed=1
                     ;;
                 PROPOSED_FILES/*)
                     found_update=1
@@ -1196,7 +1573,7 @@ validate_code_map_artifacts() {
                     validate_code_map_target_or_record "${target}" "proposed file" || failed=1
                     validate_text_artifact "${artifact_dir}" "${file_path}" || failed=1
                     validate_no_codex_auth_material "${artifact_dir}" "${auth_patterns}" "${file_path}" || failed=1
-                    validate_no_codex_auth_structure "${artifact_dir}" "${file_path}" || failed=1
+                    validate_code_map_content_policy "${artifact_dir}" "${file_path}" || failed=1
                     ;;
                 *)
                     echo "agent-tmux: invalid code-map artifact file: ${rel}" >&2
@@ -1213,8 +1590,11 @@ validate_code_map_artifacts() {
         found_update=1
         validate_code_map_patch_artifact "${artifact_dir}/PROPOSED_CHANGES.patch" || failed=1
     fi
-    rm -f "${auth_patterns}" "${find_output}" "${find_errors}"
+    "${rm_bin}" -f "${auth_patterns}" "${find_output}" "${find_errors}"
     ((failed == 0)) || die "code-map artifact validation failed: ${artifact_dir}"
+    if ((found_report == 0 && found_update == 0)); then
+        die "code-map artifact validation found no MAP_REPORT.md or proposed map update: ${artifact_dir}"
+    fi
     if ((found_update == 0)); then
         echo "agent-tmux: code-map artifact validation: ok (no proposed map update)"
     else

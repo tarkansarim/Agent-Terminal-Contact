@@ -103,12 +103,23 @@ The command refuses before sending when:
 - the deterministic artifact directory already exists
 - the deterministic artifact directory is a symlink
 - the configured code-map artifact path resolves inside the repository root
+- sidecar artifact validation sees neither `MAP_REPORT.md` nor a proposed map
+  update; `MAP_REPORT.md` alone is the report-only lane
 - sidecar artifact validation sees proposed patch or mirrored file targets
-  outside `.project-memory/**`, `docs/CODEBASE_ARCHITECTURE_INDEX.md`,
+  outside the explicit map target policy: `.project-memory/code-map-state.json`,
+  `.project-memory/project-memory-state.json`, bounded `.project-memory/` policy
+  namespaces (`code-map/`, `project-memory/`, `routing/`, `indexes/`,
+  `subsystems/`) containing `.md`, `.json`, or `.jsonl` files,
+  `docs/CODEBASE_ARCHITECTURE_INDEX.md`,
   `docs/CODEBASE_SUBSYSTEM_MANIFEST.json`, direct Markdown files under
   `docs/SUBSYSTEMS/` (`docs/SUBSYSTEMS/*.md`),
   `CODE_MAP.md`, `PROJECT_MEMORY.md`, `docs/CODE_MAP.md`, or
-  `docs/PROJECT_MEMORY.md`
+  `docs/PROJECT_MEMORY.md`; runtime/credential/key/token path components such
+  as `codex-home`, `.codex`, `session_index.jsonl`, `credential`, `secret`,
+  `token`, `password`, `private-key`, `access-key`, `ssh-key`, or `api-key` are
+  rejected even inside allowed namespaces, while ordinary Codex/auth/session map
+  topics are allowed when they do not look like runtime files or credential
+  material
 - sidecar artifact validation sees symlink/non-regular entries anywhere in the
   artifact tree, or patch modes that would create symlinks/non-regular files
 - sidecar artifact validation sees unsupported patch header forms, binary

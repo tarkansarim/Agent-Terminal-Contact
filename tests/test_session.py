@@ -1155,6 +1155,74 @@ class SessionDiscoveryTests(unittest.TestCase):
                         explicit_session=session,
                     )
 
+    def test_explicit_sidecar_session_refuses_manifest_permission_tamper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            artifact_dir = tmp_path / "sidecar-artifact"
+            repo.mkdir()
+            artifact_dir.mkdir()
+            session = "codex-map-repo-ticket58-123456789abc"
+            write_sidecar_request(artifact_dir, session=session, repo=repo)
+            manifest = artifact_dir / "SIDECAR_REQUEST.txt"
+            manifest.write_text(
+                manifest.read_text(encoding="utf-8") + "permission=-s danger-full-access -a never\n",
+                encoding="utf-8",
+            )
+            script = write_provider_package(repo)
+            args = f"node {script}"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line(session, "%1", artifact_dir), ""
+                    ),
+                    **tty_response(args=args, pid=1234),
+                    **proc_response(args=args),
+                }
+            )
+            with trusted_provider_root(repo):
+                with self.assertRaisesRegex(DiscoveryError, "no tmux-managed codex pane"):
+                    select_target(
+                        repo=str(repo),
+                        provider="codex",
+                        runner=runner,
+                        explicit_session=session,
+                    )
+
+    def test_explicit_sidecar_session_refuses_extra_registry_field(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            artifact_dir = tmp_path / "sidecar-artifact"
+            repo.mkdir()
+            artifact_dir.mkdir()
+            session = "codex-map-repo-ticket58-123456789abc"
+            write_sidecar_request(artifact_dir, session=session, repo=repo)
+            registry = artifact_dir.parent / ".agent-tmux-sidecar-registry" / f"{session}.txt"
+            manifest = artifact_dir / "SIDECAR_REQUEST.txt"
+            extra = "aws_secret_access_key=local-secret\n"
+            registry.write_text(registry.read_text(encoding="utf-8") + extra, encoding="utf-8")
+            manifest.write_text(manifest.read_text(encoding="utf-8") + extra, encoding="utf-8")
+            script = write_provider_package(repo)
+            args = f"node {script}"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line(session, "%1", artifact_dir), ""
+                    ),
+                    **tty_response(args=args, pid=1234),
+                    **proc_response(args=args),
+                }
+            )
+            with trusted_provider_root(repo):
+                with self.assertRaisesRegex(DiscoveryError, "no tmux-managed codex pane"):
+                    select_target(
+                        repo=str(repo),
+                        provider="codex",
+                        runner=runner,
+                        explicit_session=session,
+                    )
+
     def test_sidecar_revalidate_refuses_artifact_path_drift(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

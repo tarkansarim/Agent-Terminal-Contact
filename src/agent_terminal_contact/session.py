@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import string
 from typing import Sequence
 
 from .runner import Runner
@@ -278,6 +279,8 @@ def _sidecar_request_for_pane(pane: TmuxPane, repo_path: str) -> SidecarRequest 
     manifest_fields = _read_sidecar_request_fields(artifact_manifest)
     if manifest_fields is None:
         return None
+    if manifest_fields != registry_fields:
+        return None
     registry_session = registry_fields.get("session", "")
     registry_repo_raw = registry_fields.get("repo", "")
     registry_artifact_raw = registry_fields.get("allowed_output_dir", "")
@@ -317,20 +320,25 @@ def _sidecar_request_for_pane(pane: TmuxPane, repo_path: str) -> SidecarRequest 
 
 
 def _read_sidecar_request_fields(request_file: Path) -> dict[str, str] | None:
+    allowed_fields = {"session", "repo", "allowed_output_dir"}
     try:
         if request_file.is_symlink() or not request_file.is_file() or request_file.stat().st_size > 65536:
             return None
         text = request_file.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
+    if any(char not in string.printable or (ord(char) < 32 and char not in "\n\r\t") for char in text):
+        return None
     fields: dict[str, str] = {}
     for raw_line in text.splitlines():
         if not raw_line or "=" not in raw_line:
-            continue
+            return None
         key, value = raw_line.split("=", 1)
-        if key in fields:
+        if key not in allowed_fields or key in fields:
             return None
         fields[key] = value
+    if set(fields) != allowed_fields:
+        return None
     return fields
 
 
