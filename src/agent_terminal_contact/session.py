@@ -232,6 +232,11 @@ def _expected_pane_path_for_repo(
     explicit_session: str | None,
 ) -> str | None:
     pane_path = _resolve_path(pane.path)
+    if explicit_session is not None and _is_code_map_sidecar_session(pane.session_name):
+        manifest = _sidecar_request_for_pane(pane, repo_path)
+        if manifest is None:
+            return None
+        return manifest.artifact_dir
     if pane_path == repo_path:
         if explicit_session is not None and _sidecar_request_file_present(pane):
             return None
@@ -242,6 +247,10 @@ def _expected_pane_path_for_repo(
     if manifest is None:
         return None
     return manifest.artifact_dir
+
+
+def _is_code_map_sidecar_session(session_name: str) -> bool:
+    return session_name.startswith("codex-map-")
 
 
 def _sidecar_request_file_present(pane: TmuxPane) -> bool:

@@ -186,8 +186,9 @@ artifacts such as `MAP_REPORT.md`, `PROPOSED_CHANGES.patch`, or proposed
 map/project-memory file contents under the artifact directory. Applyable
 patch/file artifacts may target only
 `.project-memory/**`, `docs/CODEBASE_ARCHITECTURE_INDEX.md`,
-`docs/CODEBASE_SUBSYSTEM_MANIFEST.json`, `docs/SUBSYSTEMS/*.md`, `CODE_MAP.md`,
-`PROJECT_MEMORY.md`, `docs/CODE_MAP.md`, or `docs/PROJECT_MEMORY.md`. The
+`docs/CODEBASE_SUBSYSTEM_MANIFEST.json`, direct Markdown files under
+`docs/SUBSYSTEMS/` (`docs/SUBSYSTEMS/*.md`), `CODE_MAP.md`, `PROJECT_MEMORY.md`,
+`docs/CODE_MAP.md`, or `docs/PROJECT_MEMORY.md`. The
 sidecar must not edit production source, tests, config, install scripts,
 user-level files, or generated artifacts in place; do not run `apply_patch`,
 commit, install, roll out, dispatch tickets, contact other agents, or mutate

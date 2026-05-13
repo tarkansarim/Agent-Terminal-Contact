@@ -213,7 +213,7 @@ artifacts are limited to these map/project-memory targets:
 - `.project-memory/**`
 - `docs/CODEBASE_ARCHITECTURE_INDEX.md`
 - `docs/CODEBASE_SUBSYSTEM_MANIFEST.json`
-- `docs/SUBSYSTEMS/*.md`
+- direct Markdown files under `docs/SUBSYSTEMS/` (`docs/SUBSYSTEMS/*.md`)
 - `CODE_MAP.md`, `PROJECT_MEMORY.md`, `docs/CODE_MAP.md`, `docs/PROJECT_MEMORY.md`
 
 The supervisor validates sidecar artifacts before applying them:

@@ -99,7 +99,8 @@ The command refuses before sending when:
 - the configured code-map artifact path resolves inside the repository root
 - sidecar artifact validation sees proposed patch or mirrored file targets
   outside `.project-memory/**`, `docs/CODEBASE_ARCHITECTURE_INDEX.md`,
-  `docs/CODEBASE_SUBSYSTEM_MANIFEST.json`, `docs/SUBSYSTEMS/*.md`,
+  `docs/CODEBASE_SUBSYSTEM_MANIFEST.json`, direct Markdown files under
+  `docs/SUBSYSTEMS/` (`docs/SUBSYSTEMS/*.md`),
   `CODE_MAP.md`, `PROJECT_MEMORY.md`, `docs/CODE_MAP.md`, or
   `docs/PROJECT_MEMORY.md`
 - sidecar artifact validation sees symlink/non-regular entries anywhere in the

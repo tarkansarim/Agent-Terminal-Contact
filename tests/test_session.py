@@ -972,6 +972,32 @@ class SessionDiscoveryTests(unittest.TestCase):
                         explicit_session=session,
                     )
 
+    def test_explicit_sidecar_session_refuses_repo_root_pane_without_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            session = "codex-map-repo-ticket58-123456789abc"
+            script = write_provider_package(repo)
+            args = f"node {script}"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line(session, "%1", repo), ""
+                    ),
+                    **tty_response(args=args, pid=1234),
+                    **proc_response(args=args),
+                }
+            )
+            with trusted_provider_root(repo):
+                with self.assertRaisesRegex(DiscoveryError, "no tmux-managed codex pane"):
+                    select_target(
+                        repo=str(repo),
+                        provider="codex",
+                        runner=runner,
+                        explicit_session=session,
+                    )
+
     def test_sidecar_revalidate_refuses_artifact_path_drift(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

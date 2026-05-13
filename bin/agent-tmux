@@ -257,7 +257,7 @@ Allowed map/project-memory target paths for applyable patch artifacts:
 - .project-memory/**
 - docs/CODEBASE_ARCHITECTURE_INDEX.md
 - docs/CODEBASE_SUBSYSTEM_MANIFEST.json
-- docs/SUBSYSTEMS/*.md
+- direct Markdown files under docs/SUBSYSTEMS/ (docs/SUBSYSTEMS/*.md)
 - CODE_MAP.md, PROJECT_MEMORY.md, docs/CODE_MAP.md, docs/PROJECT_MEMORY.md
 
 MAP-ONLY SCOPE:
@@ -396,7 +396,9 @@ is_allowed_code_map_target_path() {
         .project-memory/*) return 0 ;;
         docs/CODEBASE_ARCHITECTURE_INDEX.md) return 0 ;;
         docs/CODEBASE_SUBSYSTEM_MANIFEST.json) return 0 ;;
-        docs/SUBSYSTEMS/*.md) return 0 ;;
+        docs/SUBSYSTEMS/*.md)
+            [[ "${path#docs/SUBSYSTEMS/}" != */* ]] && return 0
+            ;;
         CODE_MAP.md|PROJECT_MEMORY.md|docs/CODE_MAP.md|docs/PROJECT_MEMORY.md) return 0 ;;
     esac
     return 1

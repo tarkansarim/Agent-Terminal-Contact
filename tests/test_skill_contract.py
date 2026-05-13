@@ -669,7 +669,13 @@ class SkillContractTests(unittest.TestCase):
                 "+++ b/.project-memory/code-map-state.json\n"
                 "@@ -1 +1 @@\n"
                 "-{}\n"
-                "+{\"enabled\":true}\n",
+                "+{\"enabled\":true}\n"
+                "diff --git a/docs/SUBSYSTEMS/contact.md b/docs/SUBSYSTEMS/contact.md\n"
+                "--- a/docs/SUBSYSTEMS/contact.md\n"
+                "+++ b/docs/SUBSYSTEMS/contact.md\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new\n",
                 encoding="utf-8",
             )
             proposed = artifact_dir / "PROPOSED_FILES" / "docs" / "SUBSYSTEMS"
@@ -689,6 +695,46 @@ class SkillContractTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("code-map artifact validation: ok", result.stdout)
+
+    def test_agent_tmux_code_map_artifact_validator_rejects_nested_subsystem_targets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            artifact_dir = tmp_path / "artifact"
+            write_validator_sidecar_manifest(artifact_dir)
+            (artifact_dir / "PROPOSED_CHANGES.patch").write_text(
+                "diff --git a/docs/SUBSYSTEMS/nested/bad.md b/docs/SUBSYSTEMS/nested/bad.md\n"
+                "--- a/docs/SUBSYSTEMS/nested/bad.md\n"
+                "+++ b/docs/SUBSYSTEMS/nested/bad.md\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new\n",
+                encoding="utf-8",
+            )
+            proposed = artifact_dir / "PROPOSED_FILES" / "docs" / "SUBSYSTEMS" / "nested"
+            proposed.mkdir(parents=True)
+            (proposed / "bad.md").write_text("nested\n", encoding="utf-8")
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn(
+                "invalid code-map artifact directory: PROPOSED_FILES/docs/SUBSYSTEMS/nested",
+                result.stderr,
+            )
+            self.assertIn(
+                "invalid code-map artifact target (proposed file): docs/SUBSYSTEMS/nested/bad.md",
+                result.stderr,
+            )
+            self.assertIn(
+                "invalid code-map artifact target (diff old path): docs/SUBSYSTEMS/nested/bad.md",
+                result.stderr,
+            )
 
     def test_agent_tmux_code_map_artifact_validator_requires_sidecar_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
