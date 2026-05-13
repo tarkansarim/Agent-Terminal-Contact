@@ -701,6 +701,14 @@ string_has_control_chars() {
     [[ "$1" == *[$'\001'-$'\037'$'\177'-$'\237']* ]]
 }
 
+log_value() {
+    if string_has_control_chars "$1"; then
+        printf "%q" "$1"
+    else
+        printf "%s" "$1"
+    fi
+}
+
 trusted_system_tool() {
     local tool="$1"
     local candidate
@@ -935,13 +943,13 @@ validate_code_map_target_or_record() {
         return 0
     fi
     if path_has_code_map_runtime_or_auth_component "${path}"; then
-        echo "agent-tmux: invalid code-map artifact target (${context}): ${path}" >&2
+        echo "agent-tmux: invalid code-map artifact target (${context}): $(log_value "${path}")" >&2
         return 1
     fi
     if is_allowed_code_map_target_path "${path}"; then
         return 0
     fi
-    echo "agent-tmux: invalid code-map artifact target (${context}): ${path}" >&2
+    echo "agent-tmux: invalid code-map artifact target (${context}): $(log_value "${path}")" >&2
     return 1
 }
 
@@ -956,16 +964,15 @@ validate_code_map_patch_header_path() {
         validate_code_map_target_or_record "${path#${expected_prefix}}" "${context}"
         return
     fi
-    echo "agent-tmux: unsupported code-map patch path header (${context}): ${path}" >&2
+    echo "agent-tmux: unsupported code-map patch path header (${context}): $(log_value "${path}")" >&2
     return 1
 }
 
 code_map_patch_header_looks_pathlike() {
     local path="$1"
     [[ -n "${path}" ]] || return 1
-    [[ "${path}" != *[[:space:]]* ]] || return 1
     case "${path}" in
-        */*|.*) return 0 ;;
+        */*|*.*) return 0 ;;
     esac
     return 1
 }
@@ -1014,12 +1021,12 @@ validate_code_map_patch_artifact() {
                 found_path=1
                 if ((in_git_diff == 1 && current_diff_has_hunk == 1)); then
                     if code_map_patch_header_looks_pathlike "${path}"; then
-                        echo "agent-tmux: unsupported code-map patch --- header: ${line}" >&2
+                        echo "agent-tmux: unsupported code-map patch --- header: $(log_value "${line}")" >&2
                         failed=1
                         plain_header_after_hunk=1
                     fi
                 elif ((in_git_diff != 1 || minus_seen == 1)); then
-                    echo "agent-tmux: unsupported code-map patch --- header: ${line}" >&2
+                    echo "agent-tmux: unsupported code-map patch --- header: $(log_value "${line}")" >&2
                     failed=1
                 else
                     minus_seen=1
@@ -1030,16 +1037,16 @@ validate_code_map_patch_artifact() {
                 path="${line#+++ }"
                 found_path=1
                 if ((plain_header_after_hunk == 1)); then
-                    echo "agent-tmux: unsupported code-map patch +++ header: ${line}" >&2
+                    echo "agent-tmux: unsupported code-map patch +++ header: $(log_value "${line}")" >&2
                     failed=1
                     plain_header_after_hunk=0
                 elif ((in_git_diff == 1 && current_diff_has_hunk == 1)); then
                     if code_map_patch_header_looks_pathlike "${path}"; then
-                        echo "agent-tmux: unsupported code-map patch +++ header: ${line}" >&2
+                        echo "agent-tmux: unsupported code-map patch +++ header: $(log_value "${line}")" >&2
                         failed=1
                     fi
                 elif ((in_git_diff != 1 || plus_seen == 1)); then
-                    echo "agent-tmux: unsupported code-map patch +++ header: ${line}" >&2
+                    echo "agent-tmux: unsupported code-map patch +++ header: $(log_value "${line}")" >&2
                     failed=1
                 else
                     plus_seen=1
@@ -1049,7 +1056,7 @@ validate_code_map_patch_artifact() {
             "@@ "*)
                 plain_header_after_hunk=0
                 if ((in_git_diff != 1 || minus_seen != 1 || plus_seen != 1)); then
-                    echo "agent-tmux: unsupported code-map patch hunk before complete headers: ${line}" >&2
+                    echo "agent-tmux: unsupported code-map patch hunk before complete headers: $(log_value "${line}")" >&2
                     failed=1
                 else
                     found_hunk=1
@@ -1057,19 +1064,19 @@ validate_code_map_patch_artifact() {
                 fi
                 ;;
             "diff "*)
-                echo "agent-tmux: unsupported code-map patch diff header: ${line}" >&2
+                echo "agent-tmux: unsupported code-map patch diff header: $(log_value "${line}")" >&2
                 failed=1
                 ;;
             "Index: "*|"*** "*)
-                echo "agent-tmux: unsupported code-map patch header: ${line}" >&2
+                echo "agent-tmux: unsupported code-map patch header: $(log_value "${line}")" >&2
                 failed=1
                 ;;
             "GIT binary patch"|"Binary files "*" differ")
-                echo "agent-tmux: unsupported code-map binary patch content: ${line}" >&2
+                echo "agent-tmux: unsupported code-map binary patch content: $(log_value "${line}")" >&2
                 failed=1
                 ;;
             "literal "*|"delta "*)
-                echo "agent-tmux: unsupported code-map binary patch content: ${line}" >&2
+                echo "agent-tmux: unsupported code-map binary patch content: $(log_value "${line}")" >&2
                 failed=1
                 ;;
             "rename from "*)
@@ -1204,7 +1211,7 @@ validate_no_codex_auth_material() {
         return 1
     }
     if "${grep_bin}" -F -q -f "${patterns_file}" "${file_path}"; then
-        echo "agent-tmux: code-map artifact appears to contain Codex auth material: ${rel}" >&2
+        echo "agent-tmux: code-map artifact appears to contain Codex auth material: $(log_value "${rel}")" >&2
         return 1
     fi
     return 0
@@ -1220,7 +1227,7 @@ validate_text_artifact() {
         return 1
     }
     if [[ -s "${file_path}" ]] && ! LC_ALL=C "${grep_bin}" -Iq '' "${file_path}"; then
-        echo "agent-tmux: code-map artifact must be text, not binary: ${rel}" >&2
+        echo "agent-tmux: code-map artifact must be text, not binary: $(log_value "${rel}")" >&2
         return 1
     fi
     return 0
@@ -1340,6 +1347,22 @@ SESSION_JSON_CONTEXT_KEYS = {
 }
 
 
+def display(value: str) -> str:
+    return value.encode("unicode_escape").decode("ascii")
+
+
+def collect_normalized_keys(value) -> set[str]:
+    keys: set[str] = set()
+    if isinstance(value, dict):
+        for key, child in value.items():
+            keys.add(normalize(str(key)))
+            keys.update(collect_normalized_keys(child))
+    elif isinstance(value, list):
+        for child in value:
+            keys.update(collect_normalized_keys(child))
+    return keys
+
+
 def looks_like_session_json_record(line: str) -> bool:
     candidate = strip_record_prefixes(line).strip()
     if not (candidate.startswith("{") and candidate.endswith("}")):
@@ -1350,7 +1373,13 @@ def looks_like_session_json_record(line: str) -> bool:
         return False
     if not isinstance(parsed, dict):
         return False
-    normalized_keys = {normalize(str(key)) for key in parsed}
+    normalized_keys = collect_normalized_keys(parsed)
+    if {"role", "content"} <= normalized_keys:
+        return True
+    if "timestamp" in normalized_keys and bool(
+        normalized_keys & (SESSION_JSON_CONTEXT_KEYS - {"timestamp"})
+    ):
+        return True
     return "type" in normalized_keys and bool(normalized_keys & SESSION_JSON_CONTEXT_KEYS)
 
 
@@ -1370,7 +1399,7 @@ def strip_record_prefixes(line: str) -> str:
 
 def fail() -> None:
     print(
-        f"agent-tmux: code-map artifact appears to contain Codex auth/session structure: {rel}",
+        f"agent-tmux: code-map artifact appears to contain Codex auth/session structure: {display(rel)}",
         file=sys.stderr,
     )
     raise SystemExit(1)
@@ -1378,7 +1407,7 @@ def fail() -> None:
 
 def fail_control() -> None:
     print(
-        f"agent-tmux: code-map artifact contains terminal control bytes: {rel}",
+        f"agent-tmux: code-map artifact contains terminal control bytes: {display(rel)}",
         file=sys.stderr,
     )
     raise SystemExit(1)
@@ -1510,7 +1539,7 @@ load_code_map_request_file() {
     fi
     while IFS= read -r line || [[ -n "${line}" ]]; do
         if string_has_control_chars "${line}"; then
-            echo "agent-tmux: invalid ${label} line: ${line}" >&2
+            echo "agent-tmux: invalid ${label} line: $(log_value "${line}")" >&2
             return 1
         fi
         case "${line}" in
@@ -1585,7 +1614,7 @@ load_code_map_request_file() {
                 return 1
                 ;;
             *)
-                echo "agent-tmux: invalid ${label} line: ${line}" >&2
+                echo "agent-tmux: invalid ${label} line: $(log_value "${line}")" >&2
                 return 1
                 ;;
         esac
@@ -1712,12 +1741,12 @@ validate_code_map_artifacts() {
     while IFS= read -r -d '' file_path; do
         rel="${file_path#${artifact_dir}/}"
         if [[ -L "${file_path}" ]]; then
-            echo "agent-tmux: invalid code-map artifact entry (symlink): ${rel}" >&2
+            echo "agent-tmux: invalid code-map artifact entry (symlink): $(log_value "${rel}")" >&2
             failed=1
             continue
         fi
         if path_has_code_map_runtime_or_auth_component "${rel}"; then
-            echo "agent-tmux: invalid code-map artifact runtime/auth path: ${rel}" >&2
+            echo "agent-tmux: invalid code-map artifact runtime/auth path: $(log_value "${rel}")" >&2
             failed=1
             continue
         fi
@@ -1728,12 +1757,12 @@ validate_code_map_artifacts() {
                 PROPOSED_FILES/*)
                     target="${rel#PROPOSED_FILES/}"
                     is_allowed_code_map_proposed_dir "${target}" || {
-                        echo "agent-tmux: invalid code-map artifact directory: ${rel}" >&2
+                        echo "agent-tmux: invalid code-map artifact directory: $(log_value "${rel}")" >&2
                         failed=1
                     }
                     ;;
                 *)
-                    echo "agent-tmux: invalid code-map artifact directory: ${rel}" >&2
+                    echo "agent-tmux: invalid code-map artifact directory: $(log_value "${rel}")" >&2
                     failed=1
                     ;;
             esac
@@ -1766,13 +1795,13 @@ validate_code_map_artifacts() {
                     validate_code_map_content_policy "${artifact_dir}" "${file_path}" || failed=1
                     ;;
                 *)
-                    echo "agent-tmux: invalid code-map artifact file: ${rel}" >&2
+                    echo "agent-tmux: invalid code-map artifact file: $(log_value "${rel}")" >&2
                     failed=1
                     ;;
             esac
             continue
         fi
-        echo "agent-tmux: invalid code-map artifact entry: ${rel}" >&2
+        echo "agent-tmux: invalid code-map artifact entry: $(log_value "${rel}")" >&2
         failed=1
     done <"${find_output}"
 

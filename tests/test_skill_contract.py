@@ -1292,6 +1292,16 @@ class SkillContractTests(unittest.TestCase):
                 "+++ src/agent_terminal_contact/cli.py\n"
                 "@@ -1 +1 @@\n"
                 "-bad\n"
+                "+worse\n"
+                "--- src/bad file.py\n"
+                "+++ src/bad file.py\n"
+                "@@ -1 +1 @@\n"
+                "-bad\n"
+                "+worse\n"
+                "--- bad file.py\n"
+                "+++ bad file.py\n"
+                "@@ -1 +1 @@\n"
+                "-bad\n"
                 "+worse\n",
                 encoding="utf-8",
             )
@@ -1307,6 +1317,10 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("unsupported code-map patch --- header: --- src/agent_terminal_contact/cli.py", result.stderr)
             self.assertIn("unsupported code-map patch +++ header: +++ src/agent_terminal_contact/cli.py", result.stderr)
+            self.assertIn("unsupported code-map patch --- header: --- src/bad file.py", result.stderr)
+            self.assertIn("unsupported code-map patch +++ header: +++ src/bad file.py", result.stderr)
+            self.assertIn("unsupported code-map patch --- header: --- bad file.py", result.stderr)
+            self.assertIn("unsupported code-map patch +++ header: +++ bad file.py", result.stderr)
 
     def test_agent_tmux_code_map_artifact_validator_rejects_binary_patch_content(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1360,9 +1374,10 @@ class SkillContractTests(unittest.TestCase):
                 env={"PATH": "/usr/bin:/bin"},
             )
             self.assertEqual(result.returncode, 2)
-            self.assertIn("invalid code-map artifact target (proposed file): docs/CODE_MAP.md\tshadow", result.stderr)
-            self.assertIn("invalid code-map artifact target (diff old path): docs/CODE_MAP.md\tshadow", result.stderr)
-            self.assertIn("invalid code-map artifact target (--- path): docs/CODE_MAP.md\tshadow", result.stderr)
+            self.assertIn("invalid code-map artifact target (proposed file): $'docs/CODE_MAP.md\\tshadow'", result.stderr)
+            self.assertIn("invalid code-map artifact target (diff old path): $'docs/CODE_MAP.md\\tshadow'", result.stderr)
+            self.assertIn("invalid code-map artifact target (--- path): $'docs/CODE_MAP.md\\tshadow'", result.stderr)
+            self.assertNotIn("\tshadow", result.stderr)
 
     def test_agent_tmux_code_map_artifact_validator_rejects_codex_auth_material(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1824,7 +1839,8 @@ class SkillContractTests(unittest.TestCase):
                 env={"PATH": "/usr/bin:/bin"},
             )
             self.assertEqual(result.returncode, 2)
-            self.assertIn("invalid code-map artifact target (proposed file): .project-memory/bad", result.stderr)
+            self.assertIn("invalid code-map artifact target (proposed file): $'.project-memory/bad\\nname.md'", result.stderr)
+            self.assertNotIn("bad\nname", result.stderr)
 
     def test_agent_tmux_code_map_artifact_validator_rejects_escape_path_names(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1853,8 +1869,9 @@ class SkillContractTests(unittest.TestCase):
                 env={"PATH": "/usr/bin:/bin"},
             )
             self.assertEqual(result.returncode, 2)
-            self.assertIn("invalid code-map artifact target (proposed file): .project-memory/bad", result.stderr)
-            self.assertIn("invalid code-map artifact target (diff old path): .project-memory/bad", result.stderr)
+            self.assertIn("invalid code-map artifact target (proposed file): $'.project-memory/bad\\Ename.md'", result.stderr)
+            self.assertIn("invalid code-map artifact target (diff old path): $'.project-memory/bad\\Ename.md'", result.stderr)
+            self.assertNotIn("\x1b", result.stderr)
 
     def test_agent_tmux_code_map_artifact_validator_rejects_c1_control_path_names(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1875,9 +1892,32 @@ class SkillContractTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 2)
             self.assertIn(
-                "invalid code-map artifact target (proposed file): .project-memory/code-map/bad",
+                "invalid code-map artifact target (proposed file): $'.project-memory/code-map/bad\\302\\205name.md'",
                 result.stderr,
             )
+            self.assertNotIn("\u0085", result.stderr)
+
+    def test_agent_tmux_code_map_artifact_validator_escapes_control_path_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            artifact_dir = tmp_path / "artifact"
+            write_validator_sidecar_manifest(artifact_dir)
+            proposed = artifact_dir / "PROPOSED_FILES" / "docs" / "SUBSYSTEMS"
+            proposed.mkdir(parents=True)
+            (proposed / "bad\x1b]52;c;AAAA\x07.md").write_text("map note\n", encoding="utf-8")
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("invalid code-map artifact target (proposed file):", result.stderr)
+            self.assertNotIn("\x1b", result.stderr)
+            self.assertNotIn("\x07", result.stderr)
 
     def test_agent_tmux_code_map_artifact_validator_rejects_additional_auth_structure_keys(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2262,6 +2302,9 @@ class SkillContractTests(unittest.TestCase):
             "PROPOSED_FILES/.project-memory/code-map/session.md": (
                 '{"type":"assistant_message","content":[{"text":"copied transcript"}]}\n'
             ),
+            "PROPOSED_FILES/.project-memory/code-map/transcript.jsonl": (
+                '{"timestamp":"2026-05-13T00:00:00Z","role":"user","content":"copied transcript"}\n'
+            ),
             "PROPOSED_CHANGES.patch": (
                 "diff --git a/docs/CODE_MAP.md b/docs/CODE_MAP.md\n"
                 "--- a/docs/CODE_MAP.md\n"
@@ -2269,6 +2312,7 @@ class SkillContractTests(unittest.TestCase):
                 "@@ -1 +1 @@\n"
                 "-old\n"
                 '+{"timestamp":"2026-05-13T00:00:00Z","type":"event","payload":{"message":"copied transcript"}}\n'
+                '+{"type":"event","data":{"timestamp":"2026-05-13T00:00:00Z","message":"copied transcript","role":"assistant","content":"text"}}\n'
             ),
         }
         for rel_path, content in cases.items():
