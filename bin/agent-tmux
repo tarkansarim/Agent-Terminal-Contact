@@ -943,11 +943,13 @@ validate_no_codex_auth_structure() {
 path_has_code_map_runtime_or_auth_component() {
     local path="$1"
     local component
+    local normalized
     local -a components=()
     IFS='/' read -r -a components <<<"${path}"
     for component in "${components[@]}"; do
-        case "${component}" in
-            .agent-tmux-runtime|.agent-tmux-sidecar-runtime|codex-home|CODEX_HOME|.codex|sessions|auth.json|session_index.jsonl)
+        normalized="${component,,}"
+        case "${normalized}" in
+            .agent-tmux-runtime|.agent-tmux-sidecar-runtime|codex-home|.codex|sessions|auth.json|session_index.jsonl)
                 return 0
                 ;;
         esac

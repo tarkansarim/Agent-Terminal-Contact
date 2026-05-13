@@ -1151,6 +1151,54 @@ class SkillContractTests(unittest.TestCase):
                 result.stderr,
             )
 
+    def test_agent_tmux_code_map_artifact_validator_rejects_case_variant_runtime_looking_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            artifact_dir = tmp_path / "artifact"
+            write_validator_sidecar_manifest(artifact_dir)
+            proposed = artifact_dir / "PROPOSED_FILES" / ".project-memory" / "Sessions"
+            proposed.mkdir(parents=True)
+            (proposed / "Trace.jsonl").write_text("map note\n", encoding="utf-8")
+            auth_proposed = artifact_dir / "PROPOSED_FILES" / ".project-memory" / "Auth.json"
+            auth_proposed.write_text("map note\n", encoding="utf-8")
+            (artifact_dir / "PROPOSED_CHANGES.patch").write_text(
+                "diff --git a/.project-memory/Sessions/Trace.jsonl b/.project-memory/Sessions/Trace.jsonl\n"
+                "--- a/.project-memory/Sessions/Trace.jsonl\n"
+                "+++ b/.project-memory/Sessions/Trace.jsonl\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new\n"
+                "diff --git a/.project-memory/Auth.json b/.project-memory/Auth.json\n"
+                "--- a/.project-memory/Auth.json\n"
+                "+++ b/.project-memory/Auth.json\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn(
+                "invalid code-map artifact runtime/auth path: PROPOSED_FILES/.project-memory/Sessions",
+                result.stderr,
+            )
+            self.assertIn(
+                "invalid code-map artifact target (diff old path): .project-memory/Sessions/Trace.jsonl",
+                result.stderr,
+            )
+            self.assertIn(
+                "invalid code-map artifact target (diff old path): .project-memory/Auth.json",
+                result.stderr,
+            )
+
     def test_agent_tmux_code_map_artifact_validator_rejects_codex_session_jsonl_material(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
