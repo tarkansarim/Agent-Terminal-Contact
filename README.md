@@ -251,10 +251,11 @@ including source, tests, config, install scripts, user-level files, generated
 artifacts, or open-ended `.project-memory/` paths. It also rejects unsupported
 patch path header formats, symlink/non-regular entries
 anywhere in the sidecar artifact tree, patch modes that would create symlinks or
-other non-regular files, binary content in supervisor-consumed artifacts, and
-direct Codex auth material or obvious auth/session key structures in
-supervisor-consumed artifacts. Ordinary Codex/auth/session map topics are
-allowed when they do not look like runtime files or credential material.
+other non-regular files, binary or terminal-control content in
+supervisor-consumed artifacts, and direct Codex auth material or obvious
+auth/session key structures in supervisor-consumed artifacts. Ordinary
+Codex/auth/session map topics are allowed when they do not look like runtime
+files or credential material.
 Runtime-looking paths such as
 `.agent-tmux-runtime/` inside the artifact directory are rejected; wrapper-owned
 runtime state lives outside the artifact tree. The artifact directory passed to

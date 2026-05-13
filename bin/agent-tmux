@@ -338,6 +338,12 @@ validate_codex_session_id() {
     }
 }
 
+validate_code_map_anchor() {
+    local anchor="$1"
+    [[ -n "${anchor}" ]] || die "code-map sidecar anchor must not be empty"
+    ! string_has_control_chars "${anchor}" || die "code-map sidecar anchor must not contain terminal control bytes"
+}
+
 code_map_session_name() {
     local resolved_workdir="$1"
     local anchor="$2"
@@ -384,6 +390,7 @@ Allowed map/project-memory target paths for applyable patch artifacts:
 MAP-ONLY SCOPE:
 - Read repository source, tests, scripts, and docs as needed to produce a code-map/routing report.
 - Write map output files only under the patch artifact directory. Do not write anywhere under the repository root.
+- Do not write terminal control bytes, bracketed-paste markers, OSC sequences, or other non-text terminal payloads into map artifacts.
 - Do not create .agent-tmux-runtime/ or other runtime-looking directories in the patch artifact directory; wrapper-owned Codex runtime state is outside the artifact tree.
 - Do not edit production source, tests, config, install scripts, user-level files, or generated artifacts in place.
 - Do not run apply_patch, commit, install, roll out, dispatch tickets, contact other agents, or mutate tmux sessions.
@@ -1308,6 +1315,19 @@ def fail() -> None:
     raise SystemExit(1)
 
 
+def fail_control() -> None:
+    print(
+        f"agent-tmux: code-map artifact contains terminal control bytes: {rel}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+def is_disallowed_control(char: str) -> bool:
+    codepoint = ord(char)
+    return (codepoint < 32 and char not in "\n\r\t") or 0x7F <= codepoint <= 0x9F
+
+
 quoted_key_re = re.compile(r"""["']([^"']{1,128})["']\s*:""")
 colon_assignment_key_re = re.compile(r"""^["']?([^"'\s][^"']{0,127})["']?\s*:\s*""")
 equals_assignment_key_re = re.compile(r"""^["']?([^"'=\s][^"'=]{0,127}?)["']?\s*=""")
@@ -1322,6 +1342,8 @@ with open(path, "r", encoding="utf-8", errors="replace") as handle:
     content = handle.read()
     if "\ufffd" in content:
         fail()
+    if any(is_disallowed_control(char) for char in content):
+        fail_control()
     if multiline_session_record_type_re.search(content):
         fail()
     if any(key_is_reserved(match) for match in multiline_quoted_key_re.findall(content)):
@@ -2074,6 +2096,8 @@ launch_code_map_sidecar() {
             die "unknown code-map sidecar mode: ${mode}"
             ;;
     esac
+
+    validate_code_map_anchor "${anchor}"
 
     local resolved_workdir
     local session

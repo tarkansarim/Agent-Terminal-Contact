@@ -199,11 +199,13 @@ path components such as `codex-home`, `.codex`, `session_index.jsonl`,
 ordinary Codex/auth/session map topics are allowed when they do not look like
 runtime files or credential material. `MAP_REPORT.md` alone is the report-only
 lane; otherwise an artifact must contain a proposed map update. The
-sidecar must not edit production source, tests, config, install scripts,
-user-level files, or generated artifacts in place; do not run `apply_patch`,
-commit, install, roll out, dispatch tickets, contact other agents, or mutate
-tmux sessions. The supervisor applies accepted map edits later through the
-normal source workflow, with validation and commit evidence. The final
+sidecar must not write terminal control bytes, bracketed-paste markers, OSC
+sequences, or other non-text terminal payloads into map artifacts. The sidecar
+must not edit production source, tests, config, install scripts, user-level
+files, or generated artifacts in place; do not run `apply_patch`, commit,
+install, roll out, dispatch tickets, contact other agents, or mutate tmux
+sessions. The supervisor applies accepted map edits later through the normal
+source workflow, with validation and commit evidence. The final
 deterministic artifact directory must not already exist or be a symlink; the
 wrapper creates it atomically and refuses paths that resolve inside the
 repository root.
@@ -243,9 +245,10 @@ outside the sidecar-writable artifact and runtime directories. It rejects
 and rejects symlink or non-regular proposed artifact entries, including patch
 modes that would create symlinks or other non-regular files. It also rejects
 unsupported patch path header formats, symlink or non-regular entries anywhere
-in the sidecar artifact tree, binary content in supervisor-consumed artifacts,
-and direct Codex auth material or obvious auth/session key structures in
-supervisor-consumed artifacts. Runtime-looking paths such as
+in the sidecar artifact tree, binary or terminal-control content in
+supervisor-consumed artifacts, and direct Codex auth material or obvious
+auth/session key structures in supervisor-consumed artifacts. Runtime-looking
+paths such as
 `.agent-tmux-runtime/` inside the artifact directory are rejected; wrapper-owned
 runtime state lives outside the artifact tree. The artifact directory passed to
 the validator must itself be a real directory, not a symlink, and must not

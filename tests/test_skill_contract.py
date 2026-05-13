@@ -2269,6 +2269,42 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("code-map artifact appears to contain Codex auth/session structure: MAP_REPORT.md", result.stderr)
 
+    def test_agent_tmux_code_map_artifact_validator_rejects_terminal_control_bytes(self):
+        cases = {
+            "MAP_REPORT.md": "map report\u0085control\n",
+            "PROPOSED_FILES/docs/SUBSYSTEMS/contact.md": "sidecar note \x1b]52;c;AAAA\x07\n",
+            "PROPOSED_CHANGES.patch": (
+                "diff --git a/docs/CODE_MAP.md b/docs/CODE_MAP.md\n"
+                "--- a/docs/CODE_MAP.md\n"
+                "+++ b/docs/CODE_MAP.md\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new\x1b[200~pasted\x1b[201~\n"
+            ),
+        }
+        for rel_path, content in cases.items():
+            with self.subTest(rel_path=rel_path):
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / "artifact"
+                    write_validator_sidecar_manifest(artifact_dir)
+                    target = artifact_dir / rel_path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(content, encoding="utf-8")
+                    result = subprocess.run(
+                        ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                        cwd=ROOT,
+                        check=False,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env={"PATH": "/usr/bin:/bin"},
+                    )
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn(
+                        f"code-map artifact contains terminal control bytes: {rel_path}",
+                        result.stderr,
+                    )
+
     def test_agent_tmux_code_map_artifact_validator_rejects_binary_proposed_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -2554,6 +2590,40 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(second.returncode, 2)
             self.assertIn("code-map artifact directory already exists", second.stderr)
             self.assertFalse(capture_second.exists())
+
+    def test_agent_tmux_code_map_sidecar_rejects_unsafe_anchor_before_artifact_creation(self):
+        cases = {
+            "empty": "",
+            "control": "ticket\nanchor",
+        }
+        for label, anchor in cases.items():
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_path = Path(tmp)
+                    repo = tmp_path / "Example Repo"
+                    repo.mkdir()
+                    artifact_root = tmp_path / "artifacts"
+                    result = subprocess.run(
+                        ["bash", "bin/agent-tmux", "codex-code-map-sidecar", str(repo), anchor, "Focus"],
+                        cwd=ROOT,
+                        check=False,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env={
+                            "AGENT_TMUX_CODE_MAP_ARTIFACT_ROOT": str(artifact_root),
+                            "PATH": "/usr/bin:/bin",
+                        },
+                    )
+                    self.assertEqual(result.returncode, 2)
+                    if label == "empty":
+                        self.assertIn("code-map sidecar anchor must not be empty", result.stderr)
+                    else:
+                        self.assertIn(
+                            "code-map sidecar anchor must not contain terminal control bytes",
+                            result.stderr,
+                        )
+                    self.assertFalse(artifact_root.exists())
 
     def test_agent_tmux_code_map_sidecar_ignores_path_chmod_failure_before_launch(self):
         with tempfile.TemporaryDirectory() as tmp:
