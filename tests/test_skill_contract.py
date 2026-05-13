@@ -2379,12 +2379,13 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("code-map artifact appears to contain Codex auth/session structure: MAP_REPORT.md", result.stderr)
 
     def test_agent_tmux_code_map_artifact_validator_rejects_terminal_control_bytes(self):
-        cases = {
-            "MAP_REPORT.md": "map report\u0085control\n",
-            "PROPOSED_FILES/docs/SUBSYSTEMS/cr.md": "safe text\rspoofed prefix\n",
-            "PROPOSED_FILES/docs/SUBSYSTEMS/tab.md": "sidecar\tnote\n",
-            "PROPOSED_FILES/docs/SUBSYSTEMS/contact.md": "sidecar note \x1b]52;c;AAAA\x07\n",
-            "PROPOSED_CHANGES.patch": (
+        cases = [
+            ("MAP_REPORT.md", "map report\u0085control\n"),
+            ("PROPOSED_FILES/docs/SUBSYSTEMS/cr.md", "safe text\rspoofed prefix\n"),
+            ("PROPOSED_FILES/docs/SUBSYSTEMS/tab.md", "sidecar\tnote\n"),
+            ("PROPOSED_FILES/docs/SUBSYSTEMS/contact.md", "sidecar note \x1b]52;c;AAAA\x07\n"),
+            (
+                "PROPOSED_CHANGES.patch",
                 "diff --git a/docs/CODE_MAP.md b/docs/CODE_MAP.md\n"
                 "--- a/docs/CODE_MAP.md\n"
                 "+++ b/docs/CODE_MAP.md\n"
@@ -2392,8 +2393,18 @@ class SkillContractTests(unittest.TestCase):
                 "-old\n"
                 "+new\x1b[200~pasted\x1b[201~\n"
             ),
-        }
-        for rel_path, content in cases.items():
+            (
+                "PROPOSED_CHANGES.patch",
+                "diff --git a/docs/CODE_MAP.md b/docs/CODE_MAP.md\n"
+                "diff --git a/docs/CODE_MAP.md b/docs/CODE_MAP.md\x1b]52;c;AAAA\x07\n"
+                "--- a/docs/CODE_MAP.md\n"
+                "+++ b/docs/CODE_MAP.md\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new\n",
+            ),
+        ]
+        for rel_path, content in cases:
             with self.subTest(rel_path=rel_path):
                 with tempfile.TemporaryDirectory() as tmp:
                     artifact_dir = Path(tmp) / "artifact"
@@ -2415,6 +2426,11 @@ class SkillContractTests(unittest.TestCase):
                         f"code-map artifact contains terminal control bytes: {rel_path}",
                         result.stderr,
                     )
+                    self.assertNotIn("\x1b", result.stderr)
+                    self.assertNotIn("\x07", result.stderr)
+                    self.assertNotIn("\u0085", result.stderr)
+                    self.assertNotIn("\r", result.stderr)
+                    self.assertNotIn("\t", result.stderr)
 
     def test_agent_tmux_code_map_artifact_validator_rejects_binary_proposed_files(self):
         with tempfile.TemporaryDirectory() as tmp:

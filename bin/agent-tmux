@@ -1040,7 +1040,7 @@ validate_code_map_patch_artifact() {
         case "${line}" in
             "diff --git a/"*" b/"*)
                 if ((in_git_diff == 1 && current_diff_has_hunk != 1)); then
-                    echo "agent-tmux: code-map patch diff contains no hunks before next diff header: ${line}" >&2
+                    echo "agent-tmux: code-map patch diff contains no hunks before next diff header: $(log_value "${line}")" >&2
                     failed=1
                 fi
                 rest="${line#diff --git a/}"
