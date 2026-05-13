@@ -1111,7 +1111,43 @@ class SkillContractTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 2)
             self.assertIn(
-                "code-map artifact appears to contain Codex auth/session structure: PROPOSED_FILES/.project-memory/auth.json",
+                "invalid code-map artifact runtime/auth path: PROPOSED_FILES/.project-memory/auth.json",
+                result.stderr,
+            )
+
+    def test_agent_tmux_code_map_artifact_validator_rejects_runtime_looking_project_memory_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            artifact_dir = tmp_path / "artifact"
+            write_validator_sidecar_manifest(artifact_dir)
+            proposed = artifact_dir / "PROPOSED_FILES" / ".project-memory" / "codex-home" / "sessions" / "2026"
+            proposed.mkdir(parents=True)
+            (proposed / "trace.jsonl").write_text("map note\n", encoding="utf-8")
+            (artifact_dir / "PROPOSED_CHANGES.patch").write_text(
+                "diff --git a/.project-memory/codex-home/sessions/2026/trace.jsonl b/.project-memory/codex-home/sessions/2026/trace.jsonl\n"
+                "--- a/.project-memory/codex-home/sessions/2026/trace.jsonl\n"
+                "+++ b/.project-memory/codex-home/sessions/2026/trace.jsonl\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn(
+                "invalid code-map artifact runtime/auth path: PROPOSED_FILES/.project-memory/codex-home",
+                result.stderr,
+            )
+            self.assertIn(
+                "invalid code-map artifact target (diff old path): .project-memory/codex-home/sessions/2026/trace.jsonl",
                 result.stderr,
             )
 
@@ -1247,9 +1283,9 @@ class SkillContractTests(unittest.TestCase):
                 env={"PATH": "/usr/bin:/bin"},
             )
             self.assertEqual(result.returncode, 2)
-            self.assertIn("invalid code-map artifact runtime path: .agent-tmux-runtime", result.stderr)
+            self.assertIn("invalid code-map artifact runtime/auth path: .agent-tmux-runtime", result.stderr)
             self.assertIn(
-                "invalid code-map artifact runtime path: .agent-tmux-runtime/codex-home/sessions/2026/05/13/rollout-12345678-1234-1234-1234-123456789abc.jsonl",
+                "invalid code-map artifact runtime/auth path: .agent-tmux-runtime/codex-home/sessions/2026/05/13/rollout-12345678-1234-1234-1234-123456789abc.jsonl",
                 result.stderr,
             )
 
@@ -1653,6 +1689,44 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("code-map artifact directory must not be inside the repository root", result.stderr)
             self.assertFalse(capture.exists())
             self.assertFalse((repo / ".sidecars").exists())
+
+    def test_agent_tmux_code_map_sidecar_cleans_registry_when_runtime_parent_is_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "Example Repo"
+            repo.mkdir()
+            capture = tmp_path / "args.txt"
+            artifact_root = tmp_path / "artifacts"
+            artifact_root.mkdir()
+            runtime_target = tmp_path / "runtime-target"
+            runtime_target.mkdir()
+            runtime_link = artifact_root / ".agent-tmux-sidecar-runtime"
+            runtime_link.symlink_to(runtime_target, target_is_directory=True)
+            delegate = write_code_map_delegate(tmp_path, has_rc=1)
+            fake_bin = write_fake_tmux(tmp_path)
+            session = code_map_session_name(repo, "cp-123")
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-sidecar", str(repo), "cp-123", "Focus"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                    "AGENT_TMUX_CODE_MAP_ARTIFACT_ROOT": str(artifact_root),
+                    "HOME": str(tmp_path / "home"),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("code-map sidecar runtime parent must not be a symlink", result.stderr)
+            self.assertFalse(capture.exists())
+            self.assertFalse((artifact_root / session).exists())
+            self.assertFalse((artifact_root / ".agent-tmux-sidecar-registry").exists())
+            self.assertTrue(runtime_link.is_symlink())
 
     def test_agent_tmux_code_map_sidecar_refuses_symlink_artifact_directory(self):
         with tempfile.TemporaryDirectory() as tmp:

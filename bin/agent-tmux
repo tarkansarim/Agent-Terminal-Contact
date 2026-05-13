@@ -537,15 +537,15 @@ prepare_code_map_artifact_dir() {
     runtime_dir="$(code_map_sidecar_runtime_dir "${artifact_dir}")"
     runtime_parent="$(dirname "${runtime_dir}")"
     if [[ -L "${runtime_parent}" ]]; then
-        rmdir "${artifact_dir}" 2>/dev/null || true
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "" "" "${owner_file}"
         die "code-map sidecar runtime parent must not be a symlink: ${runtime_parent}"
     fi
     mkdir -p "${runtime_parent}" || {
-        rmdir "${artifact_dir}" 2>/dev/null || true
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "" "" "${owner_file}"
         die "failed to create code-map sidecar runtime parent: ${runtime_parent}"
     }
     if [[ -L "${runtime_parent}" || ! -d "${runtime_parent}" ]]; then
-        rmdir "${artifact_dir}" 2>/dev/null || true
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "" "" "${owner_file}"
         die "code-map sidecar runtime parent is not a real directory: ${runtime_parent}"
     fi
     if ! chmod 700 "${runtime_parent}" || ! require_code_map_mode "${runtime_parent}" 700 "code-map sidecar runtime parent"; then
@@ -553,25 +553,23 @@ prepare_code_map_artifact_dir() {
         die "failed to harden code-map sidecar runtime parent permissions: ${runtime_parent}"
     fi
     if [[ -L "${runtime_dir}" ]]; then
-        rmdir "${artifact_dir}" 2>/dev/null || true
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "" "${runtime_parent}" "${owner_file}"
         die "code-map sidecar runtime directory must not be a symlink: ${runtime_dir}"
     fi
     if [[ -e "${runtime_dir}" ]]; then
-        rmdir "${artifact_dir}" 2>/dev/null || true
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "" "${runtime_parent}" "${owner_file}"
         die "code-map sidecar runtime directory already exists: ${runtime_dir}; use a new anchor"
     fi
     mkdir "${runtime_dir}" || {
-        rmdir "${artifact_dir}" 2>/dev/null || true
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "" "${runtime_parent}" "${owner_file}"
         die "failed to create code-map sidecar runtime directory: ${runtime_dir}"
     }
     runtime_real="$(cd "${runtime_dir}" 2>/dev/null && pwd -P)" || {
-        rm -rf --one-file-system -- "${runtime_dir}"
-        rmdir "${artifact_dir}" 2>/dev/null || true
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
         die "code-map sidecar runtime directory does not exist after creation: ${runtime_dir}"
     }
     if path_is_same_or_child "${runtime_real}" "${resolved_workdir}"; then
-        rm -rf --one-file-system -- "${runtime_dir}"
-        rmdir "${artifact_dir}" 2>/dev/null || true
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
         die "code-map sidecar runtime directory must not resolve inside the repository root: ${runtime_dir}"
     fi
     if ! mkdir -p "${runtime_dir}/home" \
@@ -678,6 +676,7 @@ is_safe_relative_path() {
 is_allowed_code_map_target_path() {
     local path="$1"
     is_safe_relative_path "${path}" || return 1
+    path_has_code_map_runtime_or_auth_component "${path}" && return 1
     case "${path}" in
         .project-memory/*) return 0 ;;
         docs/CODEBASE_ARCHITECTURE_INDEX.md) return 0 ;;
@@ -693,6 +692,7 @@ is_allowed_code_map_target_path() {
 is_allowed_code_map_proposed_dir() {
     local path="$1"
     is_safe_relative_path "${path}" || return 1
+    path_has_code_map_runtime_or_auth_component "${path}" && return 1
     case "${path}" in
         .project-memory|.project-memory/*) return 0 ;;
         docs|docs/SUBSYSTEMS) return 0 ;;
@@ -705,6 +705,10 @@ validate_code_map_target_or_record() {
     local context="$2"
     if [[ "${path}" == "/dev/null" ]]; then
         return 0
+    fi
+    if path_has_code_map_runtime_or_auth_component "${path}"; then
+        echo "agent-tmux: invalid code-map artifact target (${context}): ${path}" >&2
+        return 1
     fi
     if is_allowed_code_map_target_path "${path}"; then
         return 0
@@ -936,6 +940,21 @@ validate_no_codex_auth_structure() {
     return 0
 }
 
+path_has_code_map_runtime_or_auth_component() {
+    local path="$1"
+    local component
+    local -a components=()
+    IFS='/' read -r -a components <<<"${path}"
+    for component in "${components[@]}"; do
+        case "${component}" in
+            .agent-tmux-runtime|.agent-tmux-sidecar-runtime|codex-home|CODEX_HOME|.codex|sessions|auth.json|session_index.jsonl)
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
 strip_trailing_slashes() {
     local path="$1"
     while [[ "${path}" != "/" && "${path}" == */ ]]; do
@@ -1131,13 +1150,11 @@ validate_code_map_artifacts() {
             failed=1
             continue
         fi
-        case "${rel}" in
-            .agent-tmux-runtime|.agent-tmux-runtime/*)
-                echo "agent-tmux: invalid code-map artifact runtime path: ${rel}" >&2
-                failed=1
-                continue
-                ;;
-        esac
+        if path_has_code_map_runtime_or_auth_component "${rel}"; then
+            echo "agent-tmux: invalid code-map artifact runtime/auth path: ${rel}" >&2
+            failed=1
+            continue
+        fi
         if [[ -d "${file_path}" ]]; then
             case "${rel}" in
                 PROPOSED_FILES)
