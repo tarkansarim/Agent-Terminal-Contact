@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import re
 import shlex
-import string
 from typing import Sequence
 
 from .runner import Runner
@@ -340,7 +339,7 @@ def _read_sidecar_request_fields(request_file: Path) -> dict[str, str] | None:
         text = request_file.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
-    if any(char not in string.printable or (ord(char) < 32 and char not in "\n\r\t") for char in text):
+    if any((ord(char) < 32 and char != "\n") or 0x7F <= ord(char) <= 0x9F for char in text):
         return None
     fields: dict[str, str] = {}
     for raw_line in text.splitlines():

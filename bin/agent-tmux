@@ -960,6 +960,16 @@ validate_code_map_patch_header_path() {
     return 1
 }
 
+code_map_patch_header_looks_pathlike() {
+    local path="$1"
+    [[ -n "${path}" ]] || return 1
+    [[ "${path}" != *[[:space:]]* ]] || return 1
+    case "${path}" in
+        */*|.*) return 0 ;;
+    esac
+    return 1
+}
+
 validate_code_map_patch_artifact() {
     local patch_file="$1"
     if [[ ! -f "${patch_file}" ]]; then
@@ -973,6 +983,7 @@ validate_code_map_patch_artifact() {
     local minus_seen=0
     local plus_seen=0
     local current_diff_has_hunk=0
+    local plain_header_after_hunk=0
     local line
     local mode
     local path
@@ -994,13 +1005,20 @@ validate_code_map_patch_artifact() {
                 minus_seen=0
                 plus_seen=0
                 current_diff_has_hunk=0
+                plain_header_after_hunk=0
                 validate_code_map_target_or_record "${left}" "diff old path" || failed=1
                 validate_code_map_target_or_record "${right}" "diff new path" || failed=1
                 ;;
             "--- "*)
                 path="${line#--- }"
                 found_path=1
-                if ((in_git_diff != 1 || minus_seen == 1)); then
+                if ((in_git_diff == 1 && current_diff_has_hunk == 1)); then
+                    if code_map_patch_header_looks_pathlike "${path}"; then
+                        echo "agent-tmux: unsupported code-map patch --- header: ${line}" >&2
+                        failed=1
+                        plain_header_after_hunk=1
+                    fi
+                elif ((in_git_diff != 1 || minus_seen == 1)); then
                     echo "agent-tmux: unsupported code-map patch --- header: ${line}" >&2
                     failed=1
                 else
@@ -1011,7 +1029,16 @@ validate_code_map_patch_artifact() {
             "+++ "*)
                 path="${line#+++ }"
                 found_path=1
-                if ((in_git_diff != 1 || plus_seen == 1)); then
+                if ((plain_header_after_hunk == 1)); then
+                    echo "agent-tmux: unsupported code-map patch +++ header: ${line}" >&2
+                    failed=1
+                    plain_header_after_hunk=0
+                elif ((in_git_diff == 1 && current_diff_has_hunk == 1)); then
+                    if code_map_patch_header_looks_pathlike "${path}"; then
+                        echo "agent-tmux: unsupported code-map patch +++ header: ${line}" >&2
+                        failed=1
+                    fi
+                elif ((in_git_diff != 1 || plus_seen == 1)); then
                     echo "agent-tmux: unsupported code-map patch +++ header: ${line}" >&2
                     failed=1
                 else
@@ -1020,6 +1047,7 @@ validate_code_map_patch_artifact() {
                 fi
                 ;;
             "@@ "*)
+                plain_header_after_hunk=0
                 if ((in_git_diff != 1 || minus_seen != 1 || plus_seen != 1)); then
                     echo "agent-tmux: unsupported code-map patch hunk before complete headers: ${line}" >&2
                     failed=1
@@ -1215,6 +1243,7 @@ validate_code_map_content_policy() {
     fi
     PYTHONPATH= PYTHONHOME= "${python_bin}" -I -S - "${rel}" "${file_path}" <<'PY'
 import codecs
+import json
 import re
 import sys
 
@@ -1293,6 +1322,38 @@ def _key_variant_is_reserved(value: str) -> bool:
     ) or normalized.endswith("token")
 
 
+SESSION_JSON_CONTEXT_KEYS = {
+    "timestamp",
+    "sessionid",
+    "conversationid",
+    "message",
+    "payload",
+    "role",
+    "content",
+    "parentid",
+    "itemid",
+    "callid",
+    "requestid",
+    "responseid",
+    "cwd",
+    "originator",
+}
+
+
+def looks_like_session_json_record(line: str) -> bool:
+    candidate = strip_record_prefixes(line).strip()
+    if not (candidate.startswith("{") and candidate.endswith("}")):
+        return False
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    normalized_keys = {normalize(str(key)) for key in parsed}
+    return "type" in normalized_keys and bool(normalized_keys & SESSION_JSON_CONTEXT_KEYS)
+
+
 def strip_record_prefixes(line: str) -> str:
     stripped = line.lstrip()
     if stripped.startswith(("+", "-")) and not stripped.startswith(("+++", "---")):
@@ -1351,7 +1412,7 @@ with open(path, "r", encoding="utf-8", errors="replace") as handle:
     lines = content.splitlines()
     structured_lines = [strip_record_prefixes(line) for line in lines]
     for index, line in enumerate(lines):
-        if private_key_re.search(line) or session_record_type_re.search(line):
+        if private_key_re.search(line) or session_record_type_re.search(line) or looks_like_session_json_record(line):
             fail()
         if any(key_is_reserved(match) for match in quoted_key_re.findall(line)):
             fail()

@@ -247,8 +247,8 @@ modes that would create symlinks or other non-regular files. It also rejects
 unsupported patch path header formats, symlink or non-regular entries anywhere
 in the sidecar artifact tree, binary or terminal-control content in
 supervisor-consumed artifacts, and direct Codex auth material or obvious
-auth/session key structures in supervisor-consumed artifacts. Runtime-looking
-paths such as
+auth/session key structures or raw transcript-style JSONL records in
+supervisor-consumed artifacts. Runtime-looking paths such as
 `.agent-tmux-runtime/` inside the artifact directory are rejected; wrapper-owned
 runtime state lives outside the artifact tree. The artifact directory passed to
 the validator must itself be a real directory, not a symlink, and must not
