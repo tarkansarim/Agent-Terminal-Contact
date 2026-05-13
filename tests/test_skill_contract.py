@@ -1455,6 +1455,37 @@ class SkillContractTests(unittest.TestCase):
                 result.stderr,
             )
 
+    def test_agent_tmux_code_map_artifact_validator_rejects_colon_auth_structure_keys(self):
+        cases = [
+            ("OPENAI_API_KEY", "MAP_REPORT.md"),
+            ("GITHUB_TOKEN", "PROPOSED_FILES/.project-memory/state.md"),
+            ("github_token", "PROPOSED_FILES/.project-memory/state.md"),
+            ("aws_secret_access_key", "PROPOSED_FILES/.project-memory/state.md"),
+        ]
+        for key, rel_path in cases:
+            with self.subTest(key=key, rel_path=rel_path):
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_path = Path(tmp)
+                    artifact_dir = tmp_path / "artifact"
+                    write_validator_sidecar_manifest(artifact_dir)
+                    target = artifact_dir / rel_path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(f"{key}: local-secret\n", encoding="utf-8")
+                    result = subprocess.run(
+                        ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                        cwd=ROOT,
+                        check=False,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env={"PATH": "/usr/bin:/bin"},
+                    )
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn(
+                        f"code-map artifact appears to contain Codex auth/session structure: {rel_path}",
+                        result.stderr,
+                    )
+
     def test_agent_tmux_code_map_artifact_validator_rejects_codex_session_jsonl_material(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

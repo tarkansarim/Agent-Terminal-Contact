@@ -952,6 +952,36 @@ class SessionDiscoveryTests(unittest.TestCase):
                         explicit_session=session,
                     )
 
+    def test_explicit_sidecar_session_refuses_tmux_prefix_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            session = "codex-map-repo-ticket58-123456789abc"
+            explicit_prefix = "codex-map-repo"
+            artifact_dir = tmp_path / session
+            repo.mkdir()
+            artifact_dir.mkdir()
+            write_sidecar_request(artifact_dir, session=session, repo=repo)
+            script = write_provider_package(repo)
+            args = f"node {script}"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-s", "-t", explicit_prefix, "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line(session, "%1", artifact_dir), ""
+                    ),
+                    **tty_response(args=args, pid=1234),
+                    **proc_response(args=args),
+                }
+            )
+            with trusted_provider_root(repo):
+                with self.assertRaisesRegex(DiscoveryError, "non-exact session"):
+                    select_target(
+                        repo=str(repo),
+                        provider="codex",
+                        runner=runner,
+                        explicit_session=explicit_prefix,
+                    )
+
     def test_implicit_discovery_refuses_sidecar_manifest_repo_match(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

@@ -106,6 +106,13 @@ def select_target(
     provider = _normalize_provider(provider)
 
     panes = _list_panes(runner, explicit_session=explicit_session)
+    if explicit_session is not None:
+        mismatched = tuple(pane.session_name for pane in panes if pane.session_name != explicit_session)
+        if mismatched:
+            names = ", ".join(sorted(set(mismatched)))
+            raise DiscoveryError(
+                f"non-exact session match for {explicit_session!r}; tmux returned session(s): {names}"
+            )
     candidates: list[tuple[TmuxPane, str]] = []
     for pane in panes:
         if pane.dead:

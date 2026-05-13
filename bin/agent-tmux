@@ -937,6 +937,7 @@ validate_no_codex_auth_structure() {
     local sensitive_key_fragment='(access[-_]?token|refresh[-_]?token|id[-_]?token|api[-_]?key|client[-_]?secret|private[-_]?key|auth|credential|secret|token|password|session[-_]?id|conversation[-_]?id|encrypted[-_]?content)'
     if LC_ALL=C grep -Eiq "\"[A-Za-z0-9_.-]*${sensitive_key_fragment}[A-Za-z0-9_.-]*\"[[:space:]]*:" "${file_path}" \
         || LC_ALL=C grep -Eiq "(^|[^A-Za-z0-9_])[A-Za-z0-9_]*${sensitive_key_fragment}[A-Za-z0-9_]*[[:space:]]*=" "${file_path}" \
+        || LC_ALL=C grep -Eiq "(^|[^A-Za-z0-9_])[A-Za-z0-9_]*${sensitive_key_fragment}[A-Za-z0-9_]*[[:space:]]*:" "${file_path}" \
         || LC_ALL=C grep -Eiq '"type"[[:space:]]*:[[:space:]]*"session_meta"' "${file_path}" \
         || LC_ALL=C grep -Eiq '"(encrypted_content|session_id|conversation_id)"[[:space:]]*:' "${file_path}"; then
         echo "agent-tmux: code-map artifact appears to contain Codex auth/session structure: ${rel}" >&2
