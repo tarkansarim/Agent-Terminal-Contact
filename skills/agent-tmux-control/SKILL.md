@@ -254,8 +254,9 @@ ls <artifact-dir>
 If a follow-up message is needed after launch, target only the known sidecar
 session and dry-run guarded contact first. For wrapper-launched sidecars,
 `agent-contact` accepts the original repository root when an exact session is
-provided and validates the sidecar registry outside the writable artifact tree
-before selecting the pane:
+provided and validates both the sidecar registry outside the writable artifact
+tree and the artifact-local `SIDECAR_REQUEST.txt` binding before selecting the
+pane:
 
 ```bash
 agent-contact send --repo <repo> --provider codex --session <sidecar-session> --message "..." --dry-run

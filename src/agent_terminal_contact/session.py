@@ -267,17 +267,32 @@ def _sidecar_request_for_pane(pane: TmuxPane, repo_path: str) -> SidecarRequest 
     registry_fields = _read_sidecar_request_fields(request_file)
     if registry_fields is None:
         return None
-    manifest_session = registry_fields.get("session", "")
-    manifest_repo_raw = registry_fields.get("repo", "")
-    manifest_artifact_raw = registry_fields.get("allowed_output_dir", "")
+    artifact_manifest = resolved_artifact_path / "SIDECAR_REQUEST.txt"
+    manifest_fields = _read_sidecar_request_fields(artifact_manifest)
+    if manifest_fields is None:
+        return None
+    registry_session = registry_fields.get("session", "")
+    registry_repo_raw = registry_fields.get("repo", "")
+    registry_artifact_raw = registry_fields.get("allowed_output_dir", "")
+    manifest_session = manifest_fields.get("session", "")
+    manifest_repo_raw = manifest_fields.get("repo", "")
+    manifest_artifact_raw = manifest_fields.get("allowed_output_dir", "")
+    if not registry_session or not registry_repo_raw or not registry_artifact_raw:
+        return None
     if not manifest_session or not manifest_repo_raw or not manifest_artifact_raw:
         return None
+    if (
+        manifest_session != registry_session
+        or manifest_repo_raw != registry_repo_raw
+        or manifest_artifact_raw != registry_artifact_raw
+    ):
+        return None
     try:
-        manifest_repo = _resolve_existing_repo(manifest_repo_raw)
-        manifest_artifact_path = Path(manifest_artifact_raw).expanduser().resolve(strict=True)
+        manifest_repo = _resolve_existing_repo(registry_repo_raw)
+        manifest_artifact_path = Path(registry_artifact_raw).expanduser().resolve(strict=True)
     except (DiscoveryError, OSError):
         return None
-    if manifest_session != pane.session_name:
+    if registry_session != pane.session_name:
         return None
     if manifest_repo != repo_path:
         return None

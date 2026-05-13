@@ -75,7 +75,14 @@ def write_fake_tmux(tmp_path):
         "  exit 0\n"
         "fi\n"
         "if [ \"$1\" = kill-session ]; then\n"
+        "  if [ \"${AGENT_TMUX_FAIL_KILL:-0}\" = 1 ]; then\n"
+        "    printf 'forced kill failure\\n' >&2\n"
+        "    exit 1\n"
+        "  fi\n"
         "  exit 0\n"
+        "fi\n"
+        "if [ \"$1\" = has-session ]; then\n"
+        "  exit 1\n"
         "fi\n"
         "printf 'unexpected tmux command: %s\\n' \"$*\" >&2\n"
         "exit 2\n",
@@ -163,8 +170,9 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("outside the sidecar-writable tree", text)
         self.assertIn("It rejects\n`PROPOSED_CHANGES.patch` and `PROPOSED_FILES/` entries", text)
         self.assertIn("change the anchor\nto launch a new sidecar", text)
-        self.assertIn("validates the sidecar registry outside the writable artifact tree", text)
+        self.assertIn("validates both the sidecar registry outside the writable artifact", text)
         self.assertIn("cleanup owner\nmarker is also stored beside that registry", text)
+        self.assertIn("artifact-local `SIDECAR_REQUEST.txt` binding", text)
         self.assertIn("agent-contact send --repo <repo> --provider codex --session <sidecar-session>", text)
         self.assertIn("If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed", text)
         self.assertIn("Do not fall back to raw `agent-tmux send`", text)
@@ -1446,6 +1454,39 @@ class SkillContractTests(unittest.TestCase):
             if artifact_root.exists():
                 self.assertFalse(any(artifact_root.iterdir()))
 
+    def test_agent_tmux_code_map_sidecar_refuses_false_success_chmod_modes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "Example Repo"
+            repo.mkdir()
+            capture = tmp_path / "args.txt"
+            artifact_root = tmp_path / "artifacts"
+            delegate = write_code_map_delegate(tmp_path, has_rc=1)
+            fake_bin = write_fake_tmux(tmp_path)
+            write_fake_chmod(fake_bin, "exit 0\n")
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-sidecar", str(repo), "cp-123", "Focus"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                    "AGENT_TMUX_CODE_MAP_ARTIFACT_ROOT": str(artifact_root),
+                    "HOME": str(tmp_path / "home"),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("unsafe code-map sidecar registry directory permissions", result.stderr)
+            self.assertIn("failed to harden code-map sidecar registry directory permissions", result.stderr)
+            self.assertFalse(capture.exists())
+            if artifact_root.exists():
+                self.assertFalse(any(artifact_root.iterdir()))
+
     def test_agent_tmux_code_map_sidecar_cleans_runtime_on_late_chmod_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -1484,6 +1525,39 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("failed to harden code-map sidecar registry file permissions", result.stderr)
             self.assertFalse(capture.exists())
+            if artifact_root.exists():
+                self.assertFalse(any(artifact_root.iterdir()))
+
+    def test_agent_tmux_code_map_sidecar_reports_failed_session_termination_after_pipe_log_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "Example Repo"
+            repo.mkdir()
+            capture = tmp_path / "args.txt"
+            artifact_root = tmp_path / "artifacts"
+            delegate = write_code_map_delegate(tmp_path, has_rc=1, pipe_rc=1)
+            fake_bin = write_fake_tmux(tmp_path)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-sidecar", str(repo), "cp-123", "Focus"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_FAIL_KILL": "1",
+                    "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                    "AGENT_TMUX_CODE_MAP_ARTIFACT_ROOT": str(artifact_root),
+                    "HOME": str(tmp_path / "home"),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("failed to terminate code-map sidecar session after pipe-log failure", result.stderr)
+            self.assertIn("forced kill failure", result.stderr)
+            self.assertIn("failed to enable log pipe for code-map sidecar session", result.stderr)
             if artifact_root.exists():
                 self.assertFalse(any(artifact_root.iterdir()))
 

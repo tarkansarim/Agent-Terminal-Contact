@@ -436,6 +436,31 @@ cleanup_code_map_prepare_paths() {
     fi
 }
 
+require_code_map_mode() {
+    local path="$1"
+    local expected="$2"
+    local label="$3"
+    local actual
+    actual="$(stat -c '%a' -- "${path}" 2>/dev/null)" || {
+        echo "agent-tmux: failed to inspect ${label} permissions: ${path}" >&2
+        return 1
+    }
+    if [[ "${actual}" != "${expected}" ]]; then
+        echo "agent-tmux: unsafe ${label} permissions: ${path} has mode ${actual}, expected ${expected}" >&2
+        return 1
+    fi
+}
+
+require_code_map_modes() {
+    local expected="$1"
+    local label="$2"
+    shift 2
+    local path
+    for path in "$@"; do
+        require_code_map_mode "${path}" "${expected}" "${label}" || return 1
+    done
+}
+
 prepare_code_map_artifact_dir() {
     local session="$1"
     local resolved_workdir="$2"
@@ -491,7 +516,7 @@ prepare_code_map_artifact_dir() {
         rmdir "${artifact_dir}" 2>/dev/null || true
         die "code-map sidecar registry directory is not a real directory: ${registry_dir}"
     fi
-    if ! chmod 700 "${registry_dir}"; then
+    if ! chmod 700 "${registry_dir}" || ! require_code_map_mode "${registry_dir}" 700 "code-map sidecar registry directory"; then
         cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "" "" ""
         die "failed to harden code-map sidecar registry directory permissions: ${registry_dir}"
     fi
@@ -505,7 +530,7 @@ prepare_code_map_artifact_dir() {
         rmdir "${artifact_dir}" 2>/dev/null || true
         die "code-map sidecar cleanup owner marker already exists: ${owner_file}; use a new anchor"
     fi
-    if ! chmod 700 "${artifact_dir}"; then
+    if ! chmod 700 "${artifact_dir}" || ! require_code_map_mode "${artifact_dir}" 700 "code-map artifact directory"; then
         cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "" "" "${owner_file}"
         die "failed to harden code-map artifact directory permissions: ${artifact_dir}"
     fi
@@ -523,7 +548,7 @@ prepare_code_map_artifact_dir() {
         rmdir "${artifact_dir}" 2>/dev/null || true
         die "code-map sidecar runtime parent is not a real directory: ${runtime_parent}"
     fi
-    if ! chmod 700 "${runtime_parent}"; then
+    if ! chmod 700 "${runtime_parent}" || ! require_code_map_mode "${runtime_parent}" 700 "code-map sidecar runtime parent"; then
         cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "" "${runtime_parent}" "${owner_file}"
         die "failed to harden code-map sidecar runtime parent permissions: ${runtime_parent}"
     fi
@@ -559,14 +584,18 @@ prepare_code_map_artifact_dir() {
         cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
         die "failed to create code-map sidecar runtime subdirectories: ${runtime_dir}"
     fi
-    if ! chmod 700 "${runtime_dir}" \
-        "${runtime_dir}/home" \
-        "${runtime_dir}/codex-home" \
-        "${runtime_dir}/cache" \
-        "${runtime_dir}/state" \
-        "${runtime_dir}/config" \
-        "${runtime_dir}/empty-dev-shm" \
-        "${runtime_dir}/empty-usr-local-bin"; then
+    local runtime_private_paths=(
+        "${runtime_dir}"
+        "${runtime_dir}/home"
+        "${runtime_dir}/codex-home"
+        "${runtime_dir}/cache"
+        "${runtime_dir}/state"
+        "${runtime_dir}/config"
+        "${runtime_dir}/empty-dev-shm"
+        "${runtime_dir}/empty-usr-local-bin"
+    )
+    if ! chmod 700 "${runtime_private_paths[@]}" \
+        || ! require_code_map_modes 700 "code-map sidecar runtime path" "${runtime_private_paths[@]}"; then
         cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
         die "failed to harden code-map sidecar runtime permissions: ${runtime_dir}"
     fi
@@ -575,7 +604,7 @@ prepare_code_map_artifact_dir() {
         cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
         die "failed to write code-map sidecar cleanup owner marker: ${owner_file}"
     fi
-    if ! chmod 600 "${owner_file}"; then
+    if ! chmod 600 "${owner_file}" || ! require_code_map_mode "${owner_file}" 600 "code-map sidecar cleanup owner marker"; then
         cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
         die "failed to harden code-map sidecar cleanup owner marker permissions: ${owner_file}"
     fi
@@ -589,7 +618,7 @@ prepare_code_map_artifact_dir() {
         die "failed to create code-map sidecar registry: ${registry_file}"
     fi
     ((noclobber_was_set == 1)) || set +o noclobber
-    if ! chmod 600 "${registry_file}"; then
+    if ! chmod 600 "${registry_file}" || ! require_code_map_mode "${registry_file}" 600 "code-map sidecar registry file"; then
         cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
         die "failed to harden code-map sidecar registry file permissions: ${registry_file}"
     fi
@@ -1174,6 +1203,47 @@ code_map_log_path() {
     printf "%s\n" "${log_path}"
 }
 
+terminate_code_map_sidecar_session() {
+    local session="$1"
+    local reason="$2"
+    local stderr_file
+    local rc=0
+    stderr_file="$(mktemp)" || {
+        echo "agent-tmux: failed to create tmux termination stderr capture for ${session}" >&2
+        return 1
+    }
+    set +e
+    tmux kill-session -t "${session}" 2>"${stderr_file}"
+    rc=$?
+    set -e
+    if ((rc != 0)); then
+        local detail
+        detail="$(<"${stderr_file}")"
+        rm -f "${stderr_file}"
+        echo "agent-tmux: failed to terminate code-map sidecar session after ${reason}: ${session}: ${detail:-tmux kill-session failed}" >&2
+        return 1
+    fi
+    rm -f "${stderr_file}"
+
+    set +e
+    tmux has-session -t "${session}" >/dev/null 2>"${stderr_file}"
+    rc=$?
+    set -e
+    if ((rc == 0)); then
+        rm -f "${stderr_file}"
+        echo "agent-tmux: code-map sidecar session still exists after ${reason}: ${session}" >&2
+        return 1
+    fi
+    if ((rc != 1)); then
+        local detail
+        detail="$(<"${stderr_file}")"
+        rm -f "${stderr_file}"
+        echo "agent-tmux: failed to verify code-map sidecar session cleanup after ${reason}: ${session}: ${detail:-tmux has-session failed}" >&2
+        return 1
+    fi
+    rm -f "${stderr_file}"
+}
+
 CODE_MAP_PREPARED_ARTIFACT_DIR=""
 CODE_MAP_PREPARED_RUNTIME_DIR=""
 CODE_MAP_ARTIFACT_OWNER_TOKEN=""
@@ -1281,8 +1351,12 @@ start_code_map_sidecar_session() {
     rm -f "${stderr_file}"
 
     if ! "${DELEGATE}" pipe-log "${session}"; then
-        tmux kill-session -t "${session}" >/dev/null 2>&1 || true
+        local termination_failed=0
+        terminate_code_map_sidecar_session "${session}" "pipe-log failure" || termination_failed=1
         cleanup_code_map_artifact_dir "${artifact_dir}" "${owner_token}"
+        if ((termination_failed != 0)); then
+            die "failed to enable log pipe for code-map sidecar session: ${session}; sidecar session termination failed"
+        fi
         die "failed to enable log pipe for code-map sidecar session: ${session}"
     fi
 }

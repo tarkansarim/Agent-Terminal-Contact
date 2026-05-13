@@ -1061,7 +1061,7 @@ class SessionDiscoveryTests(unittest.TestCase):
                         explicit_session=session,
                     )
 
-    def test_explicit_sidecar_session_uses_registry_when_artifact_manifest_is_tampered(self):
+    def test_explicit_sidecar_session_refuses_tampered_artifact_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             repo = tmp_path / "repo"
@@ -1088,13 +1088,13 @@ class SessionDiscoveryTests(unittest.TestCase):
                 }
             )
             with trusted_provider_root(repo):
-                selected = select_target(
-                    repo=str(repo),
-                    provider="codex",
-                    runner=runner,
-                    explicit_session=session,
-                )
-            self.assertEqual(selected.expected_pane_path, str(artifact_dir.resolve()))
+                with self.assertRaisesRegex(DiscoveryError, "no tmux-managed codex pane"):
+                    select_target(
+                        repo=str(repo),
+                        provider="codex",
+                        runner=runner,
+                        explicit_session=session,
+                    )
 
     def test_sidecar_revalidate_refuses_artifact_path_drift(self):
         with tempfile.TemporaryDirectory() as tmp:
