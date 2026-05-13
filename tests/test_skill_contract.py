@@ -1350,6 +1350,52 @@ class SkillContractTests(unittest.TestCase):
                 result.stderr,
             )
 
+    def test_agent_tmux_code_map_artifact_validator_rejects_access_key_path_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            artifact_dir = tmp_path / "artifact"
+            write_validator_sidecar_manifest(artifact_dir)
+            proposed = artifact_dir / "PROPOSED_FILES" / ".project-memory"
+            proposed.mkdir(parents=True)
+            (proposed / "aws-access-key-id.md").write_text("map note\n", encoding="utf-8")
+            (artifact_dir / "PROPOSED_CHANGES.patch").write_text(
+                "diff --git a/.project-memory/aws-access-key.md b/.project-memory/aws-access-key.md\n"
+                "--- a/.project-memory/aws-access-key.md\n"
+                "+++ b/.project-memory/aws-access-key.md\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new\n"
+                "diff --git a/.project-memory/aws_access_key.md b/.project-memory/aws_access_key.md\n"
+                "--- a/.project-memory/aws_access_key.md\n"
+                "+++ b/.project-memory/aws_access_key.md\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn(
+                "invalid code-map artifact runtime/auth path: PROPOSED_FILES/.project-memory/aws-access-key-id.md",
+                result.stderr,
+            )
+            self.assertIn(
+                "invalid code-map artifact target (diff old path): .project-memory/aws-access-key.md",
+                result.stderr,
+            )
+            self.assertIn(
+                "invalid code-map artifact target (diff old path): .project-memory/aws_access_key.md",
+                result.stderr,
+            )
+
     def test_agent_tmux_code_map_artifact_validator_rejects_newline_path_names(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

@@ -955,7 +955,7 @@ path_has_code_map_runtime_or_auth_component() {
     for component in "${components[@]}"; do
         normalized="${component,,}"
         case "${normalized}" in
-            .agent-tmux-runtime|.agent-tmux-sidecar-runtime|codex-home|.codex|session_index.jsonl|*session*|*auth*|*token*|*credential*|*secret*|*password*|*api*key*|*private*key*)
+            .agent-tmux-runtime|.agent-tmux-sidecar-runtime|codex-home|.codex|session_index.jsonl|*session*|*auth*|*token*|*credential*|*secret*|*password*|*api*key*|*private*key*|*access*key*)
                 return 0
                 ;;
         esac
