@@ -288,7 +288,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         )
         return EXIT_REFUSED
 
-    if not args.dry_run and selection.pane.attached > 0:
+    if selection.pane.attached > 0:
         _emit(
             args,
             stdout,
@@ -296,7 +296,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                 **base,
                 "status": "refused",
                 "stage": "attached_session",
-                "reason": "target tmux session is attached; refusing real send to avoid human input races",
+                "reason": "target tmux session is attached; refusing contact to avoid human input races",
             },
         )
         return EXIT_REFUSED

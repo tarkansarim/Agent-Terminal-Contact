@@ -223,10 +223,16 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["pane_id"], "%1")
             self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
 
-    def test_sidecar_contact_uses_artifact_dir_as_repo_selector(self):
+    def test_sidecar_contact_refuses_artifact_dir_as_repo_selector(self):
         with tempfile.TemporaryDirectory() as tmp:
+            original_repo = Path(tmp) / "repo"
             artifact_dir = Path(tmp) / "artifact"
+            original_repo.mkdir()
             artifact_dir.mkdir()
+            (artifact_dir / "SIDECAR_REQUEST.txt").write_text(
+                f"session=codex-demo\nrepo={original_repo}\nallowed_output_dir={artifact_dir}\n",
+                encoding="utf-8",
+            )
             runner = FakeRunner(artifact_dir, CODEX_IDLE)
             runner.responses[("tmux", "list-panes", "-s", "-t", "codex-demo", "-F", PANE_FORMAT)] = CommandResult(
                 (), 0, pane_line("codex-demo", "%1", artifact_dir), ""
@@ -252,9 +258,9 @@ class AgentContactCliTests(unittest.TestCase):
                 stdout=stdout,
             )
             payload = json.loads(stdout.getvalue())
-            self.assertEqual(code, EXIT_OK)
-            self.assertEqual(payload["status"], "would_send")
-            self.assertEqual(payload["repo"], str(artifact_dir.resolve()))
+            self.assertEqual(code, EXIT_DISCOVERY)
+            self.assertEqual(payload["status"], "refused")
+            self.assertIn("no tmux-managed codex pane found", payload["reason"])
 
     def test_sidecar_contact_uses_repo_root_with_manifest_and_exact_session(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -686,6 +692,35 @@ class AgentContactCliTests(unittest.TestCase):
                     "codex",
                     "--message",
                     "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["stage"], "attached_session")
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+
+    def test_dry_run_refuses_attached_session_to_avoid_misleading_acceptance(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, CODEX_IDLE)
+            runner.responses[("tmux", "list-panes", "-a", "-F", PANE_FORMAT)] = CommandResult(
+                (), 0, pane_line("codex-demo", "%1", repo, attached=1), ""
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--dry-run",
                     "--json",
                     "--contact-id",
                     "AC-TEST",

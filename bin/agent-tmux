@@ -623,8 +623,107 @@ validate_no_codex_auth_structure() {
     local file_path="$2"
     local rel="${file_path#${artifact_dir}/}"
     if LC_ALL=C grep -Eiq '"(access_token|refresh_token|id_token|api_key)"[[:space:]]*:' "${file_path}" \
-        || LC_ALL=C grep -Eiq '(^|[^A-Za-z0-9_])(access_token|refresh_token|id_token|api_key)[[:space:]]*=' "${file_path}"; then
+        || LC_ALL=C grep -Eiq '(^|[^A-Za-z0-9_])(access_token|refresh_token|id_token|api_key)[[:space:]]*=' "${file_path}" \
+        || LC_ALL=C grep -Eiq '"type"[[:space:]]*:[[:space:]]*"session_meta"' "${file_path}" \
+        || LC_ALL=C grep -Eiq '"(encrypted_content|session_id|conversation_id)"[[:space:]]*:' "${file_path}"; then
         echo "agent-tmux: code-map artifact appears to contain Codex auth/session structure: ${rel}" >&2
+        return 1
+    fi
+    return 0
+}
+
+strip_trailing_slashes() {
+    local path="$1"
+    while [[ "${path}" != "/" && "${path}" == */ ]]; do
+        path="${path%/}"
+    done
+    printf "%s\n" "${path}"
+}
+
+validate_code_map_sidecar_manifest() {
+    local artifact_dir="$1"
+    local manifest="${artifact_dir}/SIDECAR_REQUEST.txt"
+    local session=""
+    local repo=""
+    local allowed_output_dir=""
+    local seen_session=0
+    local seen_repo=0
+    local seen_allowed_output_dir=0
+    local line
+    local key
+    local value
+    [[ -f "${manifest}" ]] || {
+        echo "agent-tmux: missing sidecar request manifest: SIDECAR_REQUEST.txt" >&2
+        return 1
+    }
+    [[ ! -L "${manifest}" ]] || {
+        echo "agent-tmux: sidecar request manifest must not be a symlink: SIDECAR_REQUEST.txt" >&2
+        return 1
+    }
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        case "${line}" in
+            *=*)
+                key="${line%%=*}"
+                value="${line#*=}"
+                case "${key}" in
+                    session)
+                        ((seen_session == 0)) || {
+                            echo "agent-tmux: duplicate sidecar request manifest field: session" >&2
+                            return 1
+                        }
+                        seen_session=1
+                        session="${value}"
+                        ;;
+                    repo)
+                        ((seen_repo == 0)) || {
+                            echo "agent-tmux: duplicate sidecar request manifest field: repo" >&2
+                            return 1
+                        }
+                        seen_repo=1
+                        repo="${value}"
+                        ;;
+                    allowed_output_dir)
+                        ((seen_allowed_output_dir == 0)) || {
+                            echo "agent-tmux: duplicate sidecar request manifest field: allowed_output_dir" >&2
+                            return 1
+                        }
+                        seen_allowed_output_dir=1
+                        allowed_output_dir="${value}"
+                        ;;
+                esac
+                ;;
+        esac
+    done <"${manifest}"
+    if [[ -z "${session}" || -z "${repo}" || -z "${allowed_output_dir}" ]]; then
+        echo "agent-tmux: sidecar request manifest missing session, repo, or allowed_output_dir" >&2
+        return 1
+    fi
+    if [[ "${session}" != "$(basename "${artifact_dir}")" ]]; then
+        echo "agent-tmux: sidecar request manifest session does not match artifact directory: ${session}" >&2
+        return 1
+    fi
+    [[ -d "${repo}" ]] || {
+        echo "agent-tmux: sidecar request manifest repo is not a directory: ${repo}" >&2
+        return 1
+    }
+    repo="$(cd "${repo}" 2>/dev/null && pwd -P)" || {
+        echo "agent-tmux: sidecar request manifest repo is not a directory: ${repo}" >&2
+        return 1
+    }
+    [[ -d "${allowed_output_dir}" ]] || {
+        echo "agent-tmux: sidecar request manifest allowed_output_dir is not a directory: ${allowed_output_dir}" >&2
+        return 1
+    }
+    allowed_output_dir="$(cd "${allowed_output_dir}" 2>/dev/null && pwd -P)" || {
+        echo "agent-tmux: sidecar request manifest allowed_output_dir is not a directory: ${allowed_output_dir}" >&2
+        return 1
+    }
+    if [[ "${allowed_output_dir}" != "${artifact_dir}" ]]; then
+        echo "agent-tmux: sidecar request manifest allowed_output_dir does not match artifact directory: ${allowed_output_dir}" >&2
+        return 1
+    fi
+    if path_is_same_or_child "${artifact_dir}" "${repo}"; then
+        echo "agent-tmux: code-map artifact directory must not be inside the repository root: ${artifact_dir}" >&2
         return 1
     fi
     return 0
@@ -632,7 +731,8 @@ validate_no_codex_auth_structure() {
 
 validate_code_map_artifacts() {
     (($# == 1)) || die "codex-code-map-validate-artifacts requires <artifact-dir>"
-    local artifact_dir="$1"
+    local artifact_dir
+    artifact_dir="$(strip_trailing_slashes "$1")"
     [[ ! -L "${artifact_dir}" ]] || die "code-map artifact directory must not be a symlink: ${artifact_dir}"
     [[ -d "${artifact_dir}" ]] || die "code-map artifact directory does not exist: ${artifact_dir}"
     artifact_dir="$(cd "${artifact_dir}" 2>/dev/null && pwd -P)" || die "code-map artifact directory does not exist: ${artifact_dir}"
@@ -644,6 +744,7 @@ validate_code_map_artifacts() {
     local auth_patterns
     auth_patterns="$(mktemp)"
     write_codex_auth_patterns "${auth_patterns}"
+    validate_code_map_sidecar_manifest "${artifact_dir}" || failed=1
     while IFS= read -r -d '' file_path; do
         rel="${file_path#${artifact_dir}/}"
         if [[ -L "${file_path}" ]]; then

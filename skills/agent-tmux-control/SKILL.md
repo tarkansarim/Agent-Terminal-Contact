@@ -217,7 +217,9 @@ Before applying sidecar output, validate the artifact directory:
 agent-tmux codex-code-map-validate-artifacts <artifact-dir>
 ```
 
-The validator rejects `PROPOSED_CHANGES.patch` and `PROPOSED_FILES/` entries
+The validator requires the wrapper-written `SIDECAR_REQUEST.txt` manifest and
+checks that its session, repo, and allowed output directory match the artifact
+directory. It rejects `PROPOSED_CHANGES.patch` and `PROPOSED_FILES/` entries
 that target non-map paths, and rejects symlink or non-regular proposed artifact
 entries, including patch modes that would create symlinks or other non-regular
 files. It also rejects unsupported patch path header formats, symlink or
@@ -226,7 +228,8 @@ supervisor-consumed artifacts, and direct Codex auth material or obvious
 auth/session key structures in supervisor-consumed artifacts. Regular
 `.agent-tmux-runtime/` files are ignored for map application. The artifact
 directory passed to the validator must itself be a real directory, not a
-symlink. Treat rejected artifacts as out of sidecar scope.
+symlink, and must not resolve inside the manifest repo. Treat rejected artifacts
+as out of sidecar scope.
 
 The wrapper prints the sidecar session, artifact directory, and log path before
 launch. Capture them for audit:

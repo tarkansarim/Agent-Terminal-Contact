@@ -233,6 +233,8 @@ def _expected_pane_path_for_repo(
 ) -> str | None:
     pane_path = _resolve_path(pane.path)
     if pane_path == repo_path:
+        if explicit_session is not None and _sidecar_request_file_present(pane):
+            return None
         return pane_path
     if explicit_session is None:
         return None
@@ -240,6 +242,13 @@ def _expected_pane_path_for_repo(
     if manifest is None:
         return None
     return manifest.artifact_dir
+
+
+def _sidecar_request_file_present(pane: TmuxPane) -> bool:
+    try:
+        return os.path.lexists(Path(pane.path).expanduser() / "SIDECAR_REQUEST.txt")
+    except OSError:
+        return False
 
 
 @dataclass(frozen=True)

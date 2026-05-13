@@ -21,6 +21,20 @@ def code_map_session_name(repo, anchor):
     return f"codex-map-{slug_component(repo.name)}-{slug_component(anchor)}-{digest}"
 
 
+def write_validator_sidecar_manifest(artifact_dir, *, repo=None):
+    artifact_path = Path(artifact_dir)
+    repo_path = Path(repo) if repo is not None else artifact_path.parent / "repo"
+    repo_path.mkdir(parents=True, exist_ok=True)
+    artifact_path.mkdir(parents=True, exist_ok=True)
+    (artifact_path / "SIDECAR_REQUEST.txt").write_text(
+        f"session={artifact_path.name}\n"
+        f"repo={repo_path.resolve()}\n"
+        f"allowed_output_dir={artifact_path.resolve()}\n",
+        encoding="utf-8",
+    )
+    return repo_path
+
+
 def write_code_map_delegate(tmp_path, *, has_rc=1):
     delegate = tmp_path / "delegate-agent-tmux"
     delegate.write_text(
@@ -108,7 +122,8 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("must not edit production source, tests, config, install scripts", text)
         self.assertIn("writable output path", text)
         self.assertIn("PROPOSED_CHANGES.patch", text)
-        self.assertIn("The validator rejects `PROPOSED_CHANGES.patch` and `PROPOSED_FILES/` entries", text)
+        self.assertIn("requires the wrapper-written `SIDECAR_REQUEST.txt` manifest", text)
+        self.assertIn("It rejects `PROPOSED_CHANGES.patch` and `PROPOSED_FILES/` entries", text)
         self.assertIn("change the anchor\nto launch a new sidecar", text)
         self.assertIn("validates the sidecar's artifact-local `SIDECAR_REQUEST.txt`\nmanifest", text)
         self.assertIn("agent-contact send --repo <repo> --provider codex --session <sidecar-session>", text)
@@ -640,8 +655,7 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             artifact_dir = tmp_path / "artifact"
-            artifact_dir.mkdir()
-            (artifact_dir / "SIDECAR_REQUEST.txt").write_text("session=s\n", encoding="utf-8")
+            write_validator_sidecar_manifest(artifact_dir)
             (artifact_dir / "MAP_REPORT.md").write_text("map report\n", encoding="utf-8")
             (artifact_dir / "PROPOSED_CHANGES.patch").write_text(
                 "diff --git a/docs/CODEBASE_ARCHITECTURE_INDEX.md b/docs/CODEBASE_ARCHITECTURE_INDEX.md\n"
@@ -675,6 +689,42 @@ class SkillContractTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("code-map artifact validation: ok", result.stdout)
+
+    def test_agent_tmux_code_map_artifact_validator_requires_sidecar_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_dir = Path(tmp) / "artifact"
+            artifact_dir.mkdir()
+            (artifact_dir / "MAP_REPORT.md").write_text("map report\n", encoding="utf-8")
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("missing sidecar request manifest: SIDECAR_REQUEST.txt", result.stderr)
+
+    def test_agent_tmux_code_map_artifact_validator_rejects_manifest_repo_containing_artifact_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "repo"
+            artifact_dir = repo / "artifact"
+            write_validator_sidecar_manifest(artifact_dir, repo=repo)
+            (artifact_dir / "MAP_REPORT.md").write_text("map report\n", encoding="utf-8")
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("code-map artifact directory must not be inside the repository root", result.stderr)
 
     def test_agent_tmux_code_map_artifact_validator_rejects_traditional_unified_diff_headers(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -911,6 +961,27 @@ class SkillContractTests(unittest.TestCase):
                 result.stderr,
             )
 
+    def test_agent_tmux_code_map_artifact_validator_rejects_codex_session_jsonl_material(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            artifact_dir = tmp_path / "artifact"
+            write_validator_sidecar_manifest(artifact_dir)
+            (artifact_dir / "MAP_REPORT.md").write_text(
+                '{"timestamp":"2026-05-12T00:00:00Z","type":"session_meta","payload":{"id":"12345678-1234-1234-1234-123456789abc","cwd":"/tmp/repo","originator":"codex_cli"}}\n',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("code-map artifact appears to contain Codex auth/session structure: MAP_REPORT.md", result.stderr)
+
     def test_agent_tmux_code_map_artifact_validator_rejects_binary_proposed_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -1003,7 +1074,7 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             artifact_dir = tmp_path / "artifact"
-            artifact_dir.mkdir()
+            write_validator_sidecar_manifest(artifact_dir)
             (artifact_dir / "PROPOSED_CHANGES.patch").write_text(
                 "diff --git a/docs/CODE_MAP.md b/docs/CODE_MAP.md\n"
                 "--- a/docs/CODE_MAP.md\n"
@@ -1017,6 +1088,25 @@ class SkillContractTests(unittest.TestCase):
             artifact_link.symlink_to(artifact_dir, target_is_directory=True)
             result = subprocess.run(
                 ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_link)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("code-map artifact directory must not be a symlink", result.stderr)
+
+    def test_agent_tmux_code_map_artifact_validator_rejects_root_symlink_with_trailing_slash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            artifact_dir = tmp_path / "artifact"
+            write_validator_sidecar_manifest(artifact_dir)
+            artifact_link = tmp_path / "artifact-link"
+            artifact_link.symlink_to(artifact_dir, target_is_directory=True)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", f"{artifact_link}/"],
                 cwd=ROOT,
                 check=False,
                 stdout=subprocess.PIPE,
