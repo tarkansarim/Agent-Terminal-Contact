@@ -968,15 +968,6 @@ validate_code_map_patch_header_path() {
     return 1
 }
 
-code_map_patch_header_looks_pathlike() {
-    local path="$1"
-    [[ -n "${path}" ]] || return 1
-    case "${path}" in
-        */*|*.*) return 0 ;;
-    esac
-    return 1
-}
-
 validate_code_map_patch_artifact() {
     local patch_file="$1"
     if [[ ! -f "${patch_file}" ]]; then
@@ -991,13 +982,61 @@ validate_code_map_patch_artifact() {
     local plus_seen=0
     local current_diff_has_hunk=0
     local plain_header_after_hunk=0
+    local in_hunk=0
+    local hunk_old_remaining=0
+    local hunk_new_remaining=0
     local line
     local mode
     local path
     local rest
     local left
     local right
+    local old_count
+    local new_count
     while IFS= read -r line || [[ -n "${line}" ]]; do
+        if ((in_hunk == 1)); then
+            if ((hunk_old_remaining == 0 && hunk_new_remaining == 0)); then
+                in_hunk=0
+            else
+                case "${line}" in
+                    " "*)
+                        if ((hunk_old_remaining <= 0 || hunk_new_remaining <= 0)); then
+                            echo "agent-tmux: code-map patch hunk has too many context lines: $(log_value "${line}")" >&2
+                            failed=1
+                        else
+                            ((hunk_old_remaining--))
+                            ((hunk_new_remaining--))
+                        fi
+                        ;;
+                    "+"*)
+                        if ((hunk_new_remaining <= 0)); then
+                            echo "agent-tmux: code-map patch hunk has too many added lines: $(log_value "${line}")" >&2
+                            failed=1
+                        else
+                            ((hunk_new_remaining--))
+                        fi
+                        ;;
+                    "-"*)
+                        if ((hunk_old_remaining <= 0)); then
+                            echo "agent-tmux: code-map patch hunk has too many removed lines: $(log_value "${line}")" >&2
+                            failed=1
+                        else
+                            ((hunk_old_remaining--))
+                        fi
+                        ;;
+                    "\\ No newline at end of file")
+                        ;;
+                    *)
+                        echo "agent-tmux: unsupported code-map patch hunk line: $(log_value "${line}")" >&2
+                        failed=1
+                        ;;
+                esac
+                if ((hunk_old_remaining == 0 && hunk_new_remaining == 0)); then
+                    in_hunk=0
+                fi
+                continue
+            fi
+        fi
         case "${line}" in
             "diff --git a/"*" b/"*)
                 if ((in_git_diff == 1 && current_diff_has_hunk != 1)); then
@@ -1020,11 +1059,9 @@ validate_code_map_patch_artifact() {
                 path="${line#--- }"
                 found_path=1
                 if ((in_git_diff == 1 && current_diff_has_hunk == 1)); then
-                    if code_map_patch_header_looks_pathlike "${path}"; then
-                        echo "agent-tmux: unsupported code-map patch --- header: $(log_value "${line}")" >&2
-                        failed=1
-                        plain_header_after_hunk=1
-                    fi
+                    echo "agent-tmux: unsupported code-map patch --- header: $(log_value "${line}")" >&2
+                    failed=1
+                    plain_header_after_hunk=1
                 elif ((in_git_diff != 1 || minus_seen == 1)); then
                     echo "agent-tmux: unsupported code-map patch --- header: $(log_value "${line}")" >&2
                     failed=1
@@ -1041,10 +1078,8 @@ validate_code_map_patch_artifact() {
                     failed=1
                     plain_header_after_hunk=0
                 elif ((in_git_diff == 1 && current_diff_has_hunk == 1)); then
-                    if code_map_patch_header_looks_pathlike "${path}"; then
-                        echo "agent-tmux: unsupported code-map patch +++ header: $(log_value "${line}")" >&2
-                        failed=1
-                    fi
+                    echo "agent-tmux: unsupported code-map patch +++ header: $(log_value "${line}")" >&2
+                    failed=1
                 elif ((in_git_diff != 1 || plus_seen == 1)); then
                     echo "agent-tmux: unsupported code-map patch +++ header: $(log_value "${line}")" >&2
                     failed=1
@@ -1058,9 +1093,17 @@ validate_code_map_patch_artifact() {
                 if ((in_git_diff != 1 || minus_seen != 1 || plus_seen != 1)); then
                     echo "agent-tmux: unsupported code-map patch hunk before complete headers: $(log_value "${line}")" >&2
                     failed=1
-                else
+                elif [[ "${line}" =~ ^@@[[:space:]]+-([0-9]+)(,([0-9]+))?[[:space:]]+\+([0-9]+)(,([0-9]+))?[[:space:]]+@@ ]]; then
+                    old_count="${BASH_REMATCH[3]:-1}"
+                    new_count="${BASH_REMATCH[6]:-1}"
+                    hunk_old_remaining=$((10#${old_count}))
+                    hunk_new_remaining=$((10#${new_count}))
+                    in_hunk=1
                     found_hunk=1
                     current_diff_has_hunk=1
+                else
+                    echo "agent-tmux: unsupported code-map patch hunk header: $(log_value "${line}")" >&2
+                    failed=1
                 fi
                 ;;
             "diff "*)
@@ -1142,6 +1185,10 @@ validate_code_map_patch_artifact() {
     fi
     if ((in_git_diff == 1 && current_diff_has_hunk != 1)); then
         echo "agent-tmux: code-map patch diff contains no hunks: ${patch_file}" >&2
+        failed=1
+    fi
+    if ((in_hunk == 1 && (hunk_old_remaining != 0 || hunk_new_remaining != 0))); then
+        echo "agent-tmux: code-map patch hunk ended before expected line counts were satisfied: ${patch_file}" >&2
         failed=1
     fi
     if ((found_hunk != 1)); then
@@ -1415,7 +1462,7 @@ def fail_control() -> None:
 
 def is_disallowed_control(char: str) -> bool:
     codepoint = ord(char)
-    return (codepoint < 32 and char not in "\n\r\t") or 0x7F <= codepoint <= 0x9F
+    return (codepoint < 32 and char != "\n") or 0x7F <= codepoint <= 0x9F
 
 
 quoted_key_re = re.compile(r"""["']([^"']{1,128})["']\s*:""")
@@ -1428,7 +1475,7 @@ multiline_session_record_type_re = re.compile(r'"type"\s*:\s*"(session_meta|resp
 split_assignment_key_re = re.compile(r"""^["']?([^"'\s:=][^"':=\n]{0,127}?)["']?\s*$""")
 split_assignment_separator_re = re.compile(r"""^[:=]\s*""")
 
-with open(path, "r", encoding="utf-8", errors="replace") as handle:
+with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
     content = handle.read()
     if "\ufffd" in content:
         fail()

@@ -761,11 +761,11 @@ class SkillContractTests(unittest.TestCase):
                 "diff --git a/docs/CODEBASE_ARCHITECTURE_INDEX.md b/docs/CODEBASE_ARCHITECTURE_INDEX.md\n"
                 "--- a/docs/CODEBASE_ARCHITECTURE_INDEX.md\n"
                 "+++ b/docs/CODEBASE_ARCHITECTURE_INDEX.md\n"
-                "@@ -1 +1 @@\n"
+                "@@ -1,2 +1,2 @@\n"
                 "-old\n"
+                "--- Removed-looking note remains patch content\n"
                 "+new\n"
                 "+++ Added heading remains patch content\n"
-                "--- Removed-looking note remains patch content\n"
                 "diff --git a/.project-memory/code-map-state.json b/.project-memory/code-map-state.json\n"
                 "--- a/.project-memory/code-map-state.json\n"
                 "+++ b/.project-memory/code-map-state.json\n"
@@ -1302,6 +1302,11 @@ class SkillContractTests(unittest.TestCase):
                 "+++ bad file.py\n"
                 "@@ -1 +1 @@\n"
                 "-bad\n"
+                "+worse\n"
+                "--- Makefile\n"
+                "+++ Makefile\n"
+                "@@ -1 +1 @@\n"
+                "-bad\n"
                 "+worse\n",
                 encoding="utf-8",
             )
@@ -1321,6 +1326,8 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("unsupported code-map patch +++ header: +++ src/bad file.py", result.stderr)
             self.assertIn("unsupported code-map patch --- header: --- bad file.py", result.stderr)
             self.assertIn("unsupported code-map patch +++ header: +++ bad file.py", result.stderr)
+            self.assertIn("unsupported code-map patch --- header: --- Makefile", result.stderr)
+            self.assertIn("unsupported code-map patch +++ header: +++ Makefile", result.stderr)
 
     def test_agent_tmux_code_map_artifact_validator_rejects_binary_patch_content(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2358,6 +2365,8 @@ class SkillContractTests(unittest.TestCase):
     def test_agent_tmux_code_map_artifact_validator_rejects_terminal_control_bytes(self):
         cases = {
             "MAP_REPORT.md": "map report\u0085control\n",
+            "PROPOSED_FILES/docs/SUBSYSTEMS/cr.md": "safe text\rspoofed prefix\n",
+            "PROPOSED_FILES/docs/SUBSYSTEMS/tab.md": "sidecar\tnote\n",
             "PROPOSED_FILES/docs/SUBSYSTEMS/contact.md": "sidecar note \x1b]52;c;AAAA\x07\n",
             "PROPOSED_CHANGES.patch": (
                 "diff --git a/docs/CODE_MAP.md b/docs/CODE_MAP.md\n"
