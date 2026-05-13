@@ -147,6 +147,13 @@ code_map_sidecar_registry_file() {
     printf "%s/%s.txt\n" "$(code_map_sidecar_registry_dir "${artifact_dir}")" "${session}"
 }
 
+code_map_sidecar_owner_file() {
+    local artifact_dir="$1"
+    local session
+    session="$(basename "${artifact_dir}")"
+    printf "%s/%s.owner\n" "$(code_map_sidecar_registry_dir "${artifact_dir}")" "${session}"
+}
+
 require_bwrap() {
     command -v bwrap >/dev/null 2>&1 || die "bwrap is required for code-map sidecar filesystem isolation"
 }
@@ -407,7 +414,11 @@ cleanup_code_map_prepare_paths() {
     local registry_file="${3:-}"
     local runtime_dir="${4:-}"
     local runtime_parent="${5:-}"
+    local owner_file="${6:-}"
 
+    if [[ -n "${owner_file}" && ! -L "${owner_file}" && -f "${owner_file}" ]]; then
+        rm -f -- "${owner_file}"
+    fi
     if [[ -n "${registry_file}" && ! -L "${registry_file}" && -f "${registry_file}" ]]; then
         rm -f -- "${registry_file}"
     fi
@@ -438,6 +449,7 @@ prepare_code_map_artifact_dir() {
     local owner_token
     local registry_dir
     local registry_file
+    local owner_file
     local runtime_dir
     local runtime_parent
     local runtime_real
@@ -488,8 +500,13 @@ prepare_code_map_artifact_dir() {
         rmdir "${artifact_dir}" 2>/dev/null || true
         die "code-map sidecar registry already exists: ${registry_file}; use a new anchor"
     fi
+    owner_file="$(code_map_sidecar_owner_file "${artifact_dir}")"
+    if [[ -e "${owner_file}" || -L "${owner_file}" ]]; then
+        rmdir "${artifact_dir}" 2>/dev/null || true
+        die "code-map sidecar cleanup owner marker already exists: ${owner_file}; use a new anchor"
+    fi
     if ! chmod 700 "${artifact_dir}"; then
-        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "" ""
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "" "" "${owner_file}"
         die "failed to harden code-map artifact directory permissions: ${artifact_dir}"
     fi
     runtime_dir="$(code_map_sidecar_runtime_dir "${artifact_dir}")"
@@ -507,7 +524,7 @@ prepare_code_map_artifact_dir() {
         die "code-map sidecar runtime parent is not a real directory: ${runtime_parent}"
     fi
     if ! chmod 700 "${runtime_parent}"; then
-        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "" "${runtime_parent}"
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "" "${runtime_parent}" "${owner_file}"
         die "failed to harden code-map sidecar runtime parent permissions: ${runtime_parent}"
     fi
     if [[ -L "${runtime_dir}" ]]; then
@@ -539,7 +556,7 @@ prepare_code_map_artifact_dir() {
         "${runtime_dir}/config" \
         "${runtime_dir}/empty-dev-shm" \
         "${runtime_dir}/empty-usr-local-bin"; then
-        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}"
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
         die "failed to create code-map sidecar runtime subdirectories: ${runtime_dir}"
     fi
     if ! chmod 700 "${runtime_dir}" \
@@ -550,17 +567,17 @@ prepare_code_map_artifact_dir() {
         "${runtime_dir}/config" \
         "${runtime_dir}/empty-dev-shm" \
         "${runtime_dir}/empty-usr-local-bin"; then
-        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}"
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
         die "failed to harden code-map sidecar runtime permissions: ${runtime_dir}"
     fi
     owner_token="$(stable_hash "${artifact_dir}"$'\n'"${session}"$'\n'"${BASHPID:-$$}"$'\n'"$(date +%s%N 2>/dev/null || date +%s)")"
-    if ! printf "%s\n" "${owner_token}" >"${runtime_dir}/owner-token"; then
-        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}"
-        die "failed to write code-map sidecar runtime owner token: ${runtime_dir}"
+    if ! printf "%s\n" "${owner_token}" >"${owner_file}"; then
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
+        die "failed to write code-map sidecar cleanup owner marker: ${owner_file}"
     fi
-    if ! chmod 600 "${runtime_dir}/owner-token"; then
-        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}"
-        die "failed to harden code-map sidecar runtime owner token permissions: ${runtime_dir}/owner-token"
+    if ! chmod 600 "${owner_file}"; then
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
+        die "failed to harden code-map sidecar cleanup owner marker permissions: ${owner_file}"
     fi
     case "$-" in
         *C*) noclobber_was_set=1 ;;
@@ -568,16 +585,16 @@ prepare_code_map_artifact_dir() {
     set -o noclobber
     if ! write_code_map_sidecar_request_content "${session}" "${resolved_workdir}" "${anchor}" "${artifact_dir}" >"${registry_file}"; then
         ((noclobber_was_set == 1)) || set +o noclobber
-        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}"
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
         die "failed to create code-map sidecar registry: ${registry_file}"
     fi
     ((noclobber_was_set == 1)) || set +o noclobber
     if ! chmod 600 "${registry_file}"; then
-        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}"
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
         die "failed to harden code-map sidecar registry file permissions: ${registry_file}"
     fi
     if ! write_code_map_sidecar_request_content "${session}" "${resolved_workdir}" "${anchor}" "${artifact_dir}" >"${artifact_dir}/SIDECAR_REQUEST.txt"; then
-        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}"
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
         die "failed to write code-map sidecar audit manifest: ${artifact_dir}/SIDECAR_REQUEST.txt"
     fi
     CODE_MAP_PREPARED_ARTIFACT_DIR="${artifact_dir}"
@@ -898,6 +915,34 @@ strip_trailing_slashes() {
     printf "%s\n" "${path}"
 }
 
+path_contains_symlink_component() {
+    local path="$1"
+    local absolute
+    local component
+    local current="/"
+    local -a components=()
+    [[ -n "${path}" ]] || return 1
+    case "${path}" in
+        /*) absolute="${path}" ;;
+        *) absolute="${PWD}/${path}" ;;
+    esac
+    IFS='/' read -r -a components <<<"${absolute#/}"
+    for component in "${components[@]}"; do
+        [[ -n "${component}" && "${component}" != "." ]] || continue
+        if [[ "${component}" == ".." ]]; then
+            current="$(dirname "${current}")"
+            continue
+        fi
+        if [[ "${current}" == "/" ]]; then
+            current="/${component}"
+        else
+            current="${current}/${component}"
+        fi
+        [[ ! -L "${current}" ]] || return 0
+    done
+    return 1
+}
+
 load_code_map_request_file() {
     local request_file="$1"
     local label="$2"
@@ -1027,6 +1072,7 @@ validate_code_map_artifacts() {
     local artifact_dir
     artifact_dir="$(strip_trailing_slashes "$1")"
     [[ ! -L "${artifact_dir}" ]] || die "code-map artifact directory must not be a symlink: ${artifact_dir}"
+    ! path_contains_symlink_component "${artifact_dir}" || die "code-map artifact directory must not contain symlink path components: ${artifact_dir}"
     [[ -d "${artifact_dir}" ]] || die "code-map artifact directory does not exist: ${artifact_dir}"
     artifact_dir="$(cd "${artifact_dir}" 2>/dev/null && pwd -P)" || die "code-map artifact directory does not exist: ${artifact_dir}"
     local failed=0
@@ -1131,30 +1177,59 @@ code_map_log_path() {
 CODE_MAP_PREPARED_ARTIFACT_DIR=""
 CODE_MAP_PREPARED_RUNTIME_DIR=""
 CODE_MAP_ARTIFACT_OWNER_TOKEN=""
+CODE_MAP_LAUNCH_CLEANUP_ARTIFACT_DIR=""
+CODE_MAP_LAUNCH_CLEANUP_OWNER_TOKEN=""
+
+code_map_launch_exit_cleanup() {
+    local rc=$?
+    if ((rc != 0)); then
+        cleanup_code_map_artifact_dir "${CODE_MAP_LAUNCH_CLEANUP_ARTIFACT_DIR}" "${CODE_MAP_LAUNCH_CLEANUP_OWNER_TOKEN}"
+    fi
+    trap - EXIT
+    exit "${rc}"
+}
+
+enable_code_map_launch_cleanup() {
+    CODE_MAP_LAUNCH_CLEANUP_ARTIFACT_DIR="$1"
+    CODE_MAP_LAUNCH_CLEANUP_OWNER_TOKEN="$2"
+    trap 'code_map_launch_exit_cleanup' EXIT
+}
+
+disable_code_map_launch_cleanup() {
+    trap - EXIT
+    CODE_MAP_LAUNCH_CLEANUP_ARTIFACT_DIR=""
+    CODE_MAP_LAUNCH_CLEANUP_OWNER_TOKEN=""
+}
 
 cleanup_code_map_artifact_dir() {
     local artifact_dir="$1"
     local owner_token="$2"
     [[ -n "${artifact_dir}" && -n "${owner_token}" ]] || return 0
     local registry_file
+    local owner_file
     local runtime_dir
     local runtime_parent
+    local actual_token
     registry_file="$(code_map_sidecar_registry_file "${artifact_dir}")"
+    owner_file="$(code_map_sidecar_owner_file "${artifact_dir}")"
     runtime_dir="$(code_map_sidecar_runtime_dir "${artifact_dir}")"
     runtime_parent="$(dirname "${runtime_dir}")"
-    if [[ ! -L "${registry_file}" && -f "${registry_file}" ]] \
-        && grep -Fxq "session=$(basename "${artifact_dir}")" "${registry_file}" \
-        && grep -Fxq "allowed_output_dir=${artifact_dir}" "${registry_file}"; then
-        rm -f -- "${registry_file}"
-        rmdir "$(code_map_sidecar_registry_dir "${artifact_dir}")" 2>/dev/null || true
-    fi
-    [[ ! -L "${runtime_dir}" && -d "${runtime_dir}" ]] || return 0
-    local marker="${runtime_dir}/owner-token"
-    [[ -f "${marker}" ]] || return 0
-    local actual_token
-    actual_token="$(<"${marker}")" || return 0
+    [[ ! -L "${owner_file}" && -f "${owner_file}" ]] || return 0
+    actual_token="$(<"${owner_file}")" || return 0
     [[ "${actual_token}" == "${owner_token}" ]] || return 0
-    rm -rf --one-file-system -- "${runtime_dir}"
+    if [[ -L "${registry_file}" ]]; then
+        return 0
+    fi
+    if [[ -f "${registry_file}" ]] \
+        && (! grep -Fxq "session=$(basename "${artifact_dir}")" "${registry_file}" \
+            || ! grep -Fxq "allowed_output_dir=${artifact_dir}" "${registry_file}"); then
+        return 0
+    fi
+    rm -f -- "${registry_file}" "${owner_file}"
+    rmdir "$(code_map_sidecar_registry_dir "${artifact_dir}")" 2>/dev/null || true
+    if [[ ! -L "${runtime_dir}" && -d "${runtime_dir}" ]]; then
+        rm -rf --one-file-system -- "${runtime_dir}"
+    fi
     rmdir "${runtime_parent}" 2>/dev/null || true
     [[ ! -L "${artifact_dir}" && -d "${artifact_dir}" ]] || return 0
     rm -rf --one-file-system -- "${artifact_dir}"
@@ -1437,6 +1512,7 @@ launch_code_map_sidecar() {
     artifact_dir="${CODE_MAP_PREPARED_ARTIFACT_DIR}"
     local runtime_dir="${CODE_MAP_PREPARED_RUNTIME_DIR}"
     local artifact_owner_token="${CODE_MAP_ARTIFACT_OWNER_TOKEN}"
+    enable_code_map_launch_cleanup "${artifact_dir}" "${artifact_owner_token}"
     if [[ "${mode}" == "fork" ]]; then
         if ! copy_code_map_fork_session "${source_codex_home}" "${runtime_dir}/codex-home" "${fork_session_id}" "${fork_source_file}"; then
             cleanup_code_map_artifact_dir "${artifact_dir}" "${artifact_owner_token}"
@@ -1451,6 +1527,7 @@ launch_code_map_sidecar() {
     else
         start_code_map_bwrap_codex_session "${session}" "${artifact_dir}" "${artifact_owner_token}" "${resolved_workdir}" "${prompt}"
     fi
+    disable_code_map_launch_cleanup
 }
 
 main() {

@@ -225,7 +225,9 @@ agent-tmux codex-code-map-validate-artifacts <artifact-dir>
 The validator requires the wrapper-written sidecar registry stored as a sibling
 of the artifact directory, outside the sidecar-writable tree, and checks it
 against the artifact-local `SIDECAR_REQUEST.txt` audit copy. The registry binds
-the session, repo, and allowed output directory. It rejects
+the session, repo, and allowed output directory. The wrapper cleanup owner
+marker is also stored beside that registry, outside the sidecar-writable
+artifact and runtime directories. It rejects
 `PROPOSED_CHANGES.patch` and `PROPOSED_FILES/` entries that target non-map paths,
 and rejects symlink or non-regular proposed artifact entries, including patch
 modes that would create symlinks or other non-regular files. It also rejects

@@ -38,7 +38,7 @@ def write_validator_sidecar_manifest(artifact_dir, *, repo=None):
     return repo_path
 
 
-def write_code_map_delegate(tmp_path, *, has_rc=1):
+def write_code_map_delegate(tmp_path, *, has_rc=1, pipe_rc=0):
     delegate = tmp_path / "delegate-agent-tmux"
     delegate.write_text(
         "#!/usr/bin/env bash\n"
@@ -51,7 +51,7 @@ def write_code_map_delegate(tmp_path, *, has_rc=1):
         "fi\n"
         "if [ \"$1\" = pipe-log ]; then\n"
         "  printf '%s\\n' \"$2\" >\"${AGENT_TMUX_PIPE_CAPTURE}\"\n"
-        "  exit 0\n"
+        f"  exit {pipe_rc}\n"
         "fi\n"
         "exit 2\n",
         encoding="utf-8",
@@ -108,6 +108,17 @@ def write_fake_find(bin_dir):
     find.chmod(0o755)
 
 
+def write_fake_mktemp(bin_dir):
+    mktemp = Path(bin_dir) / "mktemp"
+    mktemp.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf 'forced mktemp failure\\n' >&2\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    mktemp.chmod(0o755)
+
+
 class SkillContractTests(unittest.TestCase):
     def test_skill_requires_agent_contact_for_cross_agent_messages(self):
         text = (ROOT / "skills" / "agent-tmux-control" / "SKILL.md").read_text(
@@ -153,6 +164,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("It rejects\n`PROPOSED_CHANGES.patch` and `PROPOSED_FILES/` entries", text)
         self.assertIn("change the anchor\nto launch a new sidecar", text)
         self.assertIn("validates the sidecar registry outside the writable artifact tree", text)
+        self.assertIn("cleanup owner\nmarker is also stored beside that registry", text)
         self.assertIn("agent-contact send --repo <repo> --provider codex --session <sidecar-session>", text)
         self.assertIn("If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed", text)
         self.assertIn("Do not fall back to raw `agent-tmux send`", text)
@@ -665,6 +677,9 @@ class SkillContractTests(unittest.TestCase):
             registry_file = artifact_root / ".agent-tmux-sidecar-registry" / f"{session}.txt"
             registry = registry_file.read_text(encoding="utf-8")
             self.assertEqual(registry, manifest)
+            owner_file = artifact_root / ".agent-tmux-sidecar-registry" / f"{session}.owner"
+            self.assertTrue(owner_file.is_file())
+            self.assertFalse((runtime_dir / "owner-token").exists())
             self.assertFalse((artifact_dir / ".agent-tmux-runtime").exists())
             self.assertTrue((runtime_dir / "codex-home").is_dir())
             self.assertIn(f"code-map sidecar session: {session}", result.stderr)
@@ -1306,6 +1321,25 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("code-map artifact directory must not be a symlink", result.stderr)
 
+    def test_agent_tmux_code_map_artifact_validator_rejects_root_symlink_dot_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            artifact_dir = tmp_path / "artifact"
+            write_validator_sidecar_manifest(artifact_dir)
+            artifact_link = tmp_path / "artifact-link"
+            artifact_link.symlink_to(artifact_dir, target_is_directory=True)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", f"{artifact_link}/."],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("code-map artifact directory must not contain symlink path components", result.stderr)
+
     def test_agent_tmux_code_map_artifact_validator_rejects_symlink_patch_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -1449,6 +1483,38 @@ class SkillContractTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 2)
             self.assertIn("failed to harden code-map sidecar registry file permissions", result.stderr)
+            self.assertFalse(capture.exists())
+            if artifact_root.exists():
+                self.assertFalse(any(artifact_root.iterdir()))
+
+    def test_agent_tmux_code_map_sidecar_cleans_after_post_prepare_mktemp_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "Example Repo"
+            repo.mkdir()
+            capture = tmp_path / "args.txt"
+            artifact_root = tmp_path / "artifacts"
+            delegate = write_code_map_delegate(tmp_path, has_rc=1)
+            fake_bin = write_fake_tmux(tmp_path)
+            write_fake_mktemp(fake_bin)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-sidecar", str(repo), "cp-123", "Focus"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                    "AGENT_TMUX_CODE_MAP_ARTIFACT_ROOT": str(artifact_root),
+                    "HOME": str(tmp_path / "home"),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
+                },
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("forced mktemp failure", result.stderr)
             self.assertFalse(capture.exists())
             if artifact_root.exists():
                 self.assertFalse(any(artifact_root.iterdir()))
