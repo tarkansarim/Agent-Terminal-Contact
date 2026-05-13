@@ -85,6 +85,29 @@ def write_fake_tmux(tmp_path):
     return bin_dir
 
 
+def write_fake_chmod(bin_dir, body):
+    chmod = Path(bin_dir) / "chmod"
+    chmod.write_text(
+        "#!/usr/bin/env bash\n" + body,
+        encoding="utf-8",
+    )
+    chmod.chmod(0o755)
+
+
+def write_fake_find(bin_dir):
+    find = Path(bin_dir) / "find"
+    find.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ -n \"${AGENT_TMUX_FAKE_FIND_ENTRY:-}\" ]; then\n"
+        "  printf '%s\\0' \"${AGENT_TMUX_FAKE_FIND_ENTRY}\"\n"
+        "fi\n"
+        "printf 'forced find traversal failure\\n' >&2\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    find.chmod(0o755)
+
+
 class SkillContractTests(unittest.TestCase):
     def test_skill_requires_agent_contact_for_cross_agent_messages(self):
         text = (ROOT / "skills" / "agent-tmux-control" / "SKILL.md").read_text(
@@ -589,9 +612,13 @@ class SkillContractTests(unittest.TestCase):
             command = lines[6]
             self.assertNotIn("--ro-bind / /", command)
             self.assertIn("bwrap --die-with-parent --unshare-all --share-net --clearenv --dir /usr", command)
-            self.assertIn("--ro-bind /usr/bin /usr/bin", command)
-            self.assertIn("--ro-bind /usr/lib /usr/lib", command)
-            self.assertIn("--symlink usr/bin /bin", command)
+            self.assertNotIn("--ro-bind /usr/bin /usr/bin", command)
+            self.assertNotIn("--ro-bind /usr/lib /usr/lib", command)
+            self.assertNotIn("--ro-bind /usr/lib64 /usr/lib64", command)
+            self.assertIn("--dir /usr/bin", command)
+            self.assertIn("--dir /usr/lib", command)
+            self.assertIn("--ro-bind /usr/bin/bash /usr/bin/bash", command)
+            self.assertIn("--ro-bind /usr/bin/rg /usr/bin/rg", command)
             self.assertIn(f"--ro-bind {runtime_dir}/empty-usr-local-bin /usr/local/bin", command)
             self.assertIn("--ro-bind", command)
             self.assertIn(str(repo.resolve()).replace(" ", "\\ "), command)
@@ -1203,6 +1230,35 @@ class SkillContractTests(unittest.TestCase):
                 result.stderr,
             )
 
+    def test_agent_tmux_code_map_artifact_validator_rejects_find_traversal_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            artifact_dir = tmp_path / "artifact"
+            write_validator_sidecar_manifest(artifact_dir)
+            proposed = artifact_dir / "PROPOSED_FILES" / "docs" / "SUBSYSTEMS"
+            proposed.mkdir(parents=True)
+            proposed_file = proposed / "sidecar.md"
+            proposed_file.write_text("sidecar\n", encoding="utf-8")
+            fake_bin = tmp_path / "fake-bin"
+            fake_bin.mkdir()
+            write_fake_find(fake_bin)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_FAKE_FIND_ENTRY": str(proposed_file),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("forced find traversal failure", result.stderr)
+            self.assertIn("code-map artifact traversal failed", result.stderr)
+            self.assertNotIn("code-map artifact validation: ok", result.stdout)
+
     def test_agent_tmux_code_map_artifact_validator_rejects_root_symlink(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -1319,6 +1375,83 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(second.returncode, 2)
             self.assertIn("code-map artifact directory already exists", second.stderr)
             self.assertFalse(capture_second.exists())
+
+    def test_agent_tmux_code_map_sidecar_refuses_chmod_failure_before_launch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "Example Repo"
+            repo.mkdir()
+            capture = tmp_path / "args.txt"
+            artifact_root = tmp_path / "artifacts"
+            delegate = write_code_map_delegate(tmp_path, has_rc=1)
+            fake_bin = write_fake_tmux(tmp_path)
+            write_fake_chmod(
+                fake_bin,
+                "printf 'forced chmod failure: %s\\n' \"$*\" >&2\n"
+                "exit 1\n",
+            )
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-sidecar", str(repo), "cp-123", "Focus"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                    "AGENT_TMUX_CODE_MAP_ARTIFACT_ROOT": str(artifact_root),
+                    "HOME": str(tmp_path / "home"),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("failed to harden code-map sidecar registry directory permissions", result.stderr)
+            self.assertFalse(capture.exists())
+            if artifact_root.exists():
+                self.assertFalse(any(artifact_root.iterdir()))
+
+    def test_agent_tmux_code_map_sidecar_cleans_runtime_on_late_chmod_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / "Example Repo"
+            repo.mkdir()
+            capture = tmp_path / "args.txt"
+            artifact_root = tmp_path / "artifacts"
+            delegate = write_code_map_delegate(tmp_path, has_rc=1)
+            fake_bin = write_fake_tmux(tmp_path)
+            write_fake_chmod(
+                fake_bin,
+                "case \"${2:-}\" in\n"
+                "  */.agent-tmux-sidecar-registry/*.txt)\n"
+                "  printf 'forced registry file chmod failure: %s\\n' \"$*\" >&2\n"
+                "  exit 1\n"
+                "  ;;\n"
+                "esac\n"
+                "exec /usr/bin/chmod \"$@\"\n",
+            )
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-sidecar", str(repo), "cp-123", "Focus"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                    "AGENT_TMUX_CODE_MAP_ARTIFACT_ROOT": str(artifact_root),
+                    "HOME": str(tmp_path / "home"),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("failed to harden code-map sidecar registry file permissions", result.stderr)
+            self.assertFalse(capture.exists())
+            if artifact_root.exists():
+                self.assertFalse(any(artifact_root.iterdir()))
 
     def test_agent_tmux_code_map_sidecar_refuses_preexisting_empty_artifact_directory(self):
         with tempfile.TemporaryDirectory() as tmp:

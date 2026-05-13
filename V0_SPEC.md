@@ -36,9 +36,11 @@ V0 must prove:
 - code-map sidecar Codex processes run under `bwrap` with no host `/` bind,
   private `/dev`, read-only `/dev/shm`, private `/tmp` and `/run`,
   wrapper-owned `HOME`/`CODEX_HOME`, hidden host home except trusted Codex/Node
-  executable paths, hidden `/usr/local/bin`, shared network for Codex API
-  access, the sidecar artifact directory as the only writable map-output bind,
-  and a separate wrapper-owned runtime bind for Codex state
+  executable paths, selected host inspection tools bound by exact file plus
+  library dependencies instead of broad `/usr/bin` or `/usr/lib` binds, hidden
+  `/usr/local/bin`, shared network for Codex API access, the sidecar artifact
+  directory as the only writable map-output bind, and a separate wrapper-owned
+  runtime bind for Codex state
 - fork sidecars copy the requested Codex session file from source
   `CODEX_HOME/sessions` plus the matching `session_index.jsonl` entry when
   present into the wrapper-owned `CODEX_HOME` before launch

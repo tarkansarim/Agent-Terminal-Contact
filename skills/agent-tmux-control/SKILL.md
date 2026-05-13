@@ -201,9 +201,11 @@ repository root.
 
 The Codex process runs under `bwrap`: there is no host `/` bind, host home is
 hidden except for trusted Codex/Node executable paths, `/usr/local/bin` is
-hidden, `/dev` is a private bwrap device filesystem, `/dev/shm` is overlaid
-read-only, the artifact directory is the writable map-output bind, and `/tmp`
-and `/run` are private so tmux sockets are not exposed. Codex
+hidden, selected host inspection tools are bound by exact file plus their
+library dependencies instead of broad `/usr/bin` or `/usr/lib` binds, `/dev` is
+a private bwrap device filesystem, `/dev/shm` is overlaid read-only, the
+artifact directory is the writable map-output bind, and `/tmp` and `/run` are
+private so tmux sockets are not exposed. Codex
 `HOME`/`CODEX_HOME` live under a separate wrapper-owned runtime directory next
 to the artifact directory. In fork mode, the wrapper copies the requested Codex
 session file plus the matching `session_index.jsonl` entry when present into the

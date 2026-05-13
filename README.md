@@ -192,9 +192,11 @@ the repository root.
 
 The sidecar Codex process also runs inside `bwrap`: there is no host `/` bind,
 host home is hidden except for trusted Codex/Node executable paths,
-`/usr/local/bin` is hidden, `/dev` is a private bwrap device filesystem, the
-artifact directory is the writable map-output bind, `/dev/shm` is overlaid
-read-only, and `/tmp` and `/run` are private so tmux sockets are not exposed.
+`/usr/local/bin` is hidden, selected host inspection tools are bound by exact
+file plus their library dependencies instead of broad `/usr/bin` or `/usr/lib`
+binds, `/dev` is a private bwrap device filesystem, the artifact directory is
+the writable map-output bind, `/dev/shm` is overlaid read-only, and `/tmp` and
+`/run` are private so tmux sockets are not exposed.
 `HOME`/`CODEX_HOME` point under a separate wrapper-owned runtime directory next
 to the artifact directory. In fork mode, the requested Codex session file plus
 the matching `session_index.jsonl` entry when present are copied into that

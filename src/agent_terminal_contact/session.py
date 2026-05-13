@@ -264,23 +264,12 @@ def _sidecar_request_for_pane(pane: TmuxPane, repo_path: str) -> SidecarRequest 
     request_file = _sidecar_registry_path(resolved_artifact_path, pane.session_name)
     if request_file is None:
         return None
-    try:
-        if request_file.is_symlink() or not request_file.is_file() or request_file.stat().st_size > 65536:
-            return None
-        text = request_file.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    registry_fields = _read_sidecar_request_fields(request_file)
+    if registry_fields is None:
         return None
-    fields: dict[str, str] = {}
-    for raw_line in text.splitlines():
-        if not raw_line or "=" not in raw_line:
-            continue
-        key, value = raw_line.split("=", 1)
-        if key in fields:
-            return None
-        fields[key] = value
-    manifest_session = fields.get("session", "")
-    manifest_repo_raw = fields.get("repo", "")
-    manifest_artifact_raw = fields.get("allowed_output_dir", "")
+    manifest_session = registry_fields.get("session", "")
+    manifest_repo_raw = registry_fields.get("repo", "")
+    manifest_artifact_raw = registry_fields.get("allowed_output_dir", "")
     if not manifest_session or not manifest_repo_raw or not manifest_artifact_raw:
         return None
     try:
@@ -301,6 +290,24 @@ def _sidecar_request_for_pane(pane: TmuxPane, repo_path: str) -> SidecarRequest 
         repo=manifest_repo,
         artifact_dir=str(resolved_artifact_path),
     )
+
+
+def _read_sidecar_request_fields(request_file: Path) -> dict[str, str] | None:
+    try:
+        if request_file.is_symlink() or not request_file.is_file() or request_file.stat().st_size > 65536:
+            return None
+        text = request_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    fields: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        if not raw_line or "=" not in raw_line:
+            continue
+        key, value = raw_line.split("=", 1)
+        if key in fields:
+            return None
+        fields[key] = value
+    return fields
 
 
 def _sidecar_registry_path(artifact_dir: Path, session_name: str) -> Path | None:

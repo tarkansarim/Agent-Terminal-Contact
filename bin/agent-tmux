@@ -237,6 +237,79 @@ append_bwrap_dir_chain() {
     done
 }
 
+append_bwrap_ro_bind_file() {
+    local args_name="$1"
+    local -n args_ref="${args_name}"
+    local source="$2"
+    local target="${3:-$2}"
+    local i
+    [[ -f "${source}" ]] || return 1
+    append_bwrap_dir_chain "${args_name}" "$(dirname "${target}")"
+    for ((i = 0; i < ${#args_ref[@]} - 2; i++)); do
+        if [[ "${args_ref[${i}]}" == "--ro-bind" && "${args_ref[$((i + 1))]}" == "${source}" && "${args_ref[$((i + 2))]}" == "${target}" ]]; then
+            return 0
+        fi
+    done
+    args_ref+=(--ro-bind "${source}" "${target}")
+}
+
+append_bwrap_executable_with_deps() {
+    local args_name="$1"
+    local -n args_ref="${args_name}"
+    local target="$2"
+    local source
+    local dep
+    [[ -x "${target}" ]] || return 1
+    source="$(readlink -f "${target}")"
+    [[ -n "${source}" && -x "${source}" ]] || return 1
+    append_bwrap_ro_bind_file "${args_name}" "${source}" "${target}"
+    while IFS= read -r dep; do
+        [[ -f "${dep}" ]] || continue
+        append_bwrap_ro_bind_file "${args_name}" "${dep}" "${dep}"
+    done < <(
+        ldd "${source}" 2>/dev/null | awk '
+            $2 == "=>" && $3 ~ /^\// { print $3; next }
+            $1 ~ /^\// { print $1; next }
+        '
+    )
+}
+
+append_code_map_shell_tools() {
+    local args_name="$1"
+    local -n args_ref="${args_name}"
+    local tool
+    local tools=(
+        /usr/bin/bash
+        /usr/bin/dash
+        /usr/bin/sh
+        /bin/bash
+        /bin/sh
+        /usr/bin/env
+        /usr/bin/rg
+        /usr/bin/cat
+        /usr/bin/sed
+        /usr/bin/find
+        /usr/bin/grep
+        /usr/bin/ls
+        /usr/bin/stat
+        /usr/bin/head
+        /usr/bin/tail
+        /usr/bin/wc
+        /usr/bin/sort
+        /usr/bin/xargs
+        /usr/bin/realpath
+        /usr/bin/dirname
+        /usr/bin/basename
+        /usr/bin/test
+        /usr/bin/mkdir
+        /usr/bin/date
+    )
+    for tool in "${tools[@]}"; do
+        [[ -x "${tool}" ]] || continue
+        append_bwrap_executable_with_deps "${args_name}" "${tool}"
+    done
+}
+
 preflight_code_map_runtime() {
     local codex_bin
     local real_codex_bin
@@ -289,7 +362,7 @@ Repository root (read-only input): ${resolved_workdir}
 Patch artifact directory (only writable map output): ${artifact_dir}
 Anchor/checkpoint: ${anchor}
 Permission profile: workspace-write rooted at the artifact directory, approval policy never, shell-command network access disabled.
-Filesystem isolation: bwrap minimal root without a host / bind, host home hidden except for trusted Codex/Node executable paths, private /dev, read-only /dev/shm, private /tmp and /run, read-only repository path, writable patch artifact directory for map output, and separate wrapper-owned runtime directory for Codex HOME/CODEX_HOME. For fork mode, the requested Codex session file plus the matching session_index.jsonl entry when present are copied into that wrapper-owned CODEX_HOME before launch.
+Filesystem isolation: bwrap minimal root without a host / bind, host home hidden except for trusted Codex/Node executable paths, selected host inspection tools bound by exact file plus library dependencies, private /dev, read-only /dev/shm, private /tmp and /run, read-only repository path, writable patch artifact directory for map output, and separate wrapper-owned runtime directory for Codex HOME/CODEX_HOME. For fork mode, the requested Codex session file plus the matching session_index.jsonl entry when present are copied into that wrapper-owned CODEX_HOME before launch.
 Artifact identity: the supervisor keeps a sidecar registry outside this writable artifact directory; SIDECAR_REQUEST.txt is an audit copy and not the trust anchor.
 Codex auth/session files are wrapper-managed runtime inputs. The sidecar permission profile deny-reads wrapper-owned CODEX_HOME from model-run shell commands and disables network access for model-run shell commands. Do not read them, summarize them, contact localhost services, or copy credential contents into MAP_REPORT.md, PROPOSED_CHANGES.patch, or PROPOSED_FILES/.
 Allowed map/project-memory target paths for applyable patch artifacts:
@@ -326,6 +399,30 @@ code_map_artifact_dir() {
 code_map_sidecar_runtime_dir() {
     local artifact_dir="$1"
     printf "%s/.agent-tmux-sidecar-runtime/%s\n" "$(dirname "${artifact_dir}")" "$(basename "${artifact_dir}")"
+}
+
+cleanup_code_map_prepare_paths() {
+    local artifact_dir="${1:-}"
+    local registry_dir="${2:-}"
+    local registry_file="${3:-}"
+    local runtime_dir="${4:-}"
+    local runtime_parent="${5:-}"
+
+    if [[ -n "${registry_file}" && ! -L "${registry_file}" && -f "${registry_file}" ]]; then
+        rm -f -- "${registry_file}"
+    fi
+    if [[ -n "${runtime_dir}" && ! -L "${runtime_dir}" && -d "${runtime_dir}" ]]; then
+        rm -rf --one-file-system -- "${runtime_dir}"
+    fi
+    if [[ -n "${runtime_parent}" && ! -L "${runtime_parent}" && -d "${runtime_parent}" ]]; then
+        rmdir "${runtime_parent}" 2>/dev/null || true
+    fi
+    if [[ -n "${artifact_dir}" && ! -L "${artifact_dir}" && -d "${artifact_dir}" ]]; then
+        rm -rf --one-file-system -- "${artifact_dir}"
+    fi
+    if [[ -n "${registry_dir}" && ! -L "${registry_dir}" && -d "${registry_dir}" ]]; then
+        rmdir "${registry_dir}" 2>/dev/null || true
+    fi
 }
 
 prepare_code_map_artifact_dir() {
@@ -382,13 +479,19 @@ prepare_code_map_artifact_dir() {
         rmdir "${artifact_dir}" 2>/dev/null || true
         die "code-map sidecar registry directory is not a real directory: ${registry_dir}"
     fi
-    chmod 700 "${registry_dir}" 2>/dev/null || true
+    if ! chmod 700 "${registry_dir}"; then
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "" "" ""
+        die "failed to harden code-map sidecar registry directory permissions: ${registry_dir}"
+    fi
     registry_file="$(code_map_sidecar_registry_file "${artifact_dir}")"
     if [[ -e "${registry_file}" || -L "${registry_file}" ]]; then
         rmdir "${artifact_dir}" 2>/dev/null || true
         die "code-map sidecar registry already exists: ${registry_file}; use a new anchor"
     fi
-    chmod 700 "${artifact_dir}" 2>/dev/null || true
+    if ! chmod 700 "${artifact_dir}"; then
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "" ""
+        die "failed to harden code-map artifact directory permissions: ${artifact_dir}"
+    fi
     runtime_dir="$(code_map_sidecar_runtime_dir "${artifact_dir}")"
     runtime_parent="$(dirname "${runtime_dir}")"
     if [[ -L "${runtime_parent}" ]]; then
@@ -403,7 +506,10 @@ prepare_code_map_artifact_dir() {
         rmdir "${artifact_dir}" 2>/dev/null || true
         die "code-map sidecar runtime parent is not a real directory: ${runtime_parent}"
     fi
-    chmod 700 "${runtime_parent}" 2>/dev/null || true
+    if ! chmod 700 "${runtime_parent}"; then
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "" "${runtime_parent}"
+        die "failed to harden code-map sidecar runtime parent permissions: ${runtime_parent}"
+    fi
     if [[ -L "${runtime_dir}" ]]; then
         rmdir "${artifact_dir}" 2>/dev/null || true
         die "code-map sidecar runtime directory must not be a symlink: ${runtime_dir}"
@@ -426,31 +532,54 @@ prepare_code_map_artifact_dir() {
         rmdir "${artifact_dir}" 2>/dev/null || true
         die "code-map sidecar runtime directory must not resolve inside the repository root: ${runtime_dir}"
     fi
-    mkdir -p "${runtime_dir}/home" \
+    if ! mkdir -p "${runtime_dir}/home" \
         "${runtime_dir}/codex-home" \
         "${runtime_dir}/cache" \
         "${runtime_dir}/state" \
         "${runtime_dir}/config" \
         "${runtime_dir}/empty-dev-shm" \
-        "${runtime_dir}/empty-usr-local-bin"
-    chmod 700 "${runtime_dir}" \
+        "${runtime_dir}/empty-usr-local-bin"; then
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}"
+        die "failed to create code-map sidecar runtime subdirectories: ${runtime_dir}"
+    fi
+    if ! chmod 700 "${runtime_dir}" \
         "${runtime_dir}/home" \
-        "${runtime_dir}/codex-home" 2>/dev/null || true
+        "${runtime_dir}/codex-home" \
+        "${runtime_dir}/cache" \
+        "${runtime_dir}/state" \
+        "${runtime_dir}/config" \
+        "${runtime_dir}/empty-dev-shm" \
+        "${runtime_dir}/empty-usr-local-bin"; then
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}"
+        die "failed to harden code-map sidecar runtime permissions: ${runtime_dir}"
+    fi
     owner_token="$(stable_hash "${artifact_dir}"$'\n'"${session}"$'\n'"${BASHPID:-$$}"$'\n'"$(date +%s%N 2>/dev/null || date +%s)")"
-    printf "%s\n" "${owner_token}" >"${runtime_dir}/owner-token"
+    if ! printf "%s\n" "${owner_token}" >"${runtime_dir}/owner-token"; then
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}"
+        die "failed to write code-map sidecar runtime owner token: ${runtime_dir}"
+    fi
+    if ! chmod 600 "${runtime_dir}/owner-token"; then
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}"
+        die "failed to harden code-map sidecar runtime owner token permissions: ${runtime_dir}/owner-token"
+    fi
     case "$-" in
         *C*) noclobber_was_set=1 ;;
     esac
     set -o noclobber
     if ! write_code_map_sidecar_request_content "${session}" "${resolved_workdir}" "${anchor}" "${artifact_dir}" >"${registry_file}"; then
         ((noclobber_was_set == 1)) || set +o noclobber
-        rm -rf --one-file-system -- "${runtime_dir}"
-        rm -rf --one-file-system -- "${artifact_dir}"
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}"
         die "failed to create code-map sidecar registry: ${registry_file}"
     fi
     ((noclobber_was_set == 1)) || set +o noclobber
-    chmod 600 "${registry_file}" 2>/dev/null || true
-    write_code_map_sidecar_request_content "${session}" "${resolved_workdir}" "${anchor}" "${artifact_dir}" >"${artifact_dir}/SIDECAR_REQUEST.txt"
+    if ! chmod 600 "${registry_file}"; then
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}"
+        die "failed to harden code-map sidecar registry file permissions: ${registry_file}"
+    fi
+    if ! write_code_map_sidecar_request_content "${session}" "${resolved_workdir}" "${anchor}" "${artifact_dir}" >"${artifact_dir}/SIDECAR_REQUEST.txt"; then
+        cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}"
+        die "failed to write code-map sidecar audit manifest: ${artifact_dir}/SIDECAR_REQUEST.txt"
+    fi
     CODE_MAP_PREPARED_ARTIFACT_DIR="${artifact_dir}"
     CODE_MAP_PREPARED_RUNTIME_DIR="${runtime_dir}"
     CODE_MAP_ARTIFACT_OWNER_TOKEN="${owner_token}"
@@ -699,7 +828,7 @@ repo=${resolved_workdir}
 anchor=${anchor}
 allowed_output_dir=${artifact_dir}
 permission=-c sandbox_mode=workspace-write -c sandbox_workspace_write.network_access=false -a never
-filesystem_isolation=bwrap minimal root, private /tmp and /run, artifact directory writable for map output, separate wrapper-owned runtime directory
+filesystem_isolation=bwrap minimal root, selected host tool files only, private /tmp and /run, artifact directory writable for map output, separate wrapper-owned runtime directory
 validator=agent-tmux codex-code-map-validate-artifacts ${artifact_dir}
 EOF
 }
@@ -906,9 +1035,20 @@ validate_code_map_artifacts() {
     local target
     local file_path
     local auth_patterns
+    local find_output
+    local find_errors
     auth_patterns="$(mktemp)"
+    find_output="$(mktemp)"
+    find_errors="$(mktemp)"
     write_codex_auth_patterns "${auth_patterns}"
     validate_code_map_sidecar_registry "${artifact_dir}" || failed=1
+    if ! find "${artifact_dir}" -mindepth 1 -print0 >"${find_output}" 2>"${find_errors}"; then
+        if [[ -s "${find_errors}" ]]; then
+            sed 's/^/agent-tmux: /' "${find_errors}" >&2
+        fi
+        echo "agent-tmux: code-map artifact traversal failed: ${artifact_dir}" >&2
+        failed=1
+    fi
     while IFS= read -r -d '' file_path; do
         rel="${file_path#${artifact_dir}/}"
         if [[ -L "${file_path}" ]]; then
@@ -965,13 +1105,13 @@ validate_code_map_artifacts() {
         fi
         echo "agent-tmux: invalid code-map artifact entry: ${rel}" >&2
         failed=1
-    done < <(find "${artifact_dir}" -mindepth 1 -print0)
+    done <"${find_output}"
 
     if [[ -f "${artifact_dir}/PROPOSED_CHANGES.patch" ]]; then
         found_update=1
         validate_code_map_patch_artifact "${artifact_dir}/PROPOSED_CHANGES.patch" || failed=1
     fi
-    rm -f "${auth_patterns}"
+    rm -f "${auth_patterns}" "${find_output}" "${find_errors}"
     ((failed == 0)) || die "code-map artifact validation failed: ${artifact_dir}"
     if ((found_update == 0)); then
         echo "agent-tmux: code-map artifact validation: ok (no proposed map update)"
@@ -1102,12 +1242,12 @@ start_code_map_bwrap_codex_session() {
         --share-net
         --clearenv
         --dir /usr
-        --ro-bind /usr/bin /usr/bin
-        --ro-bind /usr/lib /usr/lib
-        --ro-bind /usr/lib64 /usr/lib64
-        --symlink usr/bin /bin
-        --symlink usr/lib /lib
-        --symlink usr/lib64 /lib64
+        --dir /usr/bin
+        --dir /usr/lib
+        --dir /usr/lib64
+        --dir /bin
+        --dir /lib
+        --dir /lib64
         --dir /usr/local
         --ro-bind "${runtime_dir}/empty-usr-local-bin" /usr/local/bin
         --dir /etc
@@ -1122,18 +1262,18 @@ start_code_map_bwrap_codex_session() {
         --setenv XDG_CACHE_HOME "${runtime_dir}/cache"
         --setenv XDG_STATE_HOME "${runtime_dir}/state"
         --setenv XDG_CONFIG_HOME "${runtime_dir}/config"
-        --setenv PATH "${node_dir}:${real_codex_root}/bin:/usr/bin:/bin"
+        --setenv PATH "${node_dir}:/usr/bin:/bin"
         --setenv TERM "${TERM:-xterm-256color}"
     )
-    append_bwrap_dir_chain bwrap_args "${node_dir}"
-    bwrap_args+=(--ro-bind "${node_bin}" "${node_bin}")
+    append_bwrap_executable_with_deps bwrap_args "${node_bin}" || die "failed to bind trusted Node executable into code-map sidecar sandbox: ${node_bin}"
+    append_code_map_shell_tools bwrap_args
     append_bwrap_dir_chain bwrap_args "$(dirname "${real_codex_root}")"
     bwrap_args+=(--ro-bind "${real_codex_root}" "${real_codex_root}")
     append_bwrap_dir_chain bwrap_args "$(dirname "${resolved_workdir}")"
     bwrap_args+=(--ro-bind "${resolved_workdir}" "${resolved_workdir}")
-    for etc_path in /etc/ssl /etc/ca-certificates /etc/resolv.conf /etc/hosts /etc/nsswitch.conf /etc/protocols /etc/services; do
+    for etc_path in /etc/resolv.conf /etc/hosts /etc/nsswitch.conf /etc/protocols /etc/services /etc/ssl/openssl.cnf /etc/ssl/certs/ca-certificates.crt; do
         if [[ -e "${etc_path}" ]]; then
-            bwrap_args+=(--ro-bind "${etc_path}" "${etc_path}")
+            append_bwrap_ro_bind_file bwrap_args "${etc_path}" "${etc_path}"
         fi
     done
     bwrap_args+=(
