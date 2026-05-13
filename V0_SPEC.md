@@ -30,27 +30,29 @@ V0 must prove:
   code-map sidecar aliases that derive deterministic session names from the
   resolved repo root and anchor, launch Codex from an isolated artifact
   directory with a visible workspace-write permission profile, disabled network
-  access for model-run shell commands, artifact-local `CODEX_HOME` deny-read for
-  model-run shell commands, and print the artifact directory plus transcript log
-  path before launch
-- code-map sidecar Codex processes run under `bwrap` with read-only `/`, private
-  `/dev`, read-only `/dev/shm`, private `/tmp` and `/run`, artifact-local
-  `HOME`/`CODEX_HOME`, hidden host home except the Codex executable path, hidden
-  `/usr/local/bin`, shared network for Codex API access, and the sidecar artifact
-  directory as the only writable persistent bind
+  access for model-run shell commands, wrapper-owned `CODEX_HOME` deny-read for
+  model-run shell commands, and print the artifact/runtime directories plus
+  transcript log path before launch
+- code-map sidecar Codex processes run under `bwrap` with no host `/` bind,
+  private `/dev`, read-only `/dev/shm`, private `/tmp` and `/run`,
+  wrapper-owned `HOME`/`CODEX_HOME`, hidden host home except trusted Codex/Node
+  executable paths, hidden `/usr/local/bin`, shared network for Codex API
+  access, the sidecar artifact directory as the only writable map-output bind,
+  and a separate wrapper-owned runtime bind for Codex state
 - fork sidecars copy the requested Codex session file from source
   `CODEX_HOME/sessions` plus the matching `session_index.jsonl` entry when
-  present into the artifact-local `CODEX_HOME` before launch
+  present into the wrapper-owned `CODEX_HOME` before launch
 - Codex auth/session files are wrapper-managed runtime inputs, not sidecar
-  outputs; the sidecar permission profile deny-reads artifact-local `CODEX_HOME`
+  outputs; the sidecar permission profile deny-reads wrapper-owned `CODEX_HOME`
   from model-run shell commands, disables shell network access, and artifact
-  validation rejects direct Codex auth material in supervisor-consumed files
+  validation rejects direct Codex auth material and runtime-looking paths inside
+  supervisor-consumed artifacts
 - code-map sidecar prompts explicitly forbid production source edits, tests,
   config edits, install/rollout, commits, ticket dispatch, agent contact,
   `apply_patch`, and tmux mutation
-- code-map sidecars may write only under their artifact directory; desired map
-  or project-memory updates are emitted as proposed patch/artifact files for a
-  supervisor to apply through the normal source workflow
+- code-map sidecars may write map outputs only under their artifact directory;
+  desired map or project-memory updates are emitted as proposed patch/artifact
+  files for a supervisor to apply through the normal source workflow
 - code-map sidecar artifact directories are created atomically by the wrapper;
   pre-existing final directories, symlink final directories, and paths that
   resolve inside the repository root are refused before launch

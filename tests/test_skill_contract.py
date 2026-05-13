@@ -123,7 +123,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("agent-tmux codex-code-map-validate-artifacts <artifact-dir>", text)
         self.assertIn("code-map patch-artifact sidecar", text)
         self.assertIn("must not edit production source, tests, config, install scripts", text)
-        self.assertIn("writable output path", text)
+        self.assertIn("writable map-output\npath", text)
         self.assertIn("PROPOSED_CHANGES.patch", text)
         self.assertIn("requires the wrapper-written sidecar registry", text)
         self.assertIn("outside the sidecar-writable tree", text)
@@ -584,11 +584,15 @@ class SkillContractTests(unittest.TestCase):
             artifact_dir = artifact_root / session
             self.assertEqual(lines[4:6], ["-c", str(artifact_dir)])
             self.assertTrue(artifact_dir.is_dir())
+            runtime_dir = artifact_root / ".agent-tmux-sidecar-runtime" / session
             self.assertEqual(pipe_capture.read_text(encoding="utf-8").strip(), session)
             command = lines[6]
-            self.assertIn("bwrap --die-with-parent --unshare-all --share-net --clearenv --ro-bind / /", command)
-            self.assertIn("--tmpfs /home", command)
-            self.assertIn(f"--ro-bind {artifact_dir}/.agent-tmux-runtime/empty-usr-local-bin /usr/local/bin", command)
+            self.assertNotIn("--ro-bind / /", command)
+            self.assertIn("bwrap --die-with-parent --unshare-all --share-net --clearenv --dir /usr", command)
+            self.assertIn("--ro-bind /usr/bin /usr/bin", command)
+            self.assertIn("--ro-bind /usr/lib /usr/lib", command)
+            self.assertIn("--symlink usr/bin /bin", command)
+            self.assertIn(f"--ro-bind {runtime_dir}/empty-usr-local-bin /usr/local/bin", command)
             self.assertIn("--ro-bind", command)
             self.assertIn(str(repo.resolve()).replace(" ", "\\ "), command)
             self.assertIn("--dev /dev", command)
@@ -597,24 +601,26 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("/home/tarkan/.nvm/versions/node/", command)
             self.assertIn("/bin/node", command)
             self.assertIn("/lib/node_modules/@openai/codex/bin/codex.js", command)
-            self.assertIn(f"--ro-bind {artifact_dir}/.agent-tmux-runtime/empty-dev-shm /dev/shm", command)
+            self.assertIn(f"--ro-bind {runtime_dir}/empty-dev-shm /dev/shm", command)
             self.assertIn("--tmpfs /tmp --tmpfs /run", command)
             self.assertIn(f"--bind {artifact_dir} {artifact_dir}", command)
+            self.assertIn(f"--bind {runtime_dir} {runtime_dir}", command)
             self.assertIn("--setenv CODEX_NO_TMUX 1", command)
             self.assertNotIn("--setenv CODEX_REAL_BIN", command)
-            self.assertIn(f"--setenv CODEX_HOME {artifact_dir}/.agent-tmux-runtime/codex-home", command)
+            self.assertIn(f"--setenv CODEX_HOME {runtime_dir}/codex-home", command)
+            self.assertIn("/bin/node", command)
             self.assertIn("/lib/node_modules/@openai/codex/bin/codex.js -c sandbox_mode=workspace-write -c sandbox_workspace_write.network_access=false -a never", command)
             self.assertIn("permissions.filesystem.deny_read=", command)
-            self.assertIn(f"{artifact_dir}/.agent-tmux-runtime/codex-home", command)
+            self.assertIn(f"{runtime_dir}/codex-home", command)
             self.assertIn(f"-C {artifact_dir}", command)
             self.assertIn("Repository root (read-only input):", command)
             self.assertIn(str(repo.resolve()), command)
-            self.assertIn("Patch artifact directory (only writable output):", command)
+            self.assertIn("Patch artifact directory (only writable map output):", command)
             self.assertIn(str(artifact_dir), command)
-            self.assertIn("Filesystem isolation: bwrap read-only root filesystem with host home hidden", command)
+            self.assertIn("Filesystem isolation: bwrap minimal root without a host / bind", command)
             self.assertIn("supervisor keeps a sidecar registry outside this writable artifact directory", command)
-            self.assertIn("Write files only under the patch artifact directory", command)
-            self.assertIn("Do not use .agent-tmux-runtime/ for map output", command)
+            self.assertIn("Write map output files only under the patch artifact directory", command)
+            self.assertIn("Do not create .agent-tmux-runtime/", command)
             self.assertIn("Allowed map/project-memory target paths", command)
             self.assertIn(".project-memory/**", command)
             self.assertIn("docs/CODEBASE_SUBSYSTEM_MANIFEST.json", command)
@@ -627,14 +633,16 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(f"repo={repo.resolve()}", manifest)
             self.assertIn("anchor=cp-123:branch point", manifest)
             self.assertIn("permission=-c sandbox_mode=workspace-write -c sandbox_workspace_write.network_access=false -a never", manifest)
-            self.assertIn("filesystem_isolation=bwrap read-only root", manifest)
+            self.assertIn("filesystem_isolation=bwrap minimal root", manifest)
             self.assertIn("validator=agent-tmux codex-code-map-validate-artifacts", manifest)
             registry_file = artifact_root / ".agent-tmux-sidecar-registry" / f"{session}.txt"
             registry = registry_file.read_text(encoding="utf-8")
             self.assertEqual(registry, manifest)
-            self.assertTrue((artifact_dir / ".agent-tmux-runtime" / "codex-home").is_dir())
+            self.assertFalse((artifact_dir / ".agent-tmux-runtime").exists())
+            self.assertTrue((runtime_dir / "codex-home").is_dir())
             self.assertIn(f"code-map sidecar session: {session}", result.stderr)
             self.assertIn(f"code-map sidecar artifact-dir: {artifact_dir}", result.stderr)
+            self.assertIn(f"code-map sidecar runtime-dir: {runtime_dir}", result.stderr)
             self.assertIn(f"code-map sidecar registry: {registry_file}", result.stderr)
             self.assertIn(f"code-map sidecar log: /tmp/agent-tmux/{session}.log", result.stderr)
 
@@ -690,9 +698,6 @@ class SkillContractTests(unittest.TestCase):
             proposed = artifact_dir / "PROPOSED_FILES" / "docs" / "SUBSYSTEMS"
             proposed.mkdir(parents=True)
             (proposed / "contact.md").write_text("subsystem\n", encoding="utf-8")
-            runtime = artifact_dir / ".agent-tmux-runtime" / "codex-home"
-            runtime.mkdir(parents=True)
-            (runtime / "session.json").write_text("{}\n", encoding="utf-8")
             result = subprocess.run(
                 ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
                 cwd=ROOT,
@@ -1171,6 +1176,33 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("invalid code-map artifact entry (symlink): .agent-tmux-runtime/codex-home/unsafe-link", result.stderr)
 
+    def test_agent_tmux_code_map_artifact_validator_rejects_runtime_session_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            artifact_dir = tmp_path / "artifact"
+            write_validator_sidecar_manifest(artifact_dir)
+            runtime_session = artifact_dir / ".agent-tmux-runtime" / "codex-home" / "sessions" / "2026" / "05" / "13"
+            runtime_session.mkdir(parents=True)
+            (runtime_session / "rollout-12345678-1234-1234-1234-123456789abc.jsonl").write_text(
+                '{"timestamp":"2026-05-13T00:00:00Z","type":"session_meta","session_id":"12345678-1234-1234-1234-123456789abc"}\n',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("invalid code-map artifact runtime path: .agent-tmux-runtime", result.stderr)
+            self.assertIn(
+                "invalid code-map artifact runtime path: .agent-tmux-runtime/codex-home/sessions/2026/05/13/rollout-12345678-1234-1234-1234-123456789abc.jsonl",
+                result.stderr,
+            )
+
     def test_agent_tmux_code_map_artifact_validator_rejects_root_symlink(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -1616,17 +1648,19 @@ class SkillContractTests(unittest.TestCase):
             lines = capture.read_text(encoding="utf-8").splitlines()
             session = lines[3]
             artifact_dir = artifact_root / session
+            runtime_dir = artifact_root / ".agent-tmux-sidecar-runtime" / session
             command = lines[6]
             self.assertIn("/lib/node_modules/@openai/codex/bin/codex.js -c sandbox_mode=workspace-write -c sandbox_workspace_write.network_access=false -a never", command)
             self.assertIn("permissions.filesystem.deny_read=", command)
-            self.assertIn(f"{artifact_dir}/.agent-tmux-runtime/codex-home", command)
+            self.assertIn(f"{runtime_dir}/codex-home", command)
             self.assertIn(f"-C {artifact_dir} fork {session_id}", command)
-            copied_sessions = list((artifact_dir / ".agent-tmux-runtime" / "codex-home" / "sessions").rglob("*.jsonl"))
+            self.assertFalse((artifact_dir / ".agent-tmux-runtime").exists())
+            copied_sessions = list((runtime_dir / "codex-home" / "sessions").rglob("*.jsonl"))
             self.assertEqual(len(copied_sessions), 1)
             self.assertEqual(copied_sessions[0].read_text(encoding="utf-8"), "{\"session\":\"fixture\"}\n")
             self.assertIn(
                 session_id,
-                (artifact_dir / ".agent-tmux-runtime" / "codex-home" / "session_index.jsonl").read_text(encoding="utf-8"),
+                (runtime_dir / "codex-home" / "session_index.jsonl").read_text(encoding="utf-8"),
             )
             self.assertRegex(session, r"^codex-map-repo-ticket58-pre-edit-[0-9a-f]{12}$")
             self.assertIn("Map the launch path only", command)

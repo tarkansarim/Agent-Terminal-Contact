@@ -190,20 +190,21 @@ The final deterministic artifact directory must not already exist or be a
 symlink; the wrapper creates it atomically and refuses paths that resolve inside
 the repository root.
 
-The sidecar Codex process also runs inside `bwrap`: `/` is mounted read-only,
-host home is hidden except for the Codex executable path, `/usr/local/bin` is
-hidden, `/dev` is a private bwrap device filesystem, the artifact directory is
-rebound writable, `/dev/shm` is overlaid read-only, and `/tmp` and `/run` are
-private so tmux sockets are not exposed. `HOME`/`CODEX_HOME` point under
-`.agent-tmux-runtime/` inside the artifact directory. In fork mode, the requested
-Codex session file plus the matching `session_index.jsonl` entry when present
-are copied into that artifact-local Codex home before launch. Codex auth/session
-files are wrapper-managed runtime inputs; the wrapper adds a Codex
-`permissions.filesystem.deny_read` entry for artifact-local
-`CODEX_HOME` so model-run shell commands cannot read those credentials or
-session files. Auth and session material must not be copied into sidecar
-artifacts. The wrapper refuses artifact roots inside the repository so
-wrapper-created state cannot land in the read-only input tree.
+The sidecar Codex process also runs inside `bwrap`: there is no host `/` bind,
+host home is hidden except for trusted Codex/Node executable paths,
+`/usr/local/bin` is hidden, `/dev` is a private bwrap device filesystem, the
+artifact directory is the writable map-output bind, `/dev/shm` is overlaid
+read-only, and `/tmp` and `/run` are private so tmux sockets are not exposed.
+`HOME`/`CODEX_HOME` point under a separate wrapper-owned runtime directory next
+to the artifact directory. In fork mode, the requested Codex session file plus
+the matching `session_index.jsonl` entry when present are copied into that
+wrapper-owned Codex home before launch. Codex auth/session files are
+wrapper-managed runtime inputs; the wrapper adds a Codex
+`permissions.filesystem.deny_read` entry for wrapper-owned `CODEX_HOME` so
+model-run shell commands cannot read those credentials or session files. Auth
+and session material must not be copied into sidecar artifacts. The wrapper
+refuses artifact and runtime roots inside the repository so wrapper-created
+state cannot land in the read-only input tree.
 
 If map or project-memory files should change, the sidecar writes reviewable
 artifacts such as `MAP_REPORT.md`, `PROPOSED_CHANGES.patch`, or proposed file
@@ -232,15 +233,16 @@ rejects unsupported patch path header formats, symlink/non-regular entries
 anywhere in the sidecar artifact tree, patch modes that would create symlinks or
 other non-regular files, binary content in supervisor-consumed artifacts, and
 direct Codex auth material or obvious auth/session key structures in
-supervisor-consumed artifacts. Regular `.agent-tmux-runtime/` files are ignored
-for map application. The artifact directory passed to the validator must itself
-be a real directory, not a symlink, and must not resolve inside the registry
-repo. The supervisor applies accepted map edits later through the normal source
-workflow, with validation and commit evidence.
+supervisor-consumed artifacts. Runtime-looking paths such as
+`.agent-tmux-runtime/` inside the artifact directory are rejected; wrapper-owned
+runtime state lives outside the artifact tree. The artifact directory passed to
+the validator must itself be a real directory, not a symlink, and must not
+resolve inside the registry repo. The supervisor applies accepted map edits
+later through the normal source workflow, with validation and commit evidence.
 
-The wrapper prints the deterministic session, artifact directory, sidecar
-registry path, and transcript log path before launch so supervisors can audit
-with:
+The wrapper prints the deterministic session, artifact directory, wrapper-owned
+runtime directory, sidecar registry path, and transcript log path before launch
+so supervisors can audit with:
 
 ```bash
 agent-tmux log <sidecar-session>
