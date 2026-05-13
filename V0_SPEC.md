@@ -60,12 +60,16 @@ V0 must prove:
   resolve inside the repository root are refused before launch
 - guarded contact to an exact wrapper-launched sidecar session accepts the
   original repository root only after validating the wrapper sidecar registry
-  outside the writable artifact tree for session, repo, and artifact directory
+  outside the writable artifact tree for the exact wrapper-shaped session, repo,
+  anchor, artifact directory, permission, filesystem-isolation, and validator
+  fields
 - `codex-code-map-validate-artifacts` validates the sidecar artifact directory
   before supervisor application, requires the wrapper sidecar registry outside
-  the writable artifact tree to bind session, repo, and allowed output
-  directory, checks it against the artifact-local `SIDECAR_REQUEST.txt` audit
-  copy, rejects artifact directories inside the registry repo, and rejects
+  the writable artifact tree to bind session, repo, anchor, allowed output
+  directory, sandbox permission, filesystem-isolation description, and validator
+  command, checks it against the artifact-local `SIDECAR_REQUEST.txt` audit
+  copy as an exact wrapper-shaped schema, rejects artifact directories inside
+  the registry repo, and rejects
   proposed patch or mirrored file targets outside the narrow
   code-map/project-memory allowlist
 - `codex-code-map-sidecar-fork` maps a Rewind/Codex fork session id into a new

@@ -11,6 +11,13 @@ from agent_terminal_contact.session import PANE_FORMAT
 from agent_terminal_contact.tmux_transport import CAPTURE_STATE_FORMAT
 
 
+SIDECAR_REQUEST_PERMISSION = "-c sandbox_mode=workspace-write -c sandbox_workspace_write.network_access=false -a never"
+SIDECAR_REQUEST_FILESYSTEM_ISOLATION = (
+    "bwrap minimal root, selected host tool files only, private /tmp and /run, "
+    "artifact directory writable for map output, separate wrapper-owned runtime directory"
+)
+
+
 CODEX_IDLE = "previous assistant output\n\n\u203a \n  gpt-5.5 xhigh · /tmp/project\n"
 CODEX_STARTER = (
     "╭────────────────────────────────────────────────╮\n"
@@ -91,7 +98,11 @@ def write_sidecar_request(artifact_dir, *, session, repo):
     content = (
         f"session={session}\n"
         f"repo={Path(repo).resolve()}\n"
+        "anchor=test-anchor\n"
         f"allowed_output_dir={artifact_path.resolve()}\n"
+        f"permission={SIDECAR_REQUEST_PERMISSION}\n"
+        f"filesystem_isolation={SIDECAR_REQUEST_FILESYSTEM_ISOLATION}\n"
+        f"validator=agent-tmux codex-code-map-validate-artifacts {artifact_path.resolve()}\n"
     )
     artifact_path.joinpath("SIDECAR_REQUEST.txt").write_text(content, encoding="utf-8")
     registry_dir = artifact_path.parent / ".agent-tmux-sidecar-registry"

@@ -38,6 +38,20 @@ NODE_VALUE_OPTIONS = {
     "--openssl-config",
     "--title",
 }
+SIDECAR_REQUEST_PERMISSION = "-c sandbox_mode=workspace-write -c sandbox_workspace_write.network_access=false -a never"
+SIDECAR_REQUEST_FILESYSTEM_ISOLATION = (
+    "bwrap minimal root, selected host tool files only, private /tmp and /run, "
+    "artifact directory writable for map output, separate wrapper-owned runtime directory"
+)
+SIDECAR_REQUEST_FIELDS = {
+    "session",
+    "repo",
+    "anchor",
+    "allowed_output_dir",
+    "permission",
+    "filesystem_isolation",
+    "validator",
+}
 NODE_CODE_LOADING_OPTIONS = {"--require", "-r", "--import", "--loader", "--experimental-loader"}
 NODE_INLINE_CODE_OPTIONS = {"--eval", "-e", "--print", "-p", "--check", "-c"}
 
@@ -320,7 +334,6 @@ def _sidecar_request_for_pane(pane: TmuxPane, repo_path: str) -> SidecarRequest 
 
 
 def _read_sidecar_request_fields(request_file: Path) -> dict[str, str] | None:
-    allowed_fields = {"session", "repo", "allowed_output_dir"}
     try:
         if request_file.is_symlink() or not request_file.is_file() or request_file.stat().st_size > 65536:
             return None
@@ -334,10 +347,19 @@ def _read_sidecar_request_fields(request_file: Path) -> dict[str, str] | None:
         if not raw_line or "=" not in raw_line:
             return None
         key, value = raw_line.split("=", 1)
-        if key not in allowed_fields or key in fields:
+        if key not in SIDECAR_REQUEST_FIELDS or key in fields:
             return None
         fields[key] = value
-    if set(fields) != allowed_fields:
+    if set(fields) != SIDECAR_REQUEST_FIELDS:
+        return None
+    if not fields["anchor"]:
+        return None
+    if fields["permission"] != SIDECAR_REQUEST_PERMISSION:
+        return None
+    if fields["filesystem_isolation"] != SIDECAR_REQUEST_FILESYSTEM_ISOLATION:
+        return None
+    expected_validator = f"agent-tmux codex-code-map-validate-artifacts {fields['allowed_output_dir']}"
+    if fields["validator"] != expected_validator:
         return None
     return fields
 

@@ -443,7 +443,12 @@ require_code_map_mode() {
     local expected="$2"
     local label="$3"
     local actual
-    actual="$(stat -c '%a' -- "${path}" 2>/dev/null)" || {
+    local stat_bin
+    stat_bin="$(trusted_system_tool stat)" || {
+        echo "agent-tmux: trusted stat is required for code-map permission validation" >&2
+        return 1
+    }
+    actual="$("${stat_bin}" -c '%a' -- "${path}" 2>/dev/null)" || {
         echo "agent-tmux: failed to inspect ${label} permissions: ${path}" >&2
         return 1
     }
@@ -451,6 +456,15 @@ require_code_map_mode() {
         echo "agent-tmux: unsafe ${label} permissions: ${path} has mode ${actual}, expected ${expected}" >&2
         return 1
     fi
+}
+
+secure_code_map_chmod() {
+    local chmod_bin
+    chmod_bin="$(trusted_system_tool chmod)" || {
+        echo "agent-tmux: trusted chmod is required for code-map permission hardening" >&2
+        return 1
+    }
+    "${chmod_bin}" "$@"
 }
 
 require_code_map_modes() {
@@ -518,7 +532,7 @@ prepare_code_map_artifact_dir() {
         rmdir "${artifact_dir}" 2>/dev/null || true
         die "code-map sidecar registry directory is not a real directory: ${registry_dir}"
     fi
-    if ! chmod 700 "${registry_dir}" || ! require_code_map_mode "${registry_dir}" 700 "code-map sidecar registry directory"; then
+    if ! secure_code_map_chmod 700 "${registry_dir}" || ! require_code_map_mode "${registry_dir}" 700 "code-map sidecar registry directory"; then
         cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "" "" ""
         die "failed to harden code-map sidecar registry directory permissions: ${registry_dir}"
     fi
@@ -532,7 +546,7 @@ prepare_code_map_artifact_dir() {
         rmdir "${artifact_dir}" 2>/dev/null || true
         die "code-map sidecar cleanup owner marker already exists: ${owner_file}; use a new anchor"
     fi
-    if ! chmod 700 "${artifact_dir}" || ! require_code_map_mode "${artifact_dir}" 700 "code-map artifact directory"; then
+    if ! secure_code_map_chmod 700 "${artifact_dir}" || ! require_code_map_mode "${artifact_dir}" 700 "code-map artifact directory"; then
         cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "" "" "${owner_file}"
         die "failed to harden code-map artifact directory permissions: ${artifact_dir}"
     fi
@@ -550,7 +564,7 @@ prepare_code_map_artifact_dir() {
         cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "" "" "${owner_file}"
         die "code-map sidecar runtime parent is not a real directory: ${runtime_parent}"
     fi
-    if ! chmod 700 "${runtime_parent}" || ! require_code_map_mode "${runtime_parent}" 700 "code-map sidecar runtime parent"; then
+    if ! secure_code_map_chmod 700 "${runtime_parent}" || ! require_code_map_mode "${runtime_parent}" 700 "code-map sidecar runtime parent"; then
         cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "" "${runtime_parent}" "${owner_file}"
         die "failed to harden code-map sidecar runtime parent permissions: ${runtime_parent}"
     fi
@@ -594,7 +608,7 @@ prepare_code_map_artifact_dir() {
         "${runtime_dir}/empty-dev-shm"
         "${runtime_dir}/empty-usr-local-bin"
     )
-    if ! chmod 700 "${runtime_private_paths[@]}" \
+    if ! secure_code_map_chmod 700 "${runtime_private_paths[@]}" \
         || ! require_code_map_modes 700 "code-map sidecar runtime path" "${runtime_private_paths[@]}"; then
         cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
         die "failed to harden code-map sidecar runtime permissions: ${runtime_dir}"
@@ -604,7 +618,7 @@ prepare_code_map_artifact_dir() {
         cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
         die "failed to write code-map sidecar cleanup owner marker: ${owner_file}"
     fi
-    if ! chmod 600 "${owner_file}" || ! require_code_map_mode "${owner_file}" 600 "code-map sidecar cleanup owner marker"; then
+    if ! secure_code_map_chmod 600 "${owner_file}" || ! require_code_map_mode "${owner_file}" 600 "code-map sidecar cleanup owner marker"; then
         cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
         die "failed to harden code-map sidecar cleanup owner marker permissions: ${owner_file}"
     fi
@@ -618,7 +632,7 @@ prepare_code_map_artifact_dir() {
         die "failed to create code-map sidecar registry: ${registry_file}"
     fi
     ((noclobber_was_set == 1)) || set +o noclobber
-    if ! chmod 600 "${registry_file}" || ! require_code_map_mode "${registry_file}" 600 "code-map sidecar registry file"; then
+    if ! secure_code_map_chmod 600 "${registry_file}" || ! require_code_map_mode "${registry_file}" 600 "code-map sidecar registry file"; then
         cleanup_code_map_prepare_paths "${artifact_dir}" "${registry_dir}" "${registry_file}" "${runtime_dir}" "${runtime_parent}" "${owner_file}"
         die "failed to harden code-map sidecar registry file permissions: ${registry_file}"
     fi
@@ -684,7 +698,7 @@ trusted_system_tool() {
     local tool="$1"
     local candidate
     case "${tool}" in
-        awk|cmp|find|grep|mktemp|rm|sed|sort)
+        awk|chmod|cmp|find|grep|mktemp|rm|sed|sort|stat)
             ;;
         *)
             return 1
@@ -698,6 +712,9 @@ trusted_system_tool() {
     done
     return 1
 }
+
+readonly CODE_MAP_SIDECAR_PERMISSION="-c sandbox_mode=workspace-write -c sandbox_workspace_write.network_access=false -a never"
+readonly CODE_MAP_SIDECAR_FILESYSTEM_ISOLATION="bwrap minimal root, selected host tool files only, private /tmp and /run, artifact directory writable for map output, separate wrapper-owned runtime directory"
 
 readonly -a CODE_MAP_TARGET_EXACT_PATHS=(
     CODE_MAP.md
@@ -1101,8 +1118,8 @@ session=${session}
 repo=${resolved_workdir}
 anchor=${anchor}
 allowed_output_dir=${artifact_dir}
-permission=-c sandbox_mode=workspace-write -c sandbox_workspace_write.network_access=false -a never
-filesystem_isolation=bwrap minimal root, selected host tool files only, private /tmp and /run, artifact directory writable for map output, separate wrapper-owned runtime directory
+permission=${CODE_MAP_SIDECAR_PERMISSION}
+filesystem_isolation=${CODE_MAP_SIDECAR_FILESYSTEM_ISOLATION}
 validator=agent-tmux codex-code-map-validate-artifacts ${artifact_dir}
 EOF
 }
@@ -1342,10 +1359,18 @@ load_code_map_request_file() {
     local expected_file="${3:-}"
     local session=""
     local repo=""
+    local anchor=""
     local allowed_output_dir=""
+    local permission=""
+    local filesystem_isolation=""
+    local validator=""
     local seen_session=0
     local seen_repo=0
+    local seen_anchor=0
     local seen_allowed_output_dir=0
+    local seen_permission=0
+    local seen_filesystem_isolation=0
+    local seen_validator=0
     local line
     local key
     local value
@@ -1369,6 +1394,10 @@ load_code_map_request_file() {
         fi
     fi
     while IFS= read -r line || [[ -n "${line}" ]]; do
+        if string_has_control_chars "${line}"; then
+            echo "agent-tmux: invalid ${label} line: ${line}" >&2
+            return 1
+        fi
         case "${line}" in
             *=*)
                 key="${line%%=*}"
@@ -1390,6 +1419,14 @@ load_code_map_request_file() {
                         seen_repo=1
                         repo="${value}"
                         ;;
+                    anchor)
+                        ((seen_anchor == 0)) || {
+                            echo "agent-tmux: duplicate ${label} field: anchor" >&2
+                            return 1
+                        }
+                        seen_anchor=1
+                        anchor="${value}"
+                        ;;
                     allowed_output_dir)
                         ((seen_allowed_output_dir == 0)) || {
                             echo "agent-tmux: duplicate ${label} field: allowed_output_dir" >&2
@@ -1397,6 +1434,30 @@ load_code_map_request_file() {
                         }
                         seen_allowed_output_dir=1
                         allowed_output_dir="${value}"
+                        ;;
+                    permission)
+                        ((seen_permission == 0)) || {
+                            echo "agent-tmux: duplicate ${label} field: permission" >&2
+                            return 1
+                        }
+                        seen_permission=1
+                        permission="${value}"
+                        ;;
+                    filesystem_isolation)
+                        ((seen_filesystem_isolation == 0)) || {
+                            echo "agent-tmux: duplicate ${label} field: filesystem_isolation" >&2
+                            return 1
+                        }
+                        seen_filesystem_isolation=1
+                        filesystem_isolation="${value}"
+                        ;;
+                    validator)
+                        ((seen_validator == 0)) || {
+                            echo "agent-tmux: duplicate ${label} field: validator" >&2
+                            return 1
+                        }
+                        seen_validator=1
+                        validator="${value}"
                         ;;
                     *)
                         echo "agent-tmux: invalid ${label} field: ${key}" >&2
@@ -1412,8 +1473,20 @@ load_code_map_request_file() {
                 ;;
         esac
     done <"${request_file}"
-    if [[ -z "${session}" || -z "${repo}" || -z "${allowed_output_dir}" ]]; then
-        echo "agent-tmux: ${label} missing session, repo, or allowed_output_dir" >&2
+    if [[ -z "${session}" || -z "${repo}" || -z "${anchor}" || -z "${allowed_output_dir}" || -z "${permission}" || -z "${filesystem_isolation}" || -z "${validator}" ]]; then
+        echo "agent-tmux: ${label} missing session, repo, anchor, allowed_output_dir, permission, filesystem_isolation, or validator" >&2
+        return 1
+    fi
+    if [[ "${permission}" != "${CODE_MAP_SIDECAR_PERMISSION}" ]]; then
+        echo "agent-tmux: invalid ${label} permission field" >&2
+        return 1
+    fi
+    if [[ "${filesystem_isolation}" != "${CODE_MAP_SIDECAR_FILESYSTEM_ISOLATION}" ]]; then
+        echo "agent-tmux: invalid ${label} filesystem_isolation field" >&2
+        return 1
+    fi
+    if [[ "${validator}" != "agent-tmux codex-code-map-validate-artifacts ${allowed_output_dir}" ]]; then
+        echo "agent-tmux: invalid ${label} validator field" >&2
         return 1
     fi
     CODE_MAP_REQUEST_SESSION="${session}"

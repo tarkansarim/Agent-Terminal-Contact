@@ -9,6 +9,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_PATH = os.environ.get("PATH", "/usr/bin:/bin")
+SIDECAR_REQUEST_PERMISSION = "-c sandbox_mode=workspace-write -c sandbox_workspace_write.network_access=false -a never"
+SIDECAR_REQUEST_FILESYSTEM_ISOLATION = (
+    "bwrap minimal root, selected host tool files only, private /tmp and /run, "
+    "artifact directory writable for map output, separate wrapper-owned runtime directory"
+)
 
 
 def code_map_session_name(repo, anchor):
@@ -21,7 +26,7 @@ def code_map_session_name(repo, anchor):
     return f"codex-map-{slug_component(repo.name)}-{slug_component(anchor)}-{digest}"
 
 
-def write_validator_sidecar_manifest(artifact_dir, *, repo=None):
+def write_validator_sidecar_manifest(artifact_dir, *, repo=None, anchor="test-anchor"):
     artifact_path = Path(artifact_dir)
     repo_path = Path(repo) if repo is not None else artifact_path.parent / "repo"
     registry_dir = artifact_path.parent / ".agent-tmux-sidecar-registry"
@@ -30,7 +35,11 @@ def write_validator_sidecar_manifest(artifact_dir, *, repo=None):
     content = (
         f"session={artifact_path.name}\n"
         f"repo={repo_path.resolve()}\n"
+        f"anchor={anchor}\n"
         f"allowed_output_dir={artifact_path.resolve()}\n"
+        f"permission={SIDECAR_REQUEST_PERMISSION}\n"
+        f"filesystem_isolation={SIDECAR_REQUEST_FILESYSTEM_ISOLATION}\n"
+        f"validator=agent-tmux codex-code-map-validate-artifacts {artifact_path.resolve()}\n"
     )
     (artifact_path / "SIDECAR_REQUEST.txt").write_text(content, encoding="utf-8")
     registry_dir.mkdir(parents=True, exist_ok=True)
@@ -99,6 +108,15 @@ def write_fake_chmod(bin_dir, body):
         encoding="utf-8",
     )
     chmod.chmod(0o755)
+
+
+def write_fake_stat(bin_dir, body):
+    stat = Path(bin_dir) / "stat"
+    stat.write_text(
+        "#!/usr/bin/env bash\n" + body,
+        encoding="utf-8",
+    )
+    stat.chmod(0o755)
 
 
 def write_fake_find(bin_dir):
@@ -171,7 +189,9 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("It rejects\n`PROPOSED_CHANGES.patch` and `PROPOSED_FILES/` entries", text)
         self.assertIn("change the anchor\nto launch a new sidecar", text)
         self.assertIn("validates both the sidecar registry outside the writable artifact", text)
-        self.assertIn("cleanup owner\nmarker is also stored beside that registry", text)
+        self.assertIn("sandbox permission,\nfilesystem-isolation description, and validator command", text)
+        self.assertIn("unknown or partial audit manifests are\nrejected", text)
+        self.assertIn("cleanup owner marker is also stored beside that registry", text)
         self.assertIn("artifact-local `SIDECAR_REQUEST.txt` binding", text)
         self.assertIn("agent-contact send --repo <repo> --provider codex --session <sidecar-session>", text)
         self.assertIn("If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed", text)
@@ -686,6 +706,18 @@ class SkillContractTests(unittest.TestCase):
             registry_file = artifact_root / ".agent-tmux-sidecar-registry" / f"{session}.txt"
             registry = registry_file.read_text(encoding="utf-8")
             self.assertEqual(registry, manifest)
+            (artifact_dir / "MAP_REPORT.md").write_text("map report\n", encoding="utf-8")
+            validation = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-code-map-validate-artifacts", str(artifact_dir)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(validation.returncode, 0, validation.stderr)
+            self.assertIn("ok (no proposed map update)", validation.stdout)
             owner_file = artifact_root / ".agent-tmux-sidecar-registry" / f"{session}.owner"
             self.assertTrue(owner_file.is_file())
             self.assertFalse((runtime_dir / "owner-token").exists())
@@ -2393,7 +2425,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("code-map artifact directory already exists", second.stderr)
             self.assertFalse(capture_second.exists())
 
-    def test_agent_tmux_code_map_sidecar_refuses_chmod_failure_before_launch(self):
+    def test_agent_tmux_code_map_sidecar_ignores_path_chmod_failure_before_launch(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             repo = tmp_path / "Example Repo"
@@ -2423,13 +2455,17 @@ class SkillContractTests(unittest.TestCase):
                     "PATH": f"{fake_bin}:{TEST_PATH}",
                 },
             )
-            self.assertEqual(result.returncode, 2)
-            self.assertIn("failed to harden code-map sidecar registry directory permissions", result.stderr)
-            self.assertFalse(capture.exists())
-            if artifact_root.exists():
-                self.assertFalse(any(artifact_root.iterdir()))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(capture.exists())
+            session = capture.read_text(encoding="utf-8").splitlines()[3]
+            artifact_dir = artifact_root / session
+            registry_dir = artifact_root / ".agent-tmux-sidecar-registry"
+            registry_file = registry_dir / f"{session}.txt"
+            self.assertEqual(oct(artifact_dir.stat().st_mode & 0o777), "0o700")
+            self.assertEqual(oct(registry_dir.stat().st_mode & 0o777), "0o700")
+            self.assertEqual(oct(registry_file.stat().st_mode & 0o777), "0o600")
 
-    def test_agent_tmux_code_map_sidecar_refuses_false_success_chmod_modes(self):
+    def test_agent_tmux_code_map_sidecar_ignores_path_chmod_and_stat_spoof(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             repo = tmp_path / "Example Repo"
@@ -2439,6 +2475,7 @@ class SkillContractTests(unittest.TestCase):
             delegate = write_code_map_delegate(tmp_path, has_rc=1)
             fake_bin = write_fake_tmux(tmp_path)
             write_fake_chmod(fake_bin, "exit 0\n")
+            write_fake_stat(fake_bin, "printf '700\\n'\n")
             result = subprocess.run(
                 ["bash", "bin/agent-tmux", "codex-code-map-sidecar", str(repo), "cp-123", "Focus"],
                 cwd=ROOT,
@@ -2455,14 +2492,18 @@ class SkillContractTests(unittest.TestCase):
                     "PATH": f"{fake_bin}:{TEST_PATH}",
                 },
             )
-            self.assertEqual(result.returncode, 2)
-            self.assertIn("unsafe code-map sidecar registry directory permissions", result.stderr)
-            self.assertIn("failed to harden code-map sidecar registry directory permissions", result.stderr)
-            self.assertFalse(capture.exists())
-            if artifact_root.exists():
-                self.assertFalse(any(artifact_root.iterdir()))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            session = capture.read_text(encoding="utf-8").splitlines()[3]
+            artifact_dir = artifact_root / session
+            registry_dir = artifact_root / ".agent-tmux-sidecar-registry"
+            registry_file = registry_dir / f"{session}.txt"
+            owner_file = registry_dir / f"{session}.owner"
+            self.assertEqual(oct(artifact_dir.stat().st_mode & 0o777), "0o700")
+            self.assertEqual(oct(registry_dir.stat().st_mode & 0o777), "0o700")
+            self.assertEqual(oct(registry_file.stat().st_mode & 0o777), "0o600")
+            self.assertEqual(oct(owner_file.stat().st_mode & 0o777), "0o600")
 
-    def test_agent_tmux_code_map_sidecar_cleans_runtime_on_late_chmod_failure(self):
+    def test_agent_tmux_code_map_sidecar_uses_trusted_chmod_for_registry_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             repo = tmp_path / "Example Repo"
@@ -2497,11 +2538,10 @@ class SkillContractTests(unittest.TestCase):
                     "PATH": f"{fake_bin}:{TEST_PATH}",
                 },
             )
-            self.assertEqual(result.returncode, 2)
-            self.assertIn("failed to harden code-map sidecar registry file permissions", result.stderr)
-            self.assertFalse(capture.exists())
-            if artifact_root.exists():
-                self.assertFalse(any(artifact_root.iterdir()))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            session = capture.read_text(encoding="utf-8").splitlines()[3]
+            registry_file = artifact_root / ".agent-tmux-sidecar-registry" / f"{session}.txt"
+            self.assertEqual(oct(registry_file.stat().st_mode & 0o777), "0o600")
 
     def test_agent_tmux_code_map_sidecar_reports_failed_session_termination_after_pipe_log_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
