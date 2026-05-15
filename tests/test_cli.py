@@ -1462,6 +1462,44 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertGreater(len(literal_calls), 1)
             self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
+    def test_codex_plan_mode_hint_does_not_block_short_paste_submit(self):
+        message = "Continue next smallest 3dSculptTool slice."
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_plan_mode_pending_contact(message),
+                    f"{guarded_line(message)}\n{CODEX_IDLE}",
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(any(call[0][:4] == ("tmux", "paste-buffer", "-d", "-r") for call in runner.calls))
+            self.assertFalse(any(call[0][:5] == ("tmux", "send-keys", "-t", "%1", "-l") for call in runner.calls))
+            self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+
     def test_pre_submit_rejects_codex_collapsed_pasted_content_with_wrong_count(self):
         long_message = "collapsed-" * 90
         with tempfile.TemporaryDirectory() as repo:
