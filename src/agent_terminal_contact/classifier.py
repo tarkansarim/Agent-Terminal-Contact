@@ -74,10 +74,10 @@ def classify_pane(
     if _looks_like_approval_prompt(lowered):
         return Classification(PaneState.APPROVAL_PROMPT, "approval prompt is visible")
 
-    if _looks_like_working_state(visible):
+    prompt = _safe_prompt(visible, provider=provider, cursor_line_index=cursor_line_index)
+    if _looks_like_working_state(visible, provider=provider, prompt=prompt):
         return Classification(PaneState.AGENT_WORKING, "agent appears to be working")
 
-    prompt = _safe_prompt(visible, provider=provider, cursor_line_index=cursor_line_index)
     if prompt is not None:
         if not _prompt_body_is_empty(prompt.body):
             if _is_codex_starter_placeholder(
@@ -156,17 +156,57 @@ def _looks_like_approval_prompt(lowered: str) -> bool:
     return any(marker in lowered for marker in approval_markers)
 
 
-def _looks_like_working_state(text: str) -> bool:
-    lines = [line.strip().lower() for line in text.splitlines() if line.strip()]
-    for line in lines[-12:]:
-        line = _strip_status_prefix(line)
-        if re.match(r"^(working|thinking|running|executing|applying patch|waiting for)\b", line):
-            return True
-        if " tokens" in line and ("used" in line or "remaining" in line):
-            return True
-        if _is_provider_footer(line, provider="codex") or _is_provider_footer(line, provider="claude"):
+def _looks_like_working_state(
+    text: str,
+    *,
+    provider: str | None,
+    prompt: PromptMatch | None,
+) -> bool:
+    lines = text.splitlines()
+    non_empty_indexes = [index for index, line in enumerate(lines) if line.strip()]
+    for index in non_empty_indexes[-12:]:
+        line = lines[index].strip().lower()
+        if not _line_is_working_status(line):
             continue
+        if prompt is not None and not _working_status_is_active_for_prompt(
+            lines,
+            index,
+            prompt,
+            provider=provider,
+        ):
+            continue
+        return True
     return False
+
+
+def _line_is_working_status(line: str) -> bool:
+    line = _strip_status_prefix(line.strip().lower())
+    if re.match(r"^(working|thinking|running|executing|applying patch|waiting for)\b", line):
+        return True
+    return " tokens" in line and ("used" in line or "remaining" in line)
+
+
+def _working_status_is_active_for_prompt(
+    lines: list[str],
+    status_index: int,
+    prompt: PromptMatch,
+    *,
+    provider: str | None,
+) -> bool:
+    if status_index >= prompt.line_index:
+        return True
+    for index in range(status_index + 1, prompt.line_index):
+        candidate = lines[index].strip()
+        if not candidate:
+            continue
+        if _prompt_body(candidate, provider=provider) is not None:
+            return False
+        if _is_provider_footer(candidate, provider=provider):
+            return False
+        if _line_is_working_status(candidate):
+            continue
+        return False
+    return True
 
 
 def _safe_prompt(text: str, *, provider: str | None, cursor_line_index: int | None) -> PromptMatch | None:

@@ -154,7 +154,7 @@ class AgentTmuxTransport:
         # DELICATE_FIX: Carefully debugged. Modify only with failing repro + targeted tests.
         for offset in range(0, len(message), chunk_size):
             chunk = message[offset : offset + chunk_size]
-            result = self.runner.run(["tmux", "send-keys", "-t", pane_id, "-l", chunk])
+            result = self.runner.run(["tmux", "send-keys", "-t", pane_id, "-l", "--", chunk])
             if result.returncode != 0:
                 raise UnsubmittedMessageError(
                     _detail(

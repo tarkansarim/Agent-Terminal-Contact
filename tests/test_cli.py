@@ -125,6 +125,7 @@ class FakeRunner:
         display_messages=None,
         tty_processes=None,
         provider="codex",
+        fail_dash_literal_without_option_terminator=False,
     ):
         if isinstance(captures, str):
             captures = [captures]
@@ -157,6 +158,7 @@ class FakeRunner:
         self.calls = []
         self.fail_submit = fail_submit
         self.fail_paste = fail_paste
+        self.fail_dash_literal_without_option_terminator = fail_dash_literal_without_option_terminator
         self.cursor_line_index = cursor_line_index
         self.cursor_line_indexes = list(cursor_line_indexes or [])
         self.cursor_x = cursor_x
@@ -188,6 +190,20 @@ class FakeRunner:
         if key[:3] == ("tmux", "delete-buffer", "-b"):
             return CommandResult(key, 0, "", "")
         if key[:5] == ("tmux", "send-keys", "-t", "%1", "-l"):
+            literal_args = key[5:]
+            if (
+                self.fail_dash_literal_without_option_terminator
+                and literal_args
+                and literal_args[0] != "--"
+                and literal_args[0].startswith("-")
+            ):
+                return CommandResult(
+                    key,
+                    1,
+                    "",
+                    "tmux: unknown option -- r\n"
+                    "usage: send-keys [-FHlMRX] [-N repeat-count] [-t target-pane] key ...",
+                )
             return CommandResult(key, 0, "", "")
         if key[:3] == ("tmux", "send-keys", "-t"):
             if self.fail_submit:
@@ -1350,9 +1366,52 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(code, EXIT_OK)
             self.assertEqual(payload["status"], "sent")
             self.assertGreater(len(literal_calls), 1)
-            self.assertTrue(all(len(call[0][5]) <= 200 for call in literal_calls))
+            self.assertTrue(all(call[0][5] == "--" for call in literal_calls))
+            self.assertTrue(all(len(call[0][6]) <= 200 for call in literal_calls))
             self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
             self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+
+    def test_codex_literal_chunks_use_option_terminator_for_dash_prefixed_chunks(self):
+        prefix = 'CONTACT_ID: AC-TEST MESSAGE_JSON: "'
+        message = ("x" * (200 - len(prefix))) + "-r should stay literal " + ("z" * 900)
+        self.assertEqual(guarded_line(message)[200:202], "-r")
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_wrapped_pending_contact(message, width=96),
+                    wrapped_guarded_echo(message, width=96) + "\n" + CODEX_IDLE,
+                ],
+                fail_dash_literal_without_option_terminator=True,
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            literal_calls = [
+                call for call in runner.calls if call[0][:5] == ("tmux", "send-keys", "-t", "%1", "-l")
+            ]
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(all(call[0][5] == "--" for call in literal_calls))
 
     def test_pre_submit_rejects_codex_collapsed_pasted_content_with_wrong_count(self):
         long_message = "collapsed-" * 90

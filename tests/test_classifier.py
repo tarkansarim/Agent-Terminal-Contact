@@ -215,6 +215,18 @@ class PaneClassifierTests(unittest.TestCase):
         )
         self.assertEqual(result.state, PaneState.AGENT_WORKING)
 
+    def test_codex_stale_working_status_before_final_answer_does_not_block_idle_prompt(self):
+        result = classify_pane(
+            "• Working (1m 12s • esc to interrupt)\n"
+            "final assistant answer after the work finished\n\n"
+            "\u203a \x1b[2mUse /skills to list available skills\x1b[0m\n"
+            "  gpt-5.5 xhigh · /tmp/project\n",
+            provider="codex",
+            cursor_line_index=3,
+            cursor_column_index=2,
+        )
+        self.assertEqual(result.state, PaneState.IDLE_EMPTY_PROMPT)
+
     def test_codex_prefixed_running_after_prompt_footer_is_not_idle(self):
         result = classify_pane(
             "previous\n\n\u203a \n  gpt-5.5 xhigh · /tmp/project\n• Running pytest\n",
