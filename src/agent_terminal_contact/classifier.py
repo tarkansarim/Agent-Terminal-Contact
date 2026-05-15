@@ -228,7 +228,14 @@ def _prompt_near_cursor(text: str, *, provider: str | None, cursor_line_index: i
             return None
         body = _prompt_body(stripped, provider=provider)
         if body is not None:
-            return _prompt_from_index(lines, index, body, provider=provider, allow_previous_prompts=True)
+            return _prompt_from_index(
+                lines,
+                index,
+                body,
+                provider=provider,
+                allow_previous_prompts=True,
+                cursor_line_index=cursor_line_index,
+            )
     return None
 
 
@@ -240,7 +247,14 @@ def _last_prompt(text: str, *, provider: str | None) -> PromptMatch | None:
             continue
         body = _prompt_body(stripped, provider=provider)
         if body is not None:
-            return _prompt_from_index(lines, index, body, provider=provider, allow_previous_prompts=False)
+            return _prompt_from_index(
+                lines,
+                index,
+                body,
+                provider=provider,
+                allow_previous_prompts=False,
+                cursor_line_index=None,
+            )
     return None
 
 
@@ -251,6 +265,7 @@ def _prompt_from_index(
     *,
     provider: str | None,
     allow_previous_prompts: bool,
+    cursor_line_index: int | None,
 ) -> PromptMatch:
     if not allow_previous_prompts:
         for previous in lines[:index]:
@@ -258,11 +273,17 @@ def _prompt_from_index(
             if previous_stripped and _prompt_body(previous_stripped, provider=provider) is not None:
                 return PromptMatch(body="ambiguous prompt-marker block", line_index=index, line=lines[index].strip())
     trailing = [body]
-    for line in lines[index + 1 :]:
+    for line_index, line in enumerate(lines[index + 1 :], start=index + 1):
         candidate = line.strip()
         if not candidate:
             continue
         if _is_provider_footer(candidate, provider=provider):
+            break
+        if (
+            cursor_line_index is not None
+            and line_index > cursor_line_index
+            and _is_provider_prompt_auxiliary_line(candidate, provider=provider)
+        ):
             break
         trailing.append(candidate)
     return PromptMatch(body="\n".join(trailing).strip(), line_index=index, line=lines[index].strip())
@@ -376,6 +397,18 @@ def _is_provider_footer(line: str, *, provider: str | None) -> bool:
     if provider == "claude":
         return "? for shortcuts" in lowered or "esc to interrupt" in lowered
     return False
+
+
+def _is_provider_prompt_auxiliary_line(line: str, *, provider: str | None) -> bool:
+    if provider != "codex":
+        return False
+    normalized = re.sub(r"\s+", " ", line.strip().lower())
+    return (
+        normalized.startswith("create a plan?")
+        and "plan mode" in normalized
+        and "esc" in normalized
+        and "dismiss" in normalized
+    )
 
 
 def _strip_status_prefix(line: str) -> str:

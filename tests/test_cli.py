@@ -61,6 +61,15 @@ def codex_collapsed_pasted_contact(message='hello', *, count_delta=0):
     )
 
 
+def codex_plan_mode_pending_contact(message='hello'):
+    return (
+        "previous assistant output\n\n"
+        f"\u203a {guarded_line(message)}\n"
+        "  Create a plan? shift + tab use Plan mode esc dismiss\n"
+        "  gpt-5.5 xhigh · /tmp/project\n"
+    )
+
+
 def claude_wrapped_pending_contact(message='hello', width=24):
     line = guarded_line(message)
     pieces = [line[index : index + width] for index in range(0, len(line), width)]
@@ -1412,6 +1421,46 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(code, EXIT_OK)
             self.assertEqual(payload["status"], "sent")
             self.assertTrue(all(call[0][5] == "--" for call in literal_calls))
+
+    def test_codex_plan_mode_hint_does_not_block_long_literal_submit(self):
+        long_message = "plan-mode-" * 190
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_plan_mode_pending_contact(long_message),
+                    f"{guarded_line(long_message)}\n{CODEX_IDLE}",
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            literal_calls = [
+                call for call in runner.calls if call[0][:5] == ("tmux", "send-keys", "-t", "%1", "-l")
+            ]
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertGreater(len(literal_calls), 1)
+            self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
     def test_pre_submit_rejects_codex_collapsed_pasted_content_with_wrong_count(self):
         long_message = "collapsed-" * 90

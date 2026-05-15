@@ -166,6 +166,20 @@ class PaneClassifierTests(unittest.TestCase):
         result = classify_pane(text, provider="codex", cursor_line_index=2)
         self.assertEqual(result.state, PaneState.PENDING_USER_TEXT)
 
+    def test_current_prompt_body_omits_codex_plan_mode_hint_after_prompt_cursor(self):
+        text = (
+            "assistant output\n\n"
+            "\u203a CONTACT_ID: AC-TEST MESSAGE_JSON: \"hello\"\n"
+            "  Create a plan? shift + tab use Plan mode esc dismiss\n"
+            "  gpt-5.5 xhigh · /tmp/project\n"
+        )
+        self.assertEqual(
+            current_prompt_body(text, provider="codex", cursor_line_index=2),
+            'CONTACT_ID: AC-TEST MESSAGE_JSON: "hello"',
+        )
+        result = classify_pane(text, provider="codex", cursor_line_index=2)
+        self.assertEqual(result.state, PaneState.PENDING_USER_TEXT)
+
     def test_multiline_pending_user_text_refuses_when_prompt_line_empty(self):
         result = classify_pane(
             "latest answer\n\n\u203a \nsecond line of pending draft\n  gpt-5.5 xhigh · /tmp/project\n",
