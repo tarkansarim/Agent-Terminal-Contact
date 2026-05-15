@@ -45,9 +45,13 @@ anchored by the provider command found on your current `PATH`.
   message bypass. If the visible composer clearly contains old guarded-contact
   residue such as `CONTACT_ID: ... MESSAGE_JSON: ...` or Codex's collapsed
   `[Pasted Content N chars]` placeholder after `agent-contact` returned
-  `mutated_unsubmitted`, and it is not a human draft, clear only that proven
-  residue with `agent-tmux clear-input <session>` and rerun guarded
-  `agent-contact`.
+  `mutated_unsubmitted`, and it is not a human draft, first prefer guarded
+  recovery for full payload residue: rerun `agent-contact send --dry-run` with
+  the same `--message`, require `would_submit_pending`, then rerun the same
+  guarded `agent-contact send` to submit the existing composer text without
+  pasting again. If residue is only a Codex pasted-content placeholder or does
+  not match the intended message, clear only that proven residue with
+  `agent-tmux clear-input <session>` and rerun guarded `agent-contact`.
 - Messages with terminal control bytes or bracketed-paste markers are refused; summarize or sanitize captured terminal output before sending it.
 - The actual paste payload is one `CONTACT_ID ... MESSAGE_JSON ...` line and does not request tmux bracketed-paste wrapping.
 - Real sends to attached tmux sessions are refused; detach or use a tmux-managed worker session for cross-agent contact.
@@ -282,10 +286,15 @@ agent-contact send --repo <repo> --provider codex --session <sidecar-session> --
 
 If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed.
 Visible composer text is user-owned pending text unless it is narrowly proven
-guarded-contact residue from that failed send. Clear only proven residue with
-`agent-tmux clear-input <sidecar-session>` and relaunch a new sidecar with a new
-anchor for the revised focus. Do not fall back to raw `agent-tmux send` unless
-the current operator explicitly authorizes that exact bypass.
+guarded-contact residue from that failed send. If the full guarded payload is
+still visible and matches the same intended message, rerun guarded contact with
+the same `--message`; `--dry-run` must report `would_submit_pending`, and the
+real send submits the existing composer text without another paste. If residue
+is only a Codex pasted-content placeholder or does not match the intended
+message, clear only proven residue with `agent-tmux clear-input
+<sidecar-session>` and relaunch a new sidecar with a new anchor for the revised
+focus. Do not fall back to raw `agent-tmux send` unless the current operator
+explicitly authorizes that exact bypass.
 
 To inspect source ownership before patching an installed helper, use:
 

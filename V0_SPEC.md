@@ -15,10 +15,11 @@ V0 must prove:
 - bare Node-style launchers are accepted only when their exact executable directory is listed in `AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS`
 - `agent-contact trust-roots` can discover narrow package/launcher root candidates without sending only when the package root is anchored by the caller's provider command on `PATH`
 - the pane still has the same cwd, process command, pid, provider evidence, and idle prompt state immediately before send
-- the target pane is at an idle empty prompt proven by provider text plus tmux cursor metadata
-- no pending user text is visible
+- the target pane is at an idle empty prompt proven by provider text plus tmux cursor metadata, unless it contains a pending guarded-contact residue matching the exact requested message
+- no pending user text is visible, except for a matching pending `CONTACT_ID`/`MESSAGE_JSON` guarded-contact residue that can be submitted without another paste
 - the message payload contains no bracketed-paste markers or terminal control characters except newline and tab
 - the pasted payload is a single line containing a generated `CONTACT_ID` and `MESSAGE_JSON`, without tmux bracketed-paste wrapping
+- retrying `agent-contact send` with the same message may submit an already-pending guarded-contact residue only when the current prompt body matches that exact requested `MESSAGE_JSON`; mismatched pending text still refuses
 - the post-send capture gives delivery evidence, or the result is reported as unproven after mutation
 - installed AgentTerminalContact artifacts can be resolved through a source
   manifest that reports installed path, source path, install/check commands,
@@ -145,6 +146,9 @@ source-owned user wrapper delegates to that explicitly non-owned helper.
 Code-map sidecar launch does not select or message an existing owner lane; use
 guarded `agent-contact send --session <sidecar-session>` only after the exact
 sidecar identity is known and a dry-run accepts it.
-If guarded contact returns `mutated_unsubmitted`, delivery is failed; clear only
-proven guarded-contact residue and launch a new sidecar anchor for the revised
-focus rather than switching to raw tmux injection.
+If guarded contact returns `mutated_unsubmitted`, delivery is failed. If the
+current composer still contains the full guarded payload for the same intended
+message, rerun guarded `agent-contact send --dry-run` and then `send` to submit
+that matching residue without another paste. Otherwise clear only proven
+guarded-contact residue and launch a new sidecar anchor for the revised focus
+rather than switching to raw tmux injection.

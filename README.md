@@ -297,7 +297,12 @@ agent-contact send --repo /path/to/repo --provider codex --session <sidecar-sess
 If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed and
 the visible composer text as guarded-contact residue only if it clearly contains
 that failed `CONTACT_ID`/`MESSAGE_JSON` payload or Codex pasted-content
-placeholder. Clear only proven residue with `agent-tmux clear-input
-<sidecar-session>` and relaunch a new sidecar with a new anchor for the revised
-focus. Do not fall back to raw `agent-tmux send` for sidecar contact unless the
-current operator explicitly authorizes that exact bypass.
+placeholder. If the visible residue is the full guarded payload for the same
+message, rerun guarded contact with the same `--message`: `--dry-run` reports
+`would_submit_pending`, and a real send submits the existing composer text
+without pasting again. If the residue is only a Codex pasted-content placeholder
+or does not match the intended message, clear only proven residue with
+`agent-tmux clear-input <sidecar-session>` and relaunch a new sidecar with a new
+anchor for the revised focus. Do not fall back to raw `agent-tmux send` for
+sidecar contact unless the current operator explicitly authorizes that exact
+bypass.

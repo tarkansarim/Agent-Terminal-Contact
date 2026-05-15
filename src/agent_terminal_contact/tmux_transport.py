@@ -140,6 +140,10 @@ class AgentTmuxTransport:
         finally:
             self._delete_buffer(buffer_name)
 
+    def submit_pending(self, pane_id: str) -> None:
+        validate_pane_id(pane_id)
+        self._submit(pane_id)
+
     def _delete_buffer(self, buffer_name: str):
         return self.runner.run(["tmux", "delete-buffer", "-b", buffer_name])
 

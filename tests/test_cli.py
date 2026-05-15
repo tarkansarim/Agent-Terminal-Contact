@@ -70,6 +70,17 @@ def codex_plan_mode_pending_contact(message='hello'):
     )
 
 
+def codex_plan_mode_wrapped_lines(lines):
+    first, *rest = lines
+    return (
+        "previous assistant output\n\n"
+        f"\u203a {first}\n"
+        + "".join(f"{line}\n" for line in rest)
+        + "  Create a plan? shift + tab use Plan mode esc dismiss\n"
+        + "  gpt-5.5 xhigh · /tmp/project\n"
+    )
+
+
 def claude_wrapped_pending_contact(message='hello', width=24):
     line = guarded_line(message)
     pieces = [line[index : index + width] for index in range(0, len(line), width)]
@@ -673,6 +684,97 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["status"], "refused")
             self.assertEqual(payload["pane_state"], "pending_user_text")
             self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+
+    def test_dry_run_would_submit_matching_pending_guarded_contact_without_paste(self):
+        message = "Continue next smallest 3dSculptTool slice."
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, codex_plan_mode_pending_contact(message))
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    message,
+                    "--dry-run",
+                    "--json",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "would_submit_pending")
+            self.assertEqual(payload["contact_id"], "AC-TEST")
+            self.assertEqual(payload["recovery"], "pending_guarded_contact")
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+            self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
+            self.assertFalse(any(call[0][:3] == ("tmux", "send-keys", "-t") for call in runner.calls))
+
+    def test_real_send_submits_matching_pending_guarded_contact_without_paste(self):
+        message = "Continue next smallest 3dSculptTool slice."
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    codex_plan_mode_pending_contact(message),
+                    codex_plan_mode_pending_contact(message),
+                    f"{guarded_line(message)}\n{CODEX_IDLE}",
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    message,
+                    "--json",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertEqual(payload["contact_id"], "AC-TEST")
+            self.assertEqual(payload["recovery"], "pending_guarded_contact")
+            self.assertTrue(payload["delivery_proven"])
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+            self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
+            self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+
+    def test_pending_guarded_contact_with_different_message_refuses_recovery(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, codex_plan_mode_pending_contact("old message"))
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "new message",
+                    "--json",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["status"], "refused")
+            self.assertEqual(payload["stage"], "pre_send_state")
+            self.assertEqual(payload["pane_state"], "pending_user_text")
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+            self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
     def test_agent_tmux_invalid_session_name_reports_structured_capture_error(self):
         with tempfile.TemporaryDirectory() as repo:
@@ -1459,6 +1561,88 @@ class AgentContactCliTests(unittest.TestCase):
             ]
             self.assertEqual(code, EXIT_OK)
             self.assertEqual(payload["status"], "sent")
+            self.assertGreater(len(literal_calls), 1)
+            self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+
+    def test_pre_submit_waits_for_live_codex_long_plan_mode_render_before_enter(self):
+        long_message = (
+            "Continue from clean HEAD 879e461 with the next smallest high-value 3dSculptTool slice. "
+            "Before editing, re-open the current plan packet, code map/project memory, CppStudio route, "
+            "Rewind, OSTM/control harness, GUI/donor notes, and the relevant sculpt/viewport donor references. "
+            "Use donor-first behavior for sculpt/brush/viewport choices; if local donors are insufficient, "
+            "do focused web/upstream research and record the sources. Pick one bounded slice only, preferably "
+            "real sculpting or viewport behavior over cosmetic polish if the plan supports it. Use the updated "
+            "OSTM contract: do not run OSTM --mode real-input or any intrusive desktop-input path unless you "
+            "stop and request explicit supervisor/user approval for that exact intrusive run. Prefer "
+            "non-intrusive control-harness/readback/offscreen paths. Capture before evidence, implement, then "
+            "prove exact behavior with before-after evidence, screenshots/readbacks, and explicit comparison. "
+            "Update code map/docs if routes drift. Run build, CTest, planning guard, code-map drift+validation, "
+            "Rewind ready, relevant non-intrusive OSTM/control proof, screenshot inspection, diff hygiene, then "
+            "commit with Commit-Origin: agent-slice. If a tool/harness path behaves unexpectedly, stop and "
+            "classify it instead of silently working around it. Stop after final summary and include the launch command."
+        )
+        live_wrapped_lines = [
+            'CONTACT_ID: AC-TEST MESSAGE_JSON: "Continue from clean',
+            "HEAD 879e461 with the next smallest high-value 3dSculptTool slice. Before",
+            "editing, re-open the current plan packet, code map/project memory, CppStudio",
+            "route, Rewind, OSTM/control harness, GUI/donor notes, and the relevant",
+            "sculpt/viewport donor references. Use donor-first behavior for sculpt/brush/",
+            "viewport choices; if local donors are insufficient, do focused web/upstream",
+            "research and record the sources. Pick one bounded slice only, preferably real",
+            "sculpting or viewport behavior over cosmetic polish if the plan supports it.",
+            "Use the updated OSTM contract: do not run OSTM --mode real-input or any",
+            "intrusive desktop-input path unless you stop and request explicit supervisor/",
+            "user approval for that exact intrusive run. Prefer non-intrusive control-",
+            "harness/readback/offscreen paths. Capture before evidence, implement, then",
+            "prove exact behavior with before-after evidence, screenshots/readbacks, and",
+            "explicit comparison. Update code map/docs if routes drift. Run build, CTest,",
+            "planning guard, code-map drift+validation, Rewind ready, relevant non-",
+            "intrusive OSTM/control proof, screenshot inspection, diff hygiene, then",
+            "commit with Commit-Origin: agent-slice. If a tool/harness path behaves",
+            "unexpectedly, stop and classify it instead of silently working around it.",
+            'Stop after final summary and include the launch command."',
+        ]
+        partial_renders = [
+            codex_plan_mode_wrapped_lines(live_wrapped_lines[:count])
+            for count in range(1, 7)
+        ]
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    *partial_renders,
+                    codex_plan_mode_wrapped_lines(live_wrapped_lines),
+                    f"{guarded_line(long_message)}\n{CODEX_IDLE}",
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            literal_calls = [
+                call for call in runner.calls if call[0][:5] == ("tmux", "send-keys", "-t", "%1", "-l")
+            ]
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(payload["delivery_proven"])
             self.assertGreater(len(literal_calls), 1)
             self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
