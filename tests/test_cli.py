@@ -37,8 +37,8 @@ CODEX_DIM_STARTER = CODEX_STARTER.replace(
 CLAUDE_IDLE = "previous assistant output\n\n> \u258c\n? for shortcuts\n"
 
 
-def guarded_line(message='hello'):
-    return f"CONTACT_ID: AC-TEST MESSAGE_JSON: {json.dumps(message)}"
+def guarded_line(message='hello', *, contact_id="AC-TEST"):
+    return f"CONTACT_ID: {contact_id} MESSAGE_JSON: {json.dumps(message)}"
 
 
 def codex_pending_contact(message='hello'):
@@ -78,6 +78,16 @@ def codex_plan_mode_wrapped_lines(lines):
         + "".join(f"{line}\n" for line in rest)
         + "  Create a plan? shift + tab use Plan mode esc dismiss\n"
         + "  gpt-5.5 xhigh · /tmp/project\n"
+    )
+
+
+def codex_plan_mode_wrapped_lines_without_footer(lines):
+    first, *rest = lines
+    return (
+        "previous assistant output\n\n"
+        f"\u203a {first}\n"
+        + "".join(f"{line}\n" for line in rest)
+        + "  Create a plan?  shift + tab use Plan mode   esc dismiss\n"
     )
 
 
@@ -774,6 +784,64 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["stage"], "pre_send_state")
             self.assertEqual(payload["pane_state"], "pending_user_text")
             self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+            self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+
+    def test_dry_run_recovers_current_live_pending_guarded_contact_without_footer(self):
+        message = (
+            "Continue from the current clean local HEAD. Do not push and do not add a remote. Determine the "
+            "next smallest production slice from the approved plan after the shared Standard/Sculpt substrate. "
+            "Before touching code, read the code map, planning artifacts, donor routes, harness docs, OSTM "
+            "requirements, and Rewind readiness. Avoid brush-family breadth unless the plan and donor-backed slice "
+            "readiness prove it is now the next smallest safe step; if the next slice is a proof/verification or "
+            "high-poly substrate step instead, choose that. Use OSTM/harness evidence, code-map drift/schema "
+            "validation, planning guard, build, CTest, and diff hygiene. Commit only a verified local slice with "
+            "Commit-Origin: agent-slice, then stop and report changed files, validation commands, OSTM job/artifact "
+            "paths, commit id, and launch command."
+        )
+        contact_id = "AC-20260517T005132Z-89849e8d"
+        live_wrapped_lines = [
+            f'CONTACT_ID: {contact_id} MESSAGE_JSON: "Continue from the',
+            "current clean local HEAD. Do not push and do not add a remote. Determine the",
+            "next smallest production slice from the approved plan after the shared",
+            "Standard/Sculpt substrate. Before touching code, read the code map, planning",
+            "artifacts, donor routes, harness docs, OSTM requirements, and Rewind",
+            "readiness. Avoid brush-family breadth unless the plan and donor-backed slice",
+            "readiness prove it is now the next smallest safe step; if the next slice is a",
+            "proof/verification or high-poly substrate step instead, choose that. Use",
+            "OSTM/harness evidence, code-map drift/schema validation, planning guard,",
+            "build, CTest, and diff hygiene. Commit only a verified local slice with",
+            "Commit-Origin: agent-slice, then stop and report changed files, validation",
+            "commands, OSTM job/artifact paths, commit id, and launch command.\"",
+        ]
+        capture = codex_plan_mode_wrapped_lines_without_footer(live_wrapped_lines)
+        plan_hint_index = next(
+            index for index, line in enumerate(capture.splitlines()) if "Create a plan?" in line
+        )
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, capture, cursor_line_index=plan_hint_index)
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    message,
+                    "--dry-run",
+                    "--json",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "would_submit_pending")
+            self.assertEqual(payload["contact_id"], contact_id)
+            self.assertEqual(payload["recovery"], "pending_guarded_contact")
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+            self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
             self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
     def test_agent_tmux_invalid_session_name_reports_structured_capture_error(self):
@@ -1644,6 +1712,75 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["status"], "sent")
             self.assertTrue(payload["delivery_proven"])
             self.assertGreater(len(literal_calls), 1)
+            self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+
+    def test_pre_submit_accepts_current_live_plan_mode_residue_without_footer_before_enter(self):
+        message = (
+            "Continue from the current clean local HEAD. Do not push and do not add a remote. Determine the "
+            "next smallest production slice from the approved plan after the shared Standard/Sculpt substrate. "
+            "Before touching code, read the code map, planning artifacts, donor routes, harness docs, OSTM "
+            "requirements, and Rewind readiness. Avoid brush-family breadth unless the plan and donor-backed slice "
+            "readiness prove it is now the next smallest safe step; if the next slice is a proof/verification or "
+            "high-poly substrate step instead, choose that. Use OSTM/harness evidence, code-map drift/schema "
+            "validation, planning guard, build, CTest, and diff hygiene. Commit only a verified local slice with "
+            "Commit-Origin: agent-slice, then stop and report changed files, validation commands, OSTM job/artifact "
+            "paths, commit id, and launch command."
+        )
+        contact_id = "AC-20260517T005132Z-89849e8d"
+        live_wrapped_lines = [
+            f'CONTACT_ID: {contact_id} MESSAGE_JSON: "Continue from the',
+            "current clean local HEAD. Do not push and do not add a remote. Determine the",
+            "next smallest production slice from the approved plan after the shared",
+            "Standard/Sculpt substrate. Before touching code, read the code map, planning",
+            "artifacts, donor routes, harness docs, OSTM requirements, and Rewind",
+            "readiness. Avoid brush-family breadth unless the plan and donor-backed slice",
+            "readiness prove it is now the next smallest safe step; if the next slice is a",
+            "proof/verification or high-poly substrate step instead, choose that. Use",
+            "OSTM/harness evidence, code-map drift/schema validation, planning guard,",
+            "build, CTest, and diff hygiene. Commit only a verified local slice with",
+            "Commit-Origin: agent-slice, then stop and report changed files, validation",
+            "commands, OSTM job/artifact paths, commit id, and launch command.\"",
+        ]
+        capture = codex_plan_mode_wrapped_lines_without_footer(live_wrapped_lines)
+        plan_hint_index = next(
+            index for index, line in enumerate(capture.splitlines()) if "Create a plan?" in line
+        )
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    capture,
+                    f"{guarded_line(message, contact_id=contact_id)}\n{CODEX_IDLE}",
+                ],
+                cursor_line_indexes=[2, 2, 2, 2, plan_hint_index, 3],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    message,
+                    "--json",
+                    "--contact-id",
+                    contact_id,
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(payload["delivery_proven"])
+            self.assertTrue(any(call[0][:4] == ("tmux", "paste-buffer", "-d", "-r") for call in runner.calls))
+            self.assertFalse(any(call[0][:5] == ("tmux", "send-keys", "-t", "%1", "-l") for call in runner.calls))
             self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
     def test_codex_plan_mode_hint_does_not_block_short_paste_submit(self):

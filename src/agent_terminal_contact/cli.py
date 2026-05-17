@@ -837,6 +837,7 @@ def _revalidate_pasted_contact(selection, runner: Runner, transport: AgentTmuxTr
             provider=selection.provider,
             cursor_line_index=capture.cursor_line_index,
             cursor_column_index=capture.cursor_x,
+            allow_cursor_backed_prompt_without_footer=True,
         )
         classification = classify_pane(
             capture.text,
@@ -904,6 +905,7 @@ def _matching_pending_guarded_contact(
         provider=provider,
         cursor_line_index=cursor_line_index,
         cursor_column_index=cursor_column_index,
+        allow_cursor_backed_prompt_without_footer=True,
     )
     if prompt_body is None:
         return None

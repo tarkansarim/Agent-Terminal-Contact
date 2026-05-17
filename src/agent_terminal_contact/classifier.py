@@ -106,12 +106,27 @@ def current_prompt_body(
     provider: str | None,
     cursor_line_index: int | None,
     cursor_column_index: int | None = None,
+    allow_cursor_backed_prompt_without_footer: bool = False,
 ) -> str | None:
     visible = strip_terminal_control(text or "")
     prompt = _safe_prompt(visible, provider=provider, cursor_line_index=cursor_line_index)
     if prompt is None:
         return None
-    if not _has_provider_prompt_context(visible, prompt, provider=provider, cursor_line_index=cursor_line_index):
+    has_context = _has_provider_prompt_context(
+        visible,
+        prompt,
+        provider=provider,
+        cursor_line_index=cursor_line_index,
+    )
+    if not has_context and not (
+        allow_cursor_backed_prompt_without_footer
+        and _has_cursor_backed_unfooted_prompt_context(
+            visible,
+            prompt,
+            provider=provider,
+            cursor_line_index=cursor_line_index,
+        )
+    ):
         return None
     return _strip_prompt_cursor(prompt.body)
 
@@ -279,11 +294,7 @@ def _prompt_from_index(
             continue
         if _is_provider_footer(candidate, provider=provider):
             break
-        if (
-            cursor_line_index is not None
-            and line_index > cursor_line_index
-            and _is_provider_prompt_auxiliary_line(candidate, provider=provider)
-        ):
+        if _is_provider_prompt_auxiliary_line(candidate, provider=provider):
             break
         trailing.append(candidate)
     return PromptMatch(body="\n".join(trailing).strip(), line_index=index, line=lines[index].strip())
@@ -460,6 +471,25 @@ def _has_provider_prompt_context(
         return "\u258c" in prompt.line or "|" in prompt.line
 
     return False
+
+
+def _has_cursor_backed_unfooted_prompt_context(
+    text: str,
+    prompt: PromptMatch,
+    *,
+    provider: str | None,
+    cursor_line_index: int | None,
+) -> bool:
+    if provider != "codex" or cursor_line_index is None:
+        return False
+    if _prompt_body_is_empty(prompt.body):
+        return False
+    lines = text.splitlines()
+    if cursor_line_index < prompt.line_index or cursor_line_index >= len(lines):
+        return False
+    if _footer_index_after_prompt(lines, prompt.line_index, provider=provider) is not None:
+        return False
+    return True
 
 
 def _footer_index_after_prompt(lines: list[str], prompt_index: int, *, provider: str | None) -> int | None:
