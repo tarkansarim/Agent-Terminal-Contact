@@ -522,6 +522,51 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["status"], "would_send")
             self.assertEqual(payload["pane_state"], "idle_empty_prompt")
 
+    def test_real_send_from_codex_starter_placeholder_uses_literal_input(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_STARTER,
+                    CODEX_STARTER,
+                    CODEX_STARTER,
+                    CODEX_STARTER,
+                    codex_pending_contact(),
+                    f"{guarded_line()}\n{CODEX_IDLE}",
+                ],
+                cursor_x=2,
+                fail_paste=True,
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            literal_calls = [
+                call for call in runner.calls if call[0][:5] == ("tmux", "send-keys", "-t", "%1", "-l")
+            ]
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(payload["delivery_proven"])
+            self.assertEqual(payload["pane_state"], "idle_empty_prompt")
+            self.assertEqual(payload["pane_reason"], "codex starter placeholder has no pending user text")
+            self.assertEqual(len(literal_calls), 1)
+            self.assertTrue(all(call[0][5] == "--" for call in literal_calls))
+            self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
+
     def test_trust_roots_reports_narrow_provider_and_launcher_roots(self):
         with tempfile.TemporaryDirectory() as repo:
             runner = FakeRunner(repo, CODEX_IDLE)

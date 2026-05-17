@@ -18,7 +18,8 @@ V0 must prove:
 - the target pane is at an idle empty prompt proven by provider text plus tmux cursor metadata, unless it contains a pending guarded-contact residue matching the exact requested message
 - no pending user text is visible, except for a matching pending `CONTACT_ID`/`MESSAGE_JSON` guarded-contact residue that can be submitted without another paste
 - the message payload contains no bracketed-paste markers or terminal control characters except newline and tab
-- the pasted payload is a single line containing a generated `CONTACT_ID` and `MESSAGE_JSON`, without tmux bracketed-paste wrapping
+- the guarded contact payload is a single line containing a generated `CONTACT_ID` and `MESSAGE_JSON`, without tmux bracketed-paste wrapping
+- Codex starter-placeholder prompts that dry-run accepts are sent with literal key input instead of `paste-buffer`, so live send can materialize the guarded contact before submit
 - retrying `agent-contact send` with the same message may submit an already-pending guarded-contact residue only when the current prompt body matches that exact requested `MESSAGE_JSON`; mismatched pending text still refuses
 - the post-send capture gives delivery evidence, or the result is reported as unproven after mutation
 - installed AgentTerminalContact artifacts can be resolved through a source

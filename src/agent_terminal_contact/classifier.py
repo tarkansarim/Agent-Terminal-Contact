@@ -27,6 +27,7 @@ CODEX_STARTER_PROMPTS = {
     "Will this algorithm scale well?",
 }
 CODEX_UNRESOLVED_TEMPLATE_RE = re.compile(r"(?:\{[^{}\n]+\}|@[A-Za-z][A-Za-z0-9_-]*)")
+CODEX_STARTER_PLACEHOLDER_REASON = "codex starter placeholder has no pending user text"
 
 
 class PaneState(str, Enum):
@@ -91,7 +92,7 @@ def classify_pane(
                 provider=provider,
                 cursor_line_index=cursor_line_index,
             ):
-                return Classification(PaneState.IDLE_EMPTY_PROMPT, "codex starter placeholder has no pending user text")
+                return Classification(PaneState.IDLE_EMPTY_PROMPT, CODEX_STARTER_PLACEHOLDER_REASON)
             return Classification(PaneState.PENDING_USER_TEXT, "prompt contains pending user text")
         if not _has_provider_prompt_context(visible, prompt, provider=provider, cursor_line_index=cursor_line_index):
             return Classification(PaneState.DEAD_OR_UNKNOWN, "bare prompt marker lacks provider TUI context")
@@ -129,6 +130,13 @@ def current_prompt_body(
     ):
         return None
     return _strip_prompt_cursor(prompt.body)
+
+
+def is_codex_starter_placeholder_idle(classification: Classification) -> bool:
+    return (
+        classification.state == PaneState.IDLE_EMPTY_PROMPT
+        and classification.reason == CODEX_STARTER_PLACEHOLDER_REASON
+    )
 
 
 def _is_codex_starter_placeholder(

@@ -14,7 +14,7 @@ import time
 from typing import TextIO
 
 from .artifact_ownership import ArtifactLookupError, artifact_info_payload
-from .classifier import PaneState, classify_pane, current_prompt_body
+from .classifier import PaneState, classify_pane, current_prompt_body, is_codex_starter_placeholder_idle
 from .runner import Runner, SubprocessRunner
 from .session import DiscoveryError, revalidate_target, select_target, suggest_trusted_roots
 from .tmux_transport import AgentTmuxTransport, TransportError, UnsubmittedMessageError
@@ -403,6 +403,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         )
         return EXIT_OK
 
+    send_starter_placeholder_via_literal = False
     try:
         revalidated = revalidate_target(selection, runner)
         latest_before_capture = transport.capture_state(revalidated.pane_id, args.capture_lines)
@@ -478,6 +479,9 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                 },
             )
             return EXIT_REFUSED
+        send_starter_placeholder_via_literal = (
+            selection.provider == "codex" and is_codex_starter_placeholder_idle(final_classification)
+        )
     except DiscoveryError as exc:
         _emit(
             args,
@@ -508,7 +512,9 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
     try:
         literal_key_chunk_size = None
         literal_key_chunk_delay_seconds = 0.0
-        if selection.provider == "codex" and len(guarded_message) >= CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS:
+        if selection.provider == "codex" and (
+            send_starter_placeholder_via_literal or len(guarded_message) >= CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS
+        ):
             literal_key_chunk_size = CODEX_LITERAL_INPUT_CHUNK_SIZE
             literal_key_chunk_delay_seconds = CODEX_LITERAL_INPUT_DELAY_SECONDS
         transport.send(

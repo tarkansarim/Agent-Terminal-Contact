@@ -22,9 +22,11 @@ bin/agent-contact send --repo /path/to/repo --provider codex --message "..." --d
 The tool refuses to send when the target session is ambiguous, attached to a
 client for a real send, the pane is not at an idle empty prompt, pending user
 text is visible in the composer, or the message contains terminal control
-bytes. Newlines and tabs are allowed in the requested message; the actual paste
-payload is encoded onto one `MESSAGE_JSON` line and sent without tmux
-bracketed-paste wrapping. Bracketed-paste markers and other C0/C1 controls are
+bytes. Newlines and tabs are allowed in the requested message; the guarded
+contact payload is encoded onto one `MESSAGE_JSON` line and sent without tmux
+bracketed-paste wrapping. Codex starter-placeholder prompts use literal key
+input rather than `paste-buffer`, because those prompts can fail to materialize
+pasted text before submit. Bracketed-paste markers and other C0/C1 controls are
 refused before discovery.
 
 Targeting is pane-locked. Discovery selects a tmux `%pane_id`, verifies provider

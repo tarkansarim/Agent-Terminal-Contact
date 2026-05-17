@@ -53,7 +53,7 @@ anchored by the provider command found on your current `PATH`.
   not match the intended message, clear only that proven residue with
   `agent-tmux clear-input <session>` and rerun guarded `agent-contact`.
 - Messages with terminal control bytes or bracketed-paste markers are refused; summarize or sanitize captured terminal output before sending it.
-- The actual paste payload is one `CONTACT_ID ... MESSAGE_JSON ...` line and does not request tmux bracketed-paste wrapping.
+- The guarded contact payload is one `CONTACT_ID ... MESSAGE_JSON ...` line and does not request tmux bracketed-paste wrapping; Codex starter-placeholder prompts are handled by literal key input inside `agent-contact`.
 - Real sends to attached tmux sessions are refused; detach or use a tmux-managed worker session for cross-agent contact.
 - Multiple plausible same-repo sessions are an identity problem, not a routine choice.
 - Include the transcript path from the contact output or `agent-tmux log <session>` when reporting cross-agent work.
