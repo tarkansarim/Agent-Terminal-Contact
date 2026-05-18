@@ -87,6 +87,37 @@ class PaneClassifierTests(unittest.TestCase):
         result = classify_pane("ready\n> \u258c\n? for shortcuts\n", provider="claude", cursor_line_index=1)
         self.assertEqual(result.state, PaneState.IDLE_EMPTY_PROMPT)
 
+    def test_idle_empty_claude_v2_prompt_with_cursor_metadata(self):
+        text = (
+            " ▐▛███▜▌   Claude Code v2.1.143\n"
+            "───────────────────────────── owner-ComfyComannder-109-claude ──\n"
+            "❯\u00a0\n"
+            "────────────────────────────────────────────────────────────────\n"
+            "  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+        )
+        result = classify_pane(text, provider="claude", cursor_line_index=2, cursor_column_index=2)
+        self.assertEqual(result.state, PaneState.IDLE_EMPTY_PROMPT)
+
+    def test_claude_v2_prompt_requires_cursor_metadata(self):
+        text = (
+            "assistant output\n"
+            "❯\u00a0\n"
+            "────────────────────────────────────────────────────────────────\n"
+            "  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+        )
+        result = classify_pane(text, provider="claude", cursor_line_index=1)
+        self.assertEqual(result.state, PaneState.DEAD_OR_UNKNOWN)
+
+    def test_claude_v2_prompt_with_text_is_pending(self):
+        text = (
+            "assistant output\n"
+            "❯ already typed\n"
+            "────────────────────────────────────────────────────────────────\n"
+            "  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+        )
+        result = classify_pane(text, provider="claude", cursor_line_index=1, cursor_column_index=16)
+        self.assertEqual(result.state, PaneState.PENDING_USER_TEXT)
+
     def test_current_claude_prompt_body_accepts_wrapped_cursor_continuation(self):
         text = (
             "ready\n"

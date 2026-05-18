@@ -14,7 +14,13 @@ import time
 from typing import TextIO
 
 from .artifact_ownership import ArtifactLookupError, artifact_info_payload
-from .classifier import PaneState, classify_pane, current_prompt_body, is_codex_starter_placeholder_idle
+from .classifier import (
+    PaneState,
+    classify_pane,
+    current_prompt_body,
+    is_codex_starter_placeholder_idle,
+    strip_terminal_control,
+)
 from .runner import Runner, SubprocessRunner
 from .session import DiscoveryError, revalidate_target, select_target, suggest_trusted_roots
 from .tmux_transport import AgentTmuxTransport, TransportError, UnsubmittedMessageError
@@ -943,10 +949,10 @@ def _normalized_prompt_body_matches_pasted_contact(prompt_body: str, guarded_mes
     normalized = _normalized_prompt_body(prompt_body)
     if normalized == guarded_message:
         return True
-    if provider != "codex":
-        return False
     if _codex_visual_wrapped_prompt_body_matches_guarded_message(prompt_body, guarded_message):
         return True
+    if provider != "codex":
+        return False
     match = CODEX_COLLAPSED_PASTE_RE.match(normalized)
     if match is None:
         return False
@@ -978,11 +984,35 @@ def _codex_visual_wrapped_prompt_body_matches_guarded_message(prompt_body: str, 
 
 
 def _capture_contains_guarded_message(text: str, guarded_message: str) -> bool:
-    return guarded_message in text or _remove_visual_wrap_newlines(text).find(guarded_message) != -1
+    visible = strip_terminal_control(text)
+    return (
+        guarded_message in text
+        or guarded_message in visible
+        or _remove_visual_wrap_newlines(visible).find(guarded_message) != -1
+        or _visible_text_contains_wrapped_guarded_message(visible, guarded_message)
+    )
 
 
 def _remove_visual_wrap_newlines(text: str) -> str:
     return text.replace("\n", "")
+
+
+def _visible_text_contains_wrapped_guarded_message(text: str, guarded_message: str) -> bool:
+    lines = text.splitlines()
+    for start_index, line in enumerate(lines):
+        marker_index = line.find("CONTACT_ID:")
+        if marker_index == -1:
+            continue
+        pieces = [line[marker_index:]]
+        if _codex_visual_wrapped_prompt_body_matches_guarded_message("\n".join(pieces), guarded_message):
+            return True
+        for line in lines[start_index + 1 : min(len(lines), start_index + 12)]:
+            if not line.strip():
+                break
+            pieces.append(line)
+            if _codex_visual_wrapped_prompt_body_matches_guarded_message("\n".join(pieces), guarded_message):
+                return True
+    return False
 
 
 def _emit(args: argparse.Namespace, stdout: TextIO, payload: dict[str, object]) -> None:

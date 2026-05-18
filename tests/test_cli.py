@@ -35,6 +35,13 @@ CODEX_DIM_STARTER = CODEX_STARTER.replace(
     "\x1b[2mSummarize recent commits\x1b[0m",
 )
 CLAUDE_IDLE = "previous assistant output\n\n> \u258c\n? for shortcuts\n"
+CLAUDE_V2_IDLE = (
+    " ▐▛███▜▌   Claude Code v2.1.143\n"
+    "───────────────────────────── owner-ComfyComannder-109-claude ──\n"
+    "❯\u00a0\n"
+    "────────────────────────────────────────────────────────────────\n"
+    "  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+)
 
 
 def guarded_line(message='hello', *, contact_id="AC-TEST"):
@@ -97,6 +104,19 @@ def claude_wrapped_pending_contact(message='hello', width=24):
     pieces[-1] = pieces[-1] + "\u258c"
     wrapped = "\n".join(pieces)
     return f"previous assistant output\n\n> {wrapped}\n? for shortcuts\n"
+
+
+def claude_v2_pending_contact_with_hidden_space_wrap(message='hello', *, contact_id="AC-TEST"):
+    line = guarded_line(message, contact_id=contact_id)
+    split_index = line.index(" beta")
+    return (
+        " ▐▛███▜▌   Claude Code v2.1.143\n"
+        "───────────────────────────── owner-ComfyComannder-109-claude ──\n"
+        f"❯\u00a0{line[:split_index]}\n"
+        f"  {line[split_index + 1:]}\n"
+        "────────────────────────────────────────────────────────────────\n"
+        "  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+    )
 
 
 def wrapped_guarded_echo(message='hello', width=24):
@@ -292,6 +312,32 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["session"], "codex-demo")
             self.assertEqual(payload["pane_id"], "%1")
             self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+
+    def test_dry_run_would_send_from_claude_v2_idle_prompt(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, CLAUDE_V2_IDLE, provider="claude", cursor_line_index=2, cursor_x=2)
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "claude",
+                    "--message",
+                    "hello",
+                    "--dry-run",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "would_send")
+            self.assertEqual(payload["pane_state"], "idle_empty_prompt")
 
     def test_sidecar_contact_refuses_artifact_dir_as_repo_selector(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -830,6 +876,34 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["pane_state"], "pending_user_text")
             self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
             self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+
+    def test_dry_run_recovers_claude_v2_pending_guarded_contact_with_hidden_space_wrap(self):
+        message = "alpha beta"
+        pending = claude_v2_pending_contact_with_hidden_space_wrap(message)
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, pending, provider="claude", cursor_line_index=3, cursor_x=55)
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "claude",
+                    "--message",
+                    message,
+                    "--dry-run",
+                    "--json",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "would_submit_pending")
+            self.assertEqual(payload["recovery"], "pending_guarded_contact")
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+            self.assertFalse(any(call[0][:3] == ("tmux", "send-keys", "-t") for call in runner.calls))
 
     def test_dry_run_recovers_current_live_pending_guarded_contact_without_footer(self):
         message = (
@@ -1938,6 +2012,130 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(code, EXIT_OK)
             self.assertEqual(payload["status"], "sent")
             self.assertTrue(payload["delivery_proven"])
+
+    def test_real_send_to_claude_v2_idle_prompt_proves_delivery(self):
+        post_send = guarded_line() + "\n" + CLAUDE_V2_IDLE
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CLAUDE_V2_IDLE,
+                    CLAUDE_V2_IDLE,
+                    CLAUDE_V2_IDLE,
+                    CLAUDE_V2_IDLE,
+                    claude_wrapped_pending_contact("hello", width=120),
+                    post_send,
+                ],
+                provider="claude",
+                cursor_line_indexes=[2, 2, 2, 2, 2, 3],
+                cursor_x_indexes=[2, 2, 2, 2, len(guarded_line()), 2],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "claude",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(payload["delivery_proven"])
+            self.assertTrue(any(call[0][:4] == ("tmux", "paste-buffer", "-d", "-r") for call in runner.calls))
+            self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+
+    def test_post_send_proves_claude_v2_wrapped_guarded_prompt_after_response(self):
+        message = "alpha beta"
+        wrapped_prompt = claude_v2_pending_contact_with_hidden_space_wrap(message)
+        post_send = wrapped_prompt + "\n● OK.\n\n✻ Worked for 3s\n\n" + CLAUDE_V2_IDLE
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CLAUDE_V2_IDLE,
+                    CLAUDE_V2_IDLE,
+                    CLAUDE_V2_IDLE,
+                    CLAUDE_V2_IDLE,
+                    claude_v2_pending_contact_with_hidden_space_wrap(message),
+                    post_send,
+                ],
+                provider="claude",
+                cursor_line_indexes=[2, 2, 2, 2, 3, 13],
+                cursor_x_indexes=[2, 2, 2, 2, 55, 2],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "claude",
+                    "--message",
+                    message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(payload["delivery_proven"])
+
+    def test_pre_submit_accepts_claude_v2_wrap_that_hides_boundary_space(self):
+        message = "alpha beta"
+        pending = claude_v2_pending_contact_with_hidden_space_wrap(message)
+        post_send = guarded_line(message) + "\n" + CLAUDE_V2_IDLE
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CLAUDE_V2_IDLE,
+                    CLAUDE_V2_IDLE,
+                    CLAUDE_V2_IDLE,
+                    CLAUDE_V2_IDLE,
+                    pending,
+                    post_send,
+                ],
+                provider="claude",
+                cursor_line_indexes=[2, 2, 2, 2, 3, 3],
+                cursor_x_indexes=[2, 2, 2, 2, 55, 2],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "claude",
+                    "--message",
+                    message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(payload["delivery_proven"])
+            self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
     def test_pending_text_inside_transport_before_paste_refuses_without_paste(self):
         with tempfile.TemporaryDirectory() as repo:

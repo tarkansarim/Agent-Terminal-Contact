@@ -28,6 +28,8 @@ CODEX_STARTER_PROMPTS = {
 }
 CODEX_UNRESOLVED_TEMPLATE_RE = re.compile(r"(?:\{[^{}\n]+\}|@[A-Za-z][A-Za-z0-9_-]*)")
 CODEX_STARTER_PLACEHOLDER_REASON = "codex starter placeholder has no pending user text"
+CODEX_PROMPT_MARKERS = ("\u203a",)
+CLAUDE_PROMPT_MARKERS = (">", "\u276f")
 
 
 class PaneState(str, Enum):
@@ -91,10 +93,17 @@ def classify_pane(
                 prompt,
                 provider=provider,
                 cursor_line_index=cursor_line_index,
+                cursor_column_index=cursor_column_index,
             ):
                 return Classification(PaneState.IDLE_EMPTY_PROMPT, CODEX_STARTER_PLACEHOLDER_REASON)
             return Classification(PaneState.PENDING_USER_TEXT, "prompt contains pending user text")
-        if not _has_provider_prompt_context(visible, prompt, provider=provider, cursor_line_index=cursor_line_index):
+        if not _has_provider_prompt_context(
+            visible,
+            prompt,
+            provider=provider,
+            cursor_line_index=cursor_line_index,
+            cursor_column_index=cursor_column_index,
+        ):
             return Classification(PaneState.DEAD_OR_UNKNOWN, "bare prompt marker lacks provider TUI context")
         return Classification(PaneState.IDLE_EMPTY_PROMPT, "idle prompt has no pending text")
 
@@ -118,6 +127,7 @@ def current_prompt_body(
         prompt,
         provider=provider,
         cursor_line_index=cursor_line_index,
+        cursor_column_index=cursor_column_index,
     )
     if not has_context and not (
         allow_cursor_backed_prompt_without_footer
@@ -309,31 +319,28 @@ def _prompt_from_index(
 
 
 def _prompt_body(line: str, *, provider: str | None) -> str | None:
-    if provider == "codex":
-        prompt_markers = ("\u203a",)
-    elif provider == "claude":
-        prompt_markers = (">",)
-    else:
-        prompt_markers = ()
-    for marker in prompt_markers:
+    for marker in _prompt_markers(provider):
         if line.startswith(marker):
             return line[len(marker) :].strip()
     return None
 
 
 def _prompt_body_start_column(line: str, *, provider: str | None) -> int:
+    for marker in _prompt_markers(provider):
+        if line.startswith(marker):
+            index = len(marker)
+            while index < len(line) and line[index].isspace():
+                index += 1
+            return index
+    return 0
+
+
+def _prompt_markers(provider: str | None) -> tuple[str, ...]:
     if provider == "codex":
-        marker = "\u203a"
-    elif provider == "claude":
-        marker = ">"
-    else:
-        return 0
-    if not line.startswith(marker):
-        return 0
-    index = len(marker)
-    while index < len(line) and line[index].isspace():
-        index += 1
-    return index
+        return CODEX_PROMPT_MARKERS
+    if provider == "claude":
+        return CLAUDE_PROMPT_MARKERS
+    return ()
 
 
 def _line_at(text: str, line_index: int) -> str:
@@ -414,11 +421,18 @@ def _is_provider_footer(line: str, *, provider: str | None) -> bool:
     if provider == "codex":
         return bool(re.search(r"\bgpt-[0-9][\w.-]*\b.*·", lowered))
     if provider == "claude":
-        return "? for shortcuts" in lowered or "esc to interrupt" in lowered
+        return (
+            "? for shortcuts" in lowered
+            or "esc to interrupt" in lowered
+            or ("bypass permissions" in lowered and "shift+tab to cycle" in lowered)
+        )
     return False
 
 
 def _is_provider_prompt_auxiliary_line(line: str, *, provider: str | None) -> bool:
+    if provider == "claude":
+        stripped = line.strip()
+        return bool(stripped) and set(stripped) <= {"─"}
     if provider != "codex":
         return False
     normalized = re.sub(r"\s+", " ", line.strip().lower())
@@ -440,6 +454,7 @@ def _has_provider_prompt_context(
     *,
     provider: str | None,
     cursor_line_index: int | None,
+    cursor_column_index: int | None,
 ) -> bool:
     lines = text.splitlines()
     non_empty_indexes = [index for index, line in enumerate(lines) if line.strip()]
@@ -473,10 +488,20 @@ def _has_provider_prompt_context(
     if provider == "claude":
         has_footer = "? for shortcuts" in lowered
         if not has_footer:
+            has_footer = "bypass permissions" in lowered and "shift+tab to cycle" in lowered
+        if not has_footer:
             return False
         if not _prompt_body_is_empty(prompt.body):
             return True
-        return "\u258c" in prompt.line or "|" in prompt.line
+        return (
+            "\u258c" in prompt.line
+            or "|" in prompt.line
+            or _cursor_is_at_empty_prompt_body(
+                prompt.line,
+                provider=provider,
+                cursor_column_index=cursor_column_index,
+            )
+        )
 
     return False
 
@@ -512,6 +537,18 @@ def _footer_index_after_prompt(lines: list[str], prompt_index: int, *, provider:
 
 def _prompt_body_is_empty(body: str) -> bool:
     return not _strip_prompt_cursor(body).strip()
+
+
+def _cursor_is_at_empty_prompt_body(
+    line: str,
+    *,
+    provider: str | None,
+    cursor_column_index: int | None,
+) -> bool:
+    if cursor_column_index is None:
+        return False
+    body_start_column = _prompt_body_start_column(line, provider=provider)
+    return body_start_column <= cursor_column_index <= body_start_column + 1
 
 
 def _strip_prompt_cursor(body: str) -> str:
