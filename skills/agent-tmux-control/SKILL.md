@@ -1,11 +1,22 @@
 ---
 name: agent-tmux-control
-description: "Use when an agent needs to launch, resume, monitor, message, capture, or coordinate another terminal-based Codex/Claude/CLI agent through a safe tmux control channel, including identifying whether a repo's active lane is Codex or Claude before launching, and finding/resuming the latest Codex chat for a repo without asking the user for the thread name. Trigger for agent-tmux, agent-contact, tmux agent sessions, communicating with another terminal Codex/Claude agent, latest Codex chat in a repo, cross-agent terminal coordination, capturing another agent's output, or replacing unsafe raw PTY injection. Do not use for ordinary one-shot shell commands."
+description: "Use for tmux-managed Codex/Claude/CLI agent launch, resume, monitor, capture, contact, and coordination via agent-tmux/agent-contact; triggers: repo agent, latest Codex chat, provider mismatch, guarded contact, unsafe raw PTY."
 ---
 
 # Agent Tmux Control
 
 Source: AgentTerminalContact guarded-contact skill, version 0.1.0.
+
+## Discovery And Routing Scope
+
+Use this skill when an agent needs to launch, resume, monitor, message, capture,
+or coordinate another terminal-based Codex, Claude, or CLI agent through a safe
+tmux control channel. Trigger phrases include `agent-tmux`, `agent-contact`,
+tmux agent sessions, contacting or communicating with another terminal
+Codex/Claude repo agent, finding or resuming the latest Codex chat in a repo,
+cross-agent terminal coordination, capturing another agent's output, provider
+mismatch refusals, guarded contact recovery, and replacing unsafe raw PTY
+injection. Do not use this skill for ordinary one-shot shell commands.
 
 Use `agent-tmux` for launch, resume, capture, transcript, attach, and stop.
 On this workstation, the `agent-tmux` command should resolve to the

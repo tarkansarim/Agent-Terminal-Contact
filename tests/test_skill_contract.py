@@ -145,6 +145,42 @@ def write_fake_mktemp(bin_dir):
 
 
 class SkillContractTests(unittest.TestCase):
+    def test_skill_description_is_compact_and_body_preserves_discovery_details(self):
+        text = (ROOT / "skills" / "agent-tmux-control" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        match = re.match(r"---\n(?P<frontmatter>.*?)\n---\n(?P<body>.*)", text, re.S)
+        self.assertIsNotNone(match)
+        description_match = re.search(
+            r'^description: "(?P<description>[^"]+)"$',
+            match.group("frontmatter"),
+            re.M,
+        )
+        self.assertIsNotNone(description_match)
+        description = description_match.group("description")
+        body = match.group("body")
+
+        self.assertLessEqual(len(description), 260)
+        for trigger in (
+            "agent-tmux",
+            "agent-contact",
+            "repo agent",
+            "latest Codex chat",
+            "provider mismatch",
+            "guarded contact",
+            "unsafe raw PTY",
+        ):
+            self.assertIn(trigger, description)
+
+        for moved_detail in (
+            "Before spawning any tmux worker, identify whether the repo's active lane is\nCodex or Claude",
+            "contacting or communicating with another terminal\nCodex/Claude repo agent",
+            "finding or resuming the latest Codex chat in a repo",
+            "provider\nmismatch refusals",
+            "Do not use this skill for ordinary one-shot shell commands",
+        ):
+            self.assertIn(moved_detail, body)
+
     def test_skill_requires_agent_contact_for_cross_agent_messages(self):
         text = (ROOT / "skills" / "agent-tmux-control" / "SKILL.md").read_text(
             encoding="utf-8"
