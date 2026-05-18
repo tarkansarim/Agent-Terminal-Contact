@@ -6,7 +6,13 @@ import unittest
 from pathlib import Path
 
 from agent_terminal_contact.runner import CommandResult
-from agent_terminal_contact.session import DiscoveryError, PANE_FORMAT, revalidate_target, select_target
+from agent_terminal_contact.session import (
+    DiscoveryError,
+    PANE_FORMAT,
+    revalidate_target,
+    select_target,
+    suggest_trusted_roots,
+)
 
 
 SIDECAR_REQUEST_PERMISSION = "-c sandbox_mode=workspace-write -c sandbox_workspace_write.network_access=false -a never"
@@ -126,6 +132,18 @@ def write_codex_native_binary(root):
     native.parent.mkdir(parents=True)
     native.write_text("#!/bin/sh\n", encoding="utf-8")
     return script, native
+
+
+def write_native_claude_binary(root, version="2.1.143"):
+    root_path = Path(root)
+    native = root_path / ".local" / "share" / "claude" / "versions" / version
+    native.parent.mkdir(parents=True)
+    native.write_text("#!/bin/sh\n", encoding="utf-8")
+    native.chmod(0o755)
+    launcher = root_path / ".local" / "bin" / "claude"
+    launcher.parent.mkdir(parents=True)
+    launcher.symlink_to(native)
+    return launcher, native
 
 
 def write_sidecar_request(artifact_dir, *, session, repo):
@@ -714,6 +732,107 @@ class SessionDiscoveryTests(unittest.TestCase):
                 selected = select_target(repo=str(repo), provider="claude", runner=runner)
             self.assertEqual(selected.pane.provider_pid, 1234)
             self.assertEqual(selected.pane.provider_evidence, "pane process args match claude")
+
+    def test_suggests_native_claude_binary_roots_from_bare_process_with_path_anchor(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = Path(root) / "repo"
+            repo.mkdir()
+            launcher, native = write_native_claude_binary(root)
+            session = "owner-ComfyComannder-109-claude"
+            args = f"claude --permission-mode bypassPermissions --name {session}"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line(session, "%1", repo, command="claude"), ""
+                    ),
+                    **tty_response(args=args, pid=1234),
+                    **proc_argv_response(
+                        argv=("claude", "--permission-mode", "bypassPermissions", "--name", session),
+                        exe=str(native),
+                    ),
+                    ("bash", "-lc", "command -v -- claude"): CommandResult((), 0, f"{launcher}\n", ""),
+                }
+            )
+            with without_trusted_roots():
+                suggestions = suggest_trusted_roots(
+                    repo=str(repo),
+                    provider="claude",
+                    runner=runner,
+                    explicit_session=session,
+                )
+            self.assertEqual(len(suggestions), 1)
+            self.assertEqual(suggestions[0].provider_root, str(native.resolve()))
+            self.assertIsNone(suggestions[0].launcher_root)
+
+    def test_accepts_native_claude_binary_with_explicit_trust(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = Path(root) / "repo"
+            repo.mkdir()
+            _launcher, native = write_native_claude_binary(root)
+            session = "owner-ComfyComannder-109-claude"
+            args = f"claude --permission-mode bypassPermissions --name {session}"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line(session, "%1", repo, command="claude"), ""
+                    ),
+                    **tty_response(args=args, pid=1234),
+                    **proc_argv_response(
+                        argv=("claude", "--permission-mode", "bypassPermissions", "--name", session),
+                        exe=str(native),
+                    ),
+                }
+            )
+            old_provider = os.environ.get("AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS")
+            old_launcher = os.environ.get("AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS")
+            os.environ["AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS"] = str(native.resolve())
+            os.environ.pop("AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS", None)
+            try:
+                selected = select_target(
+                    repo=str(repo),
+                    provider="claude",
+                    runner=runner,
+                    explicit_session=session,
+                )
+            finally:
+                if old_provider is None:
+                    os.environ.pop("AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS", None)
+                else:
+                    os.environ["AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS"] = old_provider
+                if old_launcher is None:
+                    os.environ.pop("AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS", None)
+                else:
+                    os.environ["AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS"] = old_launcher
+            self.assertEqual(selected.provider, "claude")
+            self.assertEqual(selected.pane.provider_pid, 1234)
+            self.assertEqual(selected.pane.provider_evidence, "pane command is claude")
+
+    def test_refuses_native_claude_binary_when_provider_is_codex(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = Path(root) / "repo"
+            repo.mkdir()
+            _launcher, native = write_native_claude_binary(root)
+            session = "owner-ComfyComannder-109-claude"
+            args = f"claude --permission-mode bypassPermissions --name {session}"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-s", "-t", session, "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line(session, "%1", repo, command="claude"), ""
+                    ),
+                    **tty_response(args=args, pid=1234),
+                    **proc_argv_response(
+                        argv=("claude", "--permission-mode", "bypassPermissions", "--name", session),
+                        exe=str(native),
+                    ),
+                }
+            )
+            with self.assertRaisesRegex(DiscoveryError, "no tmux-managed codex pane"):
+                select_target(
+                    repo=str(repo),
+                    provider="codex",
+                    runner=runner,
+                    explicit_session=session,
+                )
 
     def test_refuses_package_launcher_when_provider_package_is_not_command(self):
         with tempfile.TemporaryDirectory() as repo:

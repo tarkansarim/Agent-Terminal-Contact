@@ -23,14 +23,16 @@ a worker/control surface, not as the user's foreground Codex UI. If a foreground
 Codex chat is outside tmux, this skill cannot safely inject into it; resume the
 intended existing thread into a tmux worker only when worker contact is needed.
 
-`agent-contact` verifies provider package identity against explicitly trusted
-exact package roots only. Set `AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS` to the
-narrow provider package root printed by `agent-contact trust-roots`, and set
+`agent-contact` verifies provider identity against explicitly trusted narrow
+roots only: Codex/Node package roots, Claude/Node package roots, or the exact
+native Claude version binary printed by `agent-contact trust-roots`. Set
+`AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS` to the narrow provider root, and set
 `AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS` to the launcher root for bare Node-style
 launches, before contacting local Codex/Claude processes. Do not guess broad
 roots. Launcher roots are exact executable directories, not broad parent
-directories. `trust-roots` only prints roots when the live pane package is
-anchored by the provider command found on your current `PATH`.
+directories. `trust-roots` only prints roots when the live pane package or
+native provider executable is anchored by the provider command found on your
+current `PATH`.
 
 ## Hard Safety Rules
 
@@ -77,6 +79,10 @@ from one of these, in order:
 
 If the signals disagree, if both providers have plausible active chats, or if no
 provider can be identified, stop and ask instead of launching a guessed worker.
+For ticket supervision or other cross-repo owner routing, do not rely on a
+default Codex launch. Pass the proven provider explicitly to the supervisor or
+launcher. If the route has no proven provider and the user did not specify one,
+fail closed before launch/contact.
 
 First inspect the latest recorded Codex thread for that repo:
 
@@ -111,6 +117,31 @@ When an exact preferred session is supplied with
 exact tmux session name; exact absence, wrong-repo, or not-Codex-like evidence
 must not collapse into a delegated multiple-session refusal.
 Treat other non-zero shapes as ambiguous or broken helper output.
+
+For a Claude-owned repo, launch or select a Claude tmux lane explicitly and
+prove that exact session with `agent-contact` before sending ticket work:
+
+```bash
+agent-tmux start owner-ComfyComannder-109-claude /home/tarkan/Dropbox/work/MyTools/ComfyComannder claude --permission-mode bypassPermissions --name owner-ComfyComannder-109-claude
+
+agent-contact trust-roots \
+  --repo /home/tarkan/Dropbox/work/MyTools/ComfyComannder \
+  --provider claude \
+  --session owner-ComfyComannder-109-claude \
+  --json
+
+AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS=/home/tarkan/.local/share/claude/versions/2.1.143 \
+  agent-contact send \
+    --repo /home/tarkan/Dropbox/work/MyTools/ComfyComannder \
+    --provider claude \
+    --session owner-ComfyComannder-109-claude \
+    --message "Please triage the assigned ticket." \
+    --dry-run
+```
+
+If `agent-contact trust-roots` or `agent-contact send --dry-run` refuses, stop
+and fix the guarded provider/contact path instead of switching to a Codex worker
+or raw tmux input.
 
 ## Codex Worker Permission Profile
 

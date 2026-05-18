@@ -36,10 +36,12 @@ same pane immediately before send, and then sends only to that pane. When
 `--session` is provided, discovery scans every pane in every window of that tmux
 session before deciding whether the target is unique.
 
-Provider package roots fail closed unless the exact package root is explicitly
-trusted for that command invocation. Broad parent directories are rejected. Bare
-Node-style launchers also fail closed unless their launcher root is explicitly
-trusted. Use `trust-roots` and export narrow roots only:
+Provider roots fail closed unless the exact root is explicitly trusted for that
+command invocation. Codex/Node and Claude/Node package roots are supported, and
+native Claude installs use the exact versioned binary path as the provider root.
+Broad parent directories are rejected. Bare Node-style launchers also fail
+closed unless their launcher root is explicitly trusted. Use `trust-roots` and
+export narrow roots only:
 
 ```bash
 bin/agent-contact trust-roots --repo /path/to/repo --provider codex --json
@@ -49,11 +51,11 @@ AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS=/home/tarkan/.nvm/versions/node/v22.22.0/bi
   bin/agent-contact send --repo /path/to/repo --provider codex --message "..." --dry-run
 ```
 
-`trust-roots` reads the live pane process and prints the narrow package and
-launcher roots to export only when the live package root is anchored by the
-same provider command found on the caller's `PATH`. Multiple roots are separated
-with `:` on Linux. Launcher roots are exact executable directories, not broad
-parent directories.
+`trust-roots` reads the live pane process and prints the narrow provider and
+launcher roots to export only when the live package root or native provider
+binary is anchored by the same provider command found on the caller's `PATH`.
+Multiple roots are separated with `:` on Linux. Launcher roots are exact
+executable directories, not broad parent directories.
 
 Idle prompt detection uses both text and tmux cursor metadata. Text that merely
 prints a prompt marker and model footer in the pane output is not enough to prove
@@ -127,6 +129,39 @@ This repo owns:
 - `${CODEX_HOME:-~/.codex}/skills/agent-tmux-control/SKILL.md`
 
 It explicitly does not own `/usr/local/bin/agent-tmux`.
+
+## Provider-Proven Owner Routing
+
+Cross-repo owner routing must prove the target provider before launching or
+contacting an agent. If the user or ticket names Claude, pass `--provider
+claude` through the route and validate the exact Claude session with
+`agent-contact`; do not let a supervisor's default Codex path stand in for owner
+identity. If no provider can be proven from the user request, an existing
+owner-lane session, latest-chat metadata, or a clear handoff note, fail closed
+before launch/contact.
+
+For a Claude-owned repo, a safe explicit lane looks like:
+
+```bash
+agent-tmux start owner-ComfyComannder-109-claude /home/tarkan/Dropbox/work/MyTools/ComfyComannder claude --permission-mode bypassPermissions --name owner-ComfyComannder-109-claude
+
+agent-contact trust-roots \
+  --repo /home/tarkan/Dropbox/work/MyTools/ComfyComannder \
+  --provider claude \
+  --session owner-ComfyComannder-109-claude \
+  --json
+
+AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS=/home/tarkan/.local/share/claude/versions/2.1.143 \
+  agent-contact send \
+    --repo /home/tarkan/Dropbox/work/MyTools/ComfyComannder \
+    --provider claude \
+    --session owner-ComfyComannder-109-claude \
+    --message "Please triage the assigned ticket." \
+    --dry-run
+```
+
+If either guarded command refuses, fix the provider/contact path instead of
+switching to a Codex worker or raw tmux input.
 
 ## Full-Permission Codex Workers
 

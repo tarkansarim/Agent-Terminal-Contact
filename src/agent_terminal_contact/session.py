@@ -27,6 +27,7 @@ PROVIDER_PATH_COMMANDS = {
     "codex": ("codex",),
     "claude": ("claude", "claude-code"),
 }
+CLAUDE_NATIVE_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9_.-]+)?$")
 NODE_LAUNCHERS = {"node", "nodejs", "bun", "deno"}
 TRUSTED_PROVIDER_ROOTS_ENV = "AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS"
 TRUSTED_LAUNCHER_ROOTS_ENV = "AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS"
@@ -638,13 +639,12 @@ def _process_identity_provider_priority(identity: ProcessIdentity, provider: str
 
     exe_command = Path(identity.exe).name.lower()
     if command in PROVIDER_EXECUTABLES[provider]:
-        if exe_command in NODE_LAUNCHERS:
+        direct_token = _direct_provider_token(identity, provider, tokens[0], exe_command)
+        if direct_token is None:
             return None
-        if not _path_equals(identity.exe, tokens[0]):
-            return None
-        if _direct_command_matches_provider(tokens[0], provider):
+        if _direct_command_matches_provider(direct_token, provider):
             return 0
-        if _native_command_matches_provider(tokens[0], provider):
+        if _native_command_matches_provider(direct_token, provider):
             return 0
         return None
 
@@ -678,13 +678,12 @@ def _process_identity_provider_roots(identity: ProcessIdentity, provider: str) -
 
     exe_command = Path(identity.exe).name.lower()
     if command in PROVIDER_EXECUTABLES[provider]:
-        if exe_command in NODE_LAUNCHERS:
+        direct_token = _direct_provider_token(identity, provider, tokens[0], exe_command)
+        if direct_token is None:
             return None
-        if not _path_equals(identity.exe, tokens[0]):
-            return None
-        provider_root = _script_token_provider_package_root(tokens[0], provider, require_trust=False)
+        provider_root = _script_token_provider_package_root(direct_token, provider, require_trust=False)
         if provider_root is None:
-            provider_root = _native_token_provider_package_root(tokens[0], provider, require_trust=False)
+            provider_root = _native_token_provider_package_root(direct_token, provider, require_trust=False)
         if provider_root is None:
             return None
         return provider_root, None
@@ -701,6 +700,18 @@ def _process_identity_provider_roots(identity: ProcessIdentity, provider: str) -
             return None
         return provider_root, Path(identity.exe).parent
 
+    return None
+
+
+def _direct_provider_token(identity: ProcessIdentity, provider: str, token: str, exe_command: str) -> str | None:
+    if exe_command in NODE_LAUNCHERS:
+        return None
+    if "/" in token:
+        if not _path_equals(identity.exe, token):
+            return None
+        return token
+    if provider == "claude" and _native_token_provider_package_root(identity.exe, provider, require_trust=False):
+        return identity.exe
     return None
 
 
@@ -836,14 +847,16 @@ def _script_token_is_provider_entrypoint(token: str, provider: str) -> bool:
 
 
 def _native_token_provider_package_root(token: str, provider: str, *, require_trust: bool) -> Path | None:
-    if provider != "codex":
-        return None
     path = Path(token).expanduser()
     if not path.exists():
         return None
     try:
         resolved = path.resolve(strict=True)
     except OSError:
+        return None
+    if provider == "claude":
+        return _native_claude_provider_root(resolved, require_trust=require_trust)
+    if provider != "codex":
         return None
     if resolved.name != "codex":
         return None
@@ -871,6 +884,19 @@ def _native_token_provider_package_root(token: str, provider: str, *, require_tr
     if require_trust and not _is_trusted_provider_root(root):
         return None
     return root
+
+
+def _native_claude_provider_root(resolved: Path, *, require_trust: bool) -> Path | None:
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        return None
+    parts = tuple(part.lower() for part in resolved.parts)
+    if len(parts) < 3 or parts[-3:-1] != ("claude", "versions"):
+        return None
+    if not CLAUDE_NATIVE_VERSION_RE.match(resolved.name):
+        return None
+    if require_trust and not _is_trusted_provider_root(resolved):
+        return None
+    return resolved
 
 
 def _script_token_provider_package_root(token: str, provider: str, *, require_trust: bool) -> Path | None:
@@ -909,6 +935,8 @@ def _provider_root_has_path_anchor(
             if not path:
                 continue
             anchored_root = _script_token_provider_package_root(path, provider, require_trust=False)
+            if anchored_root is None:
+                anchored_root = _native_token_provider_package_root(path, provider, require_trust=False)
             if anchored_root is not None and _path_equals_path(provider_root, anchored_root):
                 return True
     npm_root = _npm_global_provider_root(provider, launcher_root, runner)
