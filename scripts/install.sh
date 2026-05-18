@@ -15,11 +15,12 @@ Installs AgentTerminalContact without modifying Codex, Claude, tmux, or
 
 If an existing installed SKILL.md differs from the repo source, or is a symlink,
 installation refuses unless --force is supplied. Forced replacement writes a
-timestamped backup first and replaces the install path without following
-symlinks.
+timestamped backup outside the live Codex skill load root first and replaces the
+install path without following symlinks.
 
 --check verifies that the current user-level command and skill already match
-this repo source without writing anything.
+this repo source without writing anything, and refuses backup/temp artifacts
+left under the live Codex skill load root.
 EOF
 }
 
@@ -53,8 +54,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"
 BIN_DIR="${BIN_DIR:-${HOME}/.local/bin}"
 SKILL_SOURCE="${ROOT}/skills/agent-tmux-control/SKILL.md"
-SKILL_DIR="${CODEX_HOME}/skills/agent-tmux-control"
+SKILLS_ROOT="${CODEX_HOME}/skills"
+SKILL_DIR="${SKILLS_ROOT}/agent-tmux-control"
 SKILL_TARGET="${SKILL_DIR}/SKILL.md"
+SKILL_BACKUP_DIR="${CODEX_HOME}/agent-terminal-contact/backups/agent-tmux-control"
 AGENT_CONTACT_TARGET="${BIN_DIR}/agent-contact"
 AGENT_TMUX_TARGET="${BIN_DIR}/agent-tmux"
 
@@ -74,6 +77,87 @@ run() {
     else
         "$@"
     fi
+}
+
+unique_skill_backup_path() {
+    local base="$1"
+    local candidate="${SKILL_BACKUP_DIR}/${base}"
+    local stamp
+    local counter
+
+    if [[ ! -e "${candidate}" && ! -L "${candidate}" ]]; then
+        printf "%s\n" "${candidate}"
+        return
+    fi
+
+    stamp="$(date +%Y%m%dT%H%M%S)"
+    counter=0
+    while :; do
+        candidate="${SKILL_BACKUP_DIR}/${base}.${stamp}.${counter}"
+        if [[ ! -e "${candidate}" && ! -L "${candidate}" ]]; then
+            printf "%s\n" "${candidate}"
+            return
+        fi
+        counter=$((counter + 1))
+    done
+}
+
+backup_skill_artifact() {
+    local source_path="$1"
+    local base="$2"
+    local backup
+
+    run mkdir -p "${SKILL_BACKUP_DIR}"
+    backup="$(unique_skill_backup_path "${base}")"
+    run cp -P "${source_path}" "${backup}"
+    echo "backup: ${backup}"
+}
+
+skill_load_artifacts() {
+    if [[ -d "${SKILLS_ROOT}" && ! -L "${SKILLS_ROOT}" ]]; then
+        find "${SKILLS_ROOT}" -mindepth 1 -maxdepth 1 \
+            \( -name 'agent-tmux-control.bak' -o -name 'agent-tmux-control.bak-*' \) \
+            -print
+    fi
+    if [[ -d "${SKILL_DIR}" && ! -L "${SKILL_DIR}" ]]; then
+        find "${SKILL_DIR}" -mindepth 1 -maxdepth 1 \
+            \( -name '*.bak' -o -name '*.bak-*' -o -name '*.tmp' -o -name '*.tmp-*' \
+            -o -name '*.orig' -o -name '*.rej' -o -name '*~' \) \
+            -print
+    fi
+}
+
+emit_skill_load_artifact_errors() {
+    local artifacts=()
+    local artifact
+
+    mapfile -t artifacts < <(skill_load_artifacts)
+    if ((${#artifacts[@]} == 0)); then
+        return 0
+    fi
+
+    for artifact in "${artifacts[@]}"; do
+        echo "install.sh: backup/temp artifact under Codex skill load root: ${artifact}" >&2
+    done
+    return 1
+}
+
+relocate_skill_load_artifacts() {
+    local artifacts=()
+    local artifact
+    local backup
+
+    mapfile -t artifacts < <(skill_load_artifacts)
+    if ((${#artifacts[@]} == 0)); then
+        return 0
+    fi
+
+    run mkdir -p "${SKILL_BACKUP_DIR}"
+    for artifact in "${artifacts[@]}"; do
+        backup="$(unique_skill_backup_path "$(basename "${artifact}")")"
+        run mv "${artifact}" "${backup}"
+        echo "relocated skill-load artifact: ${artifact} -> ${backup}"
+    done
 }
 
 require_file "${ROOT}/bin/agent-contact"
@@ -131,6 +215,9 @@ if ((check)); then
     if ! cmp -s "${SKILL_SOURCE}" "${SKILL_TARGET}"; then
         echo "install.sh: installed skill differs from repo source: ${SKILL_TARGET}" >&2
         echo "install.sh: compare with: diff -u ${SKILL_TARGET} ${SKILL_SOURCE}" >&2
+        exit 3
+    fi
+    if ! emit_skill_load_artifact_errors; then
         exit 3
     fi
     echo "agent-contact install check: ok"
@@ -234,9 +321,7 @@ fi
 run ln -sfn "${ROOT}/bin/agent-tmux" "${AGENT_TMUX_TARGET}"
 
 if ((skill_dir_symlink && force)); then
-    backup="${SKILL_DIR}.bak-$(date +%Y%m%dT%H%M%S)"
-    run cp -P "${SKILL_DIR}" "${backup}"
-    echo "backup: ${backup}"
+    backup_skill_artifact "${SKILL_DIR}" "agent-tmux-control.bak-$(date +%Y%m%dT%H%M%S)"
     run rm -f "${SKILL_DIR}"
     skill_target_occupied=0
     skill_target_divergent=0
@@ -244,11 +329,10 @@ if ((skill_dir_symlink && force)); then
 fi
 run mkdir -p "${SKILL_DIR}"
 if ((skill_target_occupied && skill_target_divergent && force)); then
-    backup="${SKILL_TARGET}.bak-$(date +%Y%m%dT%H%M%S)"
-    run cp -P "${SKILL_TARGET}" "${backup}"
-    echo "backup: ${backup}"
+    backup_skill_artifact "${SKILL_TARGET}" "SKILL.md.bak-$(date +%Y%m%dT%H%M%S)"
     run rm -f "${SKILL_TARGET}"
 fi
+relocate_skill_load_artifacts
 run cp "${SKILL_SOURCE}" "${SKILL_TARGET}"
 
 echo "agent-contact: ${AGENT_CONTACT_TARGET}"

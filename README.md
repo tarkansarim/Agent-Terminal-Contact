@@ -93,8 +93,12 @@ bash scripts/install.sh --force
 bash scripts/install.sh --check
 ```
 
-`--check` verifies the installed skill matches this repo source and that
-`agent-contact` and the source-owned `agent-tmux` wrapper resolve on `PATH`.
+`--force` preserves replaced skill artifacts under
+`${CODEX_HOME:-~/.codex}/agent-terminal-contact/backups/agent-tmux-control`
+instead of inside the live Codex skill load root. `--check` verifies the
+installed skill matches this repo source, refuses backup/temp artifacts left
+under `${CODEX_HOME:-~/.codex}/skills`, and verifies that `agent-contact` and
+the source-owned `agent-tmux` wrapper resolve on `PATH`.
 
 ## Installed Artifact Ownership
 
