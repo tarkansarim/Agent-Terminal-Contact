@@ -51,23 +51,17 @@ current `PATH`.
 - Existing non-tmux agents cannot be safely contacted through this skill. Report that they are outside the guarded channel.
 - Before sending to another Codex/Claude chat, run `agent-contact send --dry-run` or use `agent-contact send` directly.
 - If `agent-contact` refuses, stop. Do not fall back to raw `agent-tmux send`.
-- Unexpected visible composer text in a tmux-managed agent is user-owned pending
-  text. Stop and do not clear it, submit it, or send over it unless the user or
-  current operator explicitly approves clearing that exact text.
-- Stale contact residue created by a failed `agent-contact` attempt is not a
-  message bypass. If the visible composer clearly contains old guarded-contact
-  residue such as `CONTACT_ID: ... MESSAGE_JSON: ...` or Codex's collapsed
-  `[Pasted Content N chars]` placeholder after `agent-contact` returned
-  `mutated_unsubmitted`, and it is not a human draft, first prefer guarded
-  recovery for full payload residue: rerun `agent-contact send --dry-run` with
-  the same `--message`, require `would_submit_pending`, then rerun the same
-  guarded `agent-contact send` to submit the existing composer text without
-  pasting again. If the composer contains duplicated full guarded payload
-  residue for the same message, treat it as proven residue but not submit-safe:
-  require `clear_pending_guarded_contact`, clear only that exact residue, and
-  rerun guarded `agent-contact`. If residue is only a Codex pasted-content
-  placeholder or does not match the intended message, clear only that proven residue with
-  `agent-tmux clear-input <session>` and rerun guarded `agent-contact`.
+- In a validated, detached tmux-managed worker session, visible composer text is
+  a control surface. Use guarded `agent-contact send`; do not manually clear,
+  submit, or send raw tmux input. `--dry-run` reports `would_clear_and_send`
+  plus `agent-tmux clear-input <session>` when composer text is visible, and a
+  real send clears the composer before sending a fresh guarded payload.
+- The clear-before-send path covers Codex starter placeholder text, stale
+  `CONTACT_ID`/`MESSAGE_JSON` residue, Codex pasted-content placeholders,
+  wrapped/truncated residue, and arbitrary leftover worker composer text.
+- This does not weaken refusal boundaries: attached sessions, busy/working
+  panes, trust prompts, approval prompts, dead/unknown panes, ambiguous identity,
+  wrong-provider matches, and non-tmux targets still refuse.
 - Messages with terminal control bytes or bracketed-paste markers are refused; summarize or sanitize captured terminal output before sending it.
 - The guarded contact payload is one `CONTACT_ID ... MESSAGE_JSON ...` line and does not request tmux bracketed-paste wrapping; Codex starter-placeholder prompts are handled by literal key input inside `agent-contact`.
 - Real sends to attached tmux sessions are refused; detach or use a tmux-managed worker session for cross-agent contact.
@@ -329,20 +323,18 @@ pane:
 agent-contact send --repo <repo> --provider codex --session <sidecar-session> --message "..." --dry-run
 ```
 
-If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed.
-Visible composer text is user-owned pending text unless it is narrowly proven
-guarded-contact residue from that failed send. If the full guarded payload is
-still visible and matches the same intended message, rerun guarded contact with
-the same `--message`; `--dry-run` must report `would_submit_pending`, and the
-real send submits the existing composer text without another paste. If duplicated
-full guarded payload residue for the same message is visible, `--dry-run` must
-report `clear_pending_guarded_contact`; clear only that proven residue with
-`agent-tmux clear-input <sidecar-session>` and rerun guarded contact. If residue
-is only a Codex pasted-content placeholder or does not match the intended
-message, clear only proven residue with `agent-tmux clear-input
-<sidecar-session>` and relaunch a new sidecar with a new anchor for the revised
-focus. Do not fall back to raw `agent-tmux send` unless the current operator
-explicitly authorizes that exact bypass.
+If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed and
+rerun guarded contact instead of switching to raw tmux input. For a validated,
+detached tmux-managed worker session, visible composer text is a control
+surface: `--dry-run` reports `would_clear_and_send` plus
+`agent-tmux clear-input <sidecar-session>`, and a real send clears the composer
+before sending a fresh guarded payload. This includes starter placeholder text,
+stale `CONTACT_ID`/`MESSAGE_JSON` residue, Codex pasted-content placeholders,
+wrapped/truncated residue, and arbitrary leftover worker composer text. Attached
+sessions, busy/working panes, trust prompts, approval prompts, dead/unknown
+panes, ambiguous identity, and wrong-provider matches still refuse. Do not fall
+back to raw `agent-tmux send` unless the current operator explicitly authorizes
+that exact bypass.
 
 To inspect source ownership before patching an installed helper, use:
 
@@ -405,7 +397,8 @@ you have independently verified the exact session identity.
 Expected refusal states:
 
 - `multiple tmux-managed ... sessions found`: stop and resolve identity
-- `pending_user_text`: stop; do not send over the user's visible draft
+- `pending_user_text`: detached tmux-managed workers are cleared by
+  `agent-contact`; if it is reported as a refusal, stop and inspect the reason
 - `approval_prompt` or `trust_prompt`: stop; the target needs local handling
 - `agent_working`: wait, capture later, or ask the user
 - `dead_or_unknown`: stop; there is no safe idle prompt

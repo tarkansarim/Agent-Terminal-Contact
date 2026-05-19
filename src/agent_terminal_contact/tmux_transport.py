@@ -80,6 +80,12 @@ class AgentTmuxTransport:
             raise TransportError(_detail("log path lookup failed", result.stderr, result.stdout))
         return result.stdout.strip()
 
+    def clear_input(self, session: str) -> None:
+        validate_session_name(session)
+        result = self.runner.run([self.executable, "clear-input", session])
+        if result.returncode != 0:
+            raise TransportError(_detail("clear-input failed", result.stderr, result.stdout))
+
     def send(
         self,
         pane_id: str,

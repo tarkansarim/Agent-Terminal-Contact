@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import re
@@ -42,18 +41,6 @@ POST_PASTE_READBACK_DELAY_SECONDS = 0.05
 CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS = 1024
 CODEX_LITERAL_INPUT_CHUNK_SIZE = 200
 CODEX_LITERAL_INPUT_DELAY_SECONDS = 0.03
-
-
-@dataclass(frozen=True)
-class PendingGuardedContact:
-    contact_id: str
-    guarded_message: str
-
-
-@dataclass(frozen=True)
-class PendingGuardedResidue:
-    contact_id: str
-    guarded_message: str
 
 
 def main(
@@ -295,117 +282,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         "pane_reason": classification.reason,
     }
 
-    pending_guarded_contact = None
-    pending_guarded_residue = None
-    if classification.state == PaneState.PENDING_USER_TEXT:
-        pending_guarded_contact = _matching_pending_guarded_contact(
-            before,
-            provider=selection.provider,
-            cursor_line_index=before_capture.cursor_line_index,
-            cursor_column_index=before_capture.cursor_x,
-            requested_message=args.message,
-        )
-        if pending_guarded_contact is None:
-            pending_guarded_residue = _matching_pending_guarded_residue(
-                before,
-                provider=selection.provider,
-                cursor_line_index=before_capture.cursor_line_index,
-                cursor_column_index=before_capture.cursor_x,
-                requested_message=args.message,
-            )
-
-    if (
-        classification.state != PaneState.IDLE_EMPTY_PROMPT
-        and pending_guarded_contact is None
-        and pending_guarded_residue is None
-    ):
-        _emit(
-            args,
-            stdout,
-            {
-                **base,
-                "status": "refused",
-                "stage": "pre_send_state",
-                "reason": classification.reason,
-            },
-        )
-        return EXIT_REFUSED
-
-    if pending_guarded_residue is not None:
-        if selection.pane.attached > 0:
-            _emit(
-                args,
-                stdout,
-                {
-                    **base,
-                    "status": "refused",
-                    "stage": "attached_session",
-                    "contact_id": pending_guarded_residue.contact_id,
-                    "recovery": "clear_pending_guarded_contact",
-                    "clear_command": _clear_input_command(selection.pane.session_name),
-                    "reason": "target tmux session is attached; refusing contact to avoid human input races",
-                },
-            )
-            return EXIT_REFUSED
-        _emit(
-            args,
-            stdout,
-            {
-                **base,
-                "status": "refused",
-                "stage": "pending_guarded_contact",
-                "contact_id": pending_guarded_residue.contact_id,
-                "recovery": "clear_pending_guarded_contact",
-                "clear_command": _clear_input_command(selection.pane.session_name),
-                "reason": (
-                    "pending composer contains duplicated guarded-contact residue for the requested message; "
-                    "clear the proven residue and rerun guarded contact"
-                ),
-            },
-        )
-        return EXIT_REFUSED
-
-    if pending_guarded_contact is not None:
-        if selection.pane.attached > 0:
-            _emit(
-                args,
-                stdout,
-                {
-                    **base,
-                    "status": "refused",
-                    "stage": "attached_session",
-                    "contact_id": pending_guarded_contact.contact_id,
-                    "recovery": "pending_guarded_contact",
-                    "reason": "target tmux session is attached; refusing contact to avoid human input races",
-                },
-            )
-            return EXIT_REFUSED
-
-        if args.dry_run:
-            _emit(
-                args,
-                stdout,
-                {
-                    **base,
-                    "status": "would_submit_pending",
-                    "stage": "pending_guarded_contact",
-                    "contact_id": pending_guarded_contact.contact_id,
-                    "recovery": "pending_guarded_contact",
-                    "reason": "pending composer contains matching guarded contact; real send would submit it without pasting",
-                },
-            )
-            return EXIT_OK
-
-        return _submit_pending_guarded_contact(
-            args,
-            stdout,
-            selection,
-            runner,
-            transport,
-            args.capture_lines,
-            pending_guarded_contact,
-            base,
-        )
+    initial_clear_required = _composer_clear_required(classification)
 
     if selection.pane.attached > 0:
         _emit(
@@ -416,6 +293,19 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                 "status": "refused",
                 "stage": "attached_session",
                 "reason": "target tmux session is attached; refusing contact to avoid human input races",
+            },
+        )
+        return EXIT_REFUSED
+
+    if classification.state not in (PaneState.IDLE_EMPTY_PROMPT, PaneState.PENDING_USER_TEXT):
+        _emit(
+            args,
+            stdout,
+            {
+                **base,
+                "status": "refused",
+                "stage": "pre_send_state",
+                "reason": classification.reason,
             },
         )
         return EXIT_REFUSED
@@ -435,7 +325,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         )
         return EXIT_REFUSED
     contact_marker = f"CONTACT_ID: {contact_id}"
-    if contact_marker in before:
+    if not initial_clear_required and contact_marker in before:
         _emit(
             args,
             stdout,
@@ -451,28 +341,37 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
     guarded_message = _guarded_message(contact_id, args.message)
 
     if args.dry_run:
+        status = "would_clear_and_send" if initial_clear_required else "would_send"
+        payload = {
+            **base,
+            "status": status,
+            "contact_id": contact_id,
+        }
+        if initial_clear_required:
+            payload["clear_command"] = _clear_input_command(selection.pane.session_name)
         _emit(
             args,
             stdout,
-            {
-                **base,
-                "status": "would_send",
-                "contact_id": contact_id,
-            },
+            payload,
         )
         return EXIT_OK
 
+    starter_placeholder_seen = selection.provider == "codex" and is_codex_starter_placeholder_idle(classification)
     send_starter_placeholder_via_literal = False
+    composer_cleared = False
     try:
-        revalidated = revalidate_target(selection, runner)
-        latest_before_capture = transport.capture_state(revalidated.pane_id, args.capture_lines)
+        if initial_clear_required:
+            _clear_target_composer(selection, runner, transport)
+            composer_cleared = True
+
+        (
+            _latest_target,
+            latest_before_capture,
+            latest_classification,
+            latest_cleared,
+        ) = _capture_prompt_after_optional_clear(selection, runner, transport, args.capture_lines)
+        composer_cleared = composer_cleared or latest_cleared
         latest_before = latest_before_capture.text
-        latest_classification = classify_pane(
-            latest_before,
-            provider=selection.provider,
-            cursor_line_index=latest_before_capture.cursor_line_index,
-            cursor_column_index=latest_before_capture.cursor_x,
-        )
         if latest_classification.state != PaneState.IDLE_EMPTY_PROMPT:
             _emit(
                 args,
@@ -501,15 +400,14 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                 },
             )
             return EXIT_REFUSED
-        send_target = revalidate_target(selection, runner)
-        final_before_capture = transport.capture_state(send_target.pane_id, args.capture_lines)
+        (
+            send_target,
+            final_before_capture,
+            final_classification,
+            final_cleared,
+        ) = _capture_prompt_after_optional_clear(selection, runner, transport, args.capture_lines)
+        composer_cleared = composer_cleared or final_cleared
         final_before = final_before_capture.text
-        final_classification = classify_pane(
-            final_before,
-            provider=selection.provider,
-            cursor_line_index=final_before_capture.cursor_line_index,
-            cursor_column_index=final_before_capture.cursor_x,
-        )
         if final_classification.state != PaneState.IDLE_EMPTY_PROMPT:
             _emit(
                 args,
@@ -539,7 +437,8 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
             )
             return EXIT_REFUSED
         send_starter_placeholder_via_literal = (
-            selection.provider == "codex" and is_codex_starter_placeholder_idle(final_classification)
+            selection.provider == "codex"
+            and (starter_placeholder_seen or is_codex_starter_placeholder_idle(final_classification))
         )
     except DiscoveryError as exc:
         _emit(
@@ -703,170 +602,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
             **base,
             "status": status,
             "contact_id": contact_id,
-            "post_send_state": after_classification.state.value,
-            "post_send_reason": after_classification.reason,
-            "delivery_proven": delivery_proven,
-        },
-    )
-    return EXIT_OK if delivery_proven else EXIT_UNPROVEN
-
-
-def _submit_pending_guarded_contact(
-    args: argparse.Namespace,
-    stdout: TextIO,
-    selection,
-    runner: Runner,
-    transport: AgentTmuxTransport,
-    lines: int,
-    pending_guarded_contact: PendingGuardedContact,
-    base: dict[str, object],
-) -> int:
-    try:
-        target = revalidate_target(selection, runner)
-        latest_capture = transport.capture_state(target.pane_id, lines)
-        latest_classification = classify_pane(
-            latest_capture.text,
-            provider=selection.provider,
-            cursor_line_index=latest_capture.cursor_line_index,
-            cursor_column_index=latest_capture.cursor_x,
-        )
-        latest_pending = _matching_pending_guarded_contact(
-            latest_capture.text,
-            provider=selection.provider,
-            cursor_line_index=latest_capture.cursor_line_index,
-            cursor_column_index=latest_capture.cursor_x,
-            requested_message=args.message,
-        )
-        if latest_classification.state != PaneState.PENDING_USER_TEXT or latest_pending != pending_guarded_contact:
-            _emit(
-                args,
-                stdout,
-                {
-                    **base,
-                    "status": "refused",
-                    "stage": "pending_recovery_revalidate",
-                    "contact_id": pending_guarded_contact.contact_id,
-                    "recovery": "pending_guarded_contact",
-                    "reason": "pending guarded contact no longer matches the requested message",
-                    "pane_state": latest_classification.state.value,
-                    "pane_reason": latest_classification.reason,
-                },
-            )
-            return EXIT_REFUSED
-        transport.submit_pending(target.pane_id)
-    except UnsubmittedMessageError as exc:
-        try:
-            contaminated_capture = transport.capture_state(selection.pane.pane_id, args.capture_lines)
-            contaminated_classification = classify_pane(
-                contaminated_capture.text,
-                provider=selection.provider,
-                cursor_line_index=contaminated_capture.cursor_line_index,
-                cursor_column_index=contaminated_capture.cursor_x,
-            )
-            contaminated_state = contaminated_classification.state.value
-            contaminated_reason = contaminated_classification.reason
-        except TransportError as capture_exc:
-            contaminated_state = PaneState.DEAD_OR_UNKNOWN.value
-            contaminated_reason = f"post-failure capture failed: {capture_exc}"
-        _emit(
-            args,
-            stdout,
-            {
-                **base,
-                "status": "mutated_unsubmitted",
-                "stage": "submit",
-                "contact_id": pending_guarded_contact.contact_id,
-                "recovery": "pending_guarded_contact",
-                "reason": str(exc),
-                "pane_state": contaminated_state,
-                "pane_reason": contaminated_reason,
-                "delivery_proven": False,
-            },
-        )
-        return EXIT_TRANSPORT
-    except DiscoveryError as exc:
-        _emit(
-            args,
-            stdout,
-            {
-                **base,
-                "status": "refused",
-                "stage": "pending_recovery_revalidate",
-                "contact_id": pending_guarded_contact.contact_id,
-                "recovery": "pending_guarded_contact",
-                "reason": str(exc),
-            },
-        )
-        return EXIT_REFUSED
-    except TransportError as exc:
-        _emit(
-            args,
-            stdout,
-            {
-                **base,
-                "status": "error",
-                "stage": "pending_recovery_capture",
-                "contact_id": pending_guarded_contact.contact_id,
-                "recovery": "pending_guarded_contact",
-                "reason": str(exc),
-            },
-        )
-        return EXIT_TRANSPORT
-
-    try:
-        after_target = revalidate_target(selection, runner)
-        after_capture = transport.capture_state(after_target.pane_id, lines)
-        after = after_capture.text
-    except DiscoveryError as exc:
-        _emit(
-            args,
-            stdout,
-            {
-                **base,
-                "status": "sent_unproven",
-                "stage": "post_send_revalidate",
-                "contact_id": pending_guarded_contact.contact_id,
-                "recovery": "pending_guarded_contact",
-                "reason": str(exc),
-                "delivery_proven": False,
-            },
-        )
-        return EXIT_UNPROVEN
-    except TransportError as exc:
-        _emit(
-            args,
-            stdout,
-            {
-                **base,
-                "status": "sent_unproven",
-                "stage": "post_send_capture",
-                "contact_id": pending_guarded_contact.contact_id,
-                "recovery": "pending_guarded_contact",
-                "reason": str(exc),
-                "delivery_proven": False,
-            },
-        )
-        return EXIT_UNPROVEN
-
-    after_classification = classify_pane(
-        after,
-        provider=selection.provider,
-        cursor_line_index=after_capture.cursor_line_index,
-        cursor_column_index=after_capture.cursor_x,
-    )
-    delivery_proven = (
-        _capture_contains_guarded_message(after, pending_guarded_contact.guarded_message)
-        and after_classification.state == PaneState.IDLE_EMPTY_PROMPT
-    )
-    status = "sent" if delivery_proven else "sent_unproven"
-    _emit(
-        args,
-        stdout,
-        {
-            **base,
-            "status": status,
-            "contact_id": pending_guarded_contact.contact_id,
-            "recovery": "pending_guarded_contact",
+            "cleared_composer": composer_cleared,
             "post_send_state": after_classification.state.value,
             "post_send_reason": after_classification.reason,
             "delivery_proven": delivery_proven,
@@ -876,6 +612,19 @@ def _submit_pending_guarded_contact(
 
 
 def _revalidate_idle_prompt(selection, runner: Runner, transport: AgentTmuxTransport, lines: int, contact_marker: str) -> None:
+    _target, capture, classification, _cleared = _capture_prompt_after_optional_clear(
+        selection,
+        runner,
+        transport,
+        lines,
+    )
+    if classification.state != PaneState.IDLE_EMPTY_PROMPT:
+        raise DiscoveryError(classification.reason)
+    if contact_marker in capture.text:
+        raise DiscoveryError("contact id is already visible in critical pre-paste capture")
+
+
+def _capture_prompt_after_optional_clear(selection, runner: Runner, transport: AgentTmuxTransport, lines: int):
     target = revalidate_target(selection, runner)
     capture = transport.capture_state(target.pane_id, lines)
     classification = classify_pane(
@@ -884,10 +633,30 @@ def _revalidate_idle_prompt(selection, runner: Runner, transport: AgentTmuxTrans
         cursor_line_index=capture.cursor_line_index,
         cursor_column_index=capture.cursor_x,
     )
-    if classification.state != PaneState.IDLE_EMPTY_PROMPT:
-        raise DiscoveryError(classification.reason)
-    if contact_marker in capture.text:
-        raise DiscoveryError("contact id is already visible in critical pre-paste capture")
+    if not _composer_clear_required(classification):
+        return target, capture, classification, False
+
+    transport.clear_input(target.session_name)
+    target = revalidate_target(selection, runner)
+    capture = transport.capture_state(target.pane_id, lines)
+    classification = classify_pane(
+        capture.text,
+        provider=selection.provider,
+        cursor_line_index=capture.cursor_line_index,
+        cursor_column_index=capture.cursor_x,
+    )
+    return target, capture, classification, True
+
+
+def _clear_target_composer(selection, runner: Runner, transport: AgentTmuxTransport) -> None:
+    target = revalidate_target(selection, runner)
+    transport.clear_input(target.session_name)
+
+
+def _composer_clear_required(classification) -> bool:
+    return classification.state == PaneState.PENDING_USER_TEXT or (
+        classification.state == PaneState.IDLE_EMPTY_PROMPT and is_codex_starter_placeholder_idle(classification)
+    )
 
 
 def _revalidate_pasted_contact(selection, runner: Runner, transport: AgentTmuxTransport, lines: int, guarded_message: str) -> None:
@@ -957,71 +726,6 @@ def _guarded_message(contact_id: str, message: str) -> str:
     return f"CONTACT_ID: {contact_id} MESSAGE_JSON: {json.dumps(message)}"
 
 
-def _matching_pending_guarded_contact(
-    text: str,
-    *,
-    provider: str,
-    cursor_line_index: int,
-    cursor_column_index: int,
-    requested_message: str,
-) -> PendingGuardedContact | None:
-    prompt_body = current_prompt_body(
-        text,
-        provider=provider,
-        cursor_line_index=cursor_line_index,
-        cursor_column_index=cursor_column_index,
-        allow_cursor_backed_prompt_without_footer=True,
-    )
-    if prompt_body is None:
-        return None
-    contact_id = _contact_id_from_prompt_body(prompt_body)
-    if contact_id is None:
-        return None
-    guarded_message = _guarded_message(contact_id, requested_message)
-    if not _normalized_prompt_body_matches_pasted_contact(prompt_body, guarded_message, provider=provider):
-        return None
-    return PendingGuardedContact(contact_id=contact_id, guarded_message=guarded_message)
-
-
-def _matching_pending_guarded_residue(
-    text: str,
-    *,
-    provider: str,
-    cursor_line_index: int,
-    cursor_column_index: int,
-    requested_message: str,
-) -> PendingGuardedResidue | None:
-    prompt_body = current_prompt_body(
-        text,
-        provider=provider,
-        cursor_line_index=cursor_line_index,
-        cursor_column_index=cursor_column_index,
-        allow_cursor_backed_prompt_without_footer=True,
-    )
-    if prompt_body is None:
-        return None
-    contact_id = _contact_id_from_prompt_body(prompt_body)
-    if contact_id is None:
-        return None
-    guarded_message = _guarded_message(contact_id, requested_message)
-    if _normalized_prompt_body_matches_pasted_contact(prompt_body, guarded_message, provider=provider):
-        return None
-    if not _prompt_body_is_duplicated_guarded_residue(prompt_body, guarded_message):
-        return None
-    return PendingGuardedResidue(contact_id=contact_id, guarded_message=guarded_message)
-
-
-def _contact_id_from_prompt_body(prompt_body: str) -> str | None:
-    normalized = _normalized_prompt_body(prompt_body)
-    match = re.match(r"^CONTACT_ID: (?P<contact_id>AC-[A-Za-z0-9_.:-]+)\b", normalized)
-    if match is None:
-        return None
-    contact_id = match.group("contact_id")
-    if not CONTACT_ID_RE.match(contact_id):
-        return None
-    return contact_id
-
-
 def _normalized_prompt_body(prompt_body: str) -> str:
     return prompt_body.replace("\n", "").replace("\u258c", "").strip()
 
@@ -1038,54 +742,6 @@ def _normalized_prompt_body_matches_pasted_contact(prompt_body: str, guarded_mes
     if match is None:
         return False
     return int(match.group("count")) == len(guarded_message)
-
-
-def _prompt_body_is_duplicated_guarded_residue(prompt_body: str, guarded_message: str) -> bool:
-    # DELICATE_FIX: Carefully debugged. Modify only with failing repro + targeted tests.
-    normalized = _normalized_prompt_body(prompt_body)
-    if _normalized_body_is_repeated_guarded_residue(normalized, guarded_message):
-        return True
-    return _visual_wrapped_body_is_repeated_guarded_residue(prompt_body, guarded_message)
-
-
-def _normalized_body_is_repeated_guarded_residue(normalized: str, guarded_message: str) -> bool:
-    remaining = normalized
-    full_matches = 0
-    while remaining.startswith(guarded_message):
-        full_matches += 1
-        remaining = remaining[len(guarded_message) :]
-    if full_matches == 0:
-        return False
-    if not remaining:
-        return full_matches > 1
-    return guarded_message.startswith(remaining)
-
-
-def _visual_wrapped_body_is_repeated_guarded_residue(prompt_body: str, guarded_message: str) -> bool:
-    pieces = [piece.replace("\u258c", "").strip() for piece in prompt_body.splitlines()]
-    pieces = [piece for piece in pieces if piece]
-    if not pieces:
-        return False
-
-    position = 0
-    full_matches = 0
-    for piece in pieces:
-        if guarded_message.startswith(piece, position):
-            position += len(piece)
-        elif (
-            position < len(guarded_message)
-            and guarded_message[position] == " "
-            and guarded_message.startswith(piece, position + 1)
-        ):
-            position += len(piece) + 1
-        else:
-            return False
-        if position == len(guarded_message):
-            full_matches += 1
-            position = 0
-    if full_matches == 0:
-        return False
-    return full_matches > 1 or position > 0
 
 
 def _codex_visual_wrapped_prompt_body_matches_guarded_message(prompt_body: str, guarded_message: str) -> bool:
@@ -1167,6 +823,7 @@ def _emit(args: argparse.Namespace, stdout: TextIO, payload: dict[str, object]) 
         "contact_id",
         "recovery",
         "clear_command",
+        "cleared_composer",
         "post_send_state",
         "post_send_reason",
         "delivery_proven",

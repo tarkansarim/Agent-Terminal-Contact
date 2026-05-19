@@ -190,6 +190,7 @@ class FakeRunner:
         tty_processes=None,
         provider="codex",
         fail_dash_literal_without_option_terminator=False,
+        fail_clear_input=False,
     ):
         if isinstance(captures, str):
             captures = [captures]
@@ -222,6 +223,7 @@ class FakeRunner:
         self.calls = []
         self.fail_submit = fail_submit
         self.fail_paste = fail_paste
+        self.fail_clear_input = fail_clear_input
         self.fail_dash_literal_without_option_terminator = fail_dash_literal_without_option_terminator
         self.cursor_line_index = cursor_line_index
         self.cursor_line_indexes = list(cursor_line_indexes or [])
@@ -252,6 +254,10 @@ class FakeRunner:
                 return CommandResult(key, 1, "", "no such pane")
             return CommandResult(key, 0, "", "")
         if key[:3] == ("tmux", "delete-buffer", "-b"):
+            return CommandResult(key, 0, "", "")
+        if key[:2] == ("agent-tmux", "clear-input"):
+            if self.fail_clear_input:
+                return CommandResult(key, 1, "", "clear failed")
             return CommandResult(key, 0, "", "")
         if key[:5] == ("tmux", "send-keys", "-t", "%1", "-l"):
             literal_args = key[5:]
@@ -530,7 +536,7 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["session"], session)
             self.assertTrue(payload["delivery_proven"])
 
-    def test_dry_run_would_send_from_codex_starter_placeholder(self):
+    def test_dry_run_reports_clear_path_from_codex_starter_placeholder(self):
         with tempfile.TemporaryDirectory() as repo:
             runner = FakeRunner(repo, CODEX_STARTER, cursor_x=2)
             stdout = io.StringIO()
@@ -553,10 +559,11 @@ class AgentContactCliTests(unittest.TestCase):
             )
             payload = json.loads(stdout.getvalue())
             self.assertEqual(code, EXIT_OK)
-            self.assertEqual(payload["status"], "would_send")
+            self.assertEqual(payload["status"], "would_clear_and_send")
             self.assertEqual(payload["pane_state"], "idle_empty_prompt")
+            self.assertEqual(payload["clear_command"], "agent-tmux clear-input codex-demo")
 
-    def test_dry_run_would_send_from_dim_codex_starter_prompt(self):
+    def test_dry_run_reports_clear_path_from_dim_codex_starter_prompt(self):
         with tempfile.TemporaryDirectory() as repo:
             runner = FakeRunner(repo, CODEX_DIM_STARTER, cursor_x=2)
             stdout = io.StringIO()
@@ -579,18 +586,21 @@ class AgentContactCliTests(unittest.TestCase):
             )
             payload = json.loads(stdout.getvalue())
             self.assertEqual(code, EXIT_OK)
-            self.assertEqual(payload["status"], "would_send")
+            self.assertEqual(payload["status"], "would_clear_and_send")
             self.assertEqual(payload["pane_state"], "idle_empty_prompt")
+            self.assertEqual(payload["clear_command"], "agent-tmux clear-input codex-demo")
 
-    def test_real_send_from_codex_starter_placeholder_uses_literal_input(self):
+    def test_real_send_clears_codex_starter_placeholder_before_literal_input(self):
         with tempfile.TemporaryDirectory() as repo:
             runner = FakeRunner(
                 repo,
                 [
                     CODEX_STARTER,
                     CODEX_STARTER,
+                    CODEX_IDLE,
                     CODEX_STARTER,
-                    CODEX_STARTER,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
                     codex_pending_contact(),
                     f"{guarded_line()}\n{CODEX_IDLE}",
                 ],
@@ -623,6 +633,7 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertTrue(payload["delivery_proven"])
             self.assertEqual(payload["pane_state"], "idle_empty_prompt")
             self.assertEqual(payload["pane_reason"], "codex starter placeholder has no pending user text")
+            self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
             self.assertEqual(len(literal_calls), 1)
             self.assertTrue(all(call[0][5] == "--" for call in literal_calls))
             self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
@@ -773,11 +784,19 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(code, EXIT_DISCOVERY)
             self.assertEqual(payload["status"], "refused")
 
-    def test_pending_composer_refuses_before_send(self):
+    def test_pending_composer_clears_before_send(self):
         with tempfile.TemporaryDirectory() as repo:
             runner = FakeRunner(
                 repo,
-                "previous assistant output\n\n\u203a already typed by user\n  gpt-5.5 xhigh · /tmp/project\n",
+                [
+                    "previous assistant output\n\n\u203a already typed by user\n  gpt-5.5 xhigh · /tmp/project\n",
+                    "previous assistant output\n\n\u203a already typed by user\n  gpt-5.5 xhigh · /tmp/project\n",
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact(),
+                    f"{guarded_line()}\n{CODEX_IDLE}",
+                ],
             )
             stdout = io.StringIO()
             code = main(
@@ -790,17 +809,20 @@ class AgentContactCliTests(unittest.TestCase):
                     "--message",
                     "hello",
                     "--json",
+                    "--contact-id",
+                    "AC-TEST",
                 ],
                 runner=runner,
                 stdout=stdout,
             )
             payload = json.loads(stdout.getvalue())
-            self.assertEqual(code, EXIT_REFUSED)
-            self.assertEqual(payload["status"], "refused")
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
             self.assertEqual(payload["pane_state"], "pending_user_text")
-            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+            self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
+            self.assertTrue(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
 
-    def test_dry_run_would_submit_matching_pending_guarded_contact_without_paste(self):
+    def test_dry_run_reports_clear_path_for_matching_pending_guarded_contact(self):
         message = "Continue next smallest 3dSculptTool slice."
         with tempfile.TemporaryDirectory() as repo:
             runner = FakeRunner(repo, codex_plan_mode_pending_contact(message))
@@ -822,14 +844,14 @@ class AgentContactCliTests(unittest.TestCase):
             )
             payload = json.loads(stdout.getvalue())
             self.assertEqual(code, EXIT_OK)
-            self.assertEqual(payload["status"], "would_submit_pending")
-            self.assertEqual(payload["contact_id"], "AC-TEST")
-            self.assertEqual(payload["recovery"], "pending_guarded_contact")
+            self.assertEqual(payload["status"], "would_clear_and_send")
+            self.assertEqual(payload["clear_command"], "agent-tmux clear-input codex-demo")
+            self.assertEqual(payload["pane_state"], "pending_user_text")
             self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
             self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
             self.assertFalse(any(call[0][:3] == ("tmux", "send-keys", "-t") for call in runner.calls))
 
-    def test_real_send_submits_matching_pending_guarded_contact_without_paste(self):
+    def test_real_send_clears_matching_pending_guarded_contact_and_sends_fresh(self):
         message = "Continue next smallest 3dSculptTool slice."
         with tempfile.TemporaryDirectory() as repo:
             runner = FakeRunner(
@@ -837,6 +859,10 @@ class AgentContactCliTests(unittest.TestCase):
                 [
                     codex_plan_mode_pending_contact(message),
                     codex_plan_mode_pending_contact(message),
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact(message),
                     f"{guarded_line(message)}\n{CODEX_IDLE}",
                 ],
             )
@@ -851,6 +877,8 @@ class AgentContactCliTests(unittest.TestCase):
                     "--message",
                     message,
                     "--json",
+                    "--contact-id",
+                    "AC-TEST",
                 ],
                 runner=runner,
                 stdout=stdout,
@@ -859,15 +887,26 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(code, EXIT_OK)
             self.assertEqual(payload["status"], "sent")
             self.assertEqual(payload["contact_id"], "AC-TEST")
-            self.assertEqual(payload["recovery"], "pending_guarded_contact")
             self.assertTrue(payload["delivery_proven"])
-            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
-            self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
+            self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
+            self.assertTrue(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+            self.assertTrue(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
             self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
-    def test_pending_guarded_contact_with_different_message_refuses_recovery(self):
+    def test_pending_guarded_contact_with_different_message_clears_before_send(self):
         with tempfile.TemporaryDirectory() as repo:
-            runner = FakeRunner(repo, codex_plan_mode_pending_contact("old message"))
+            runner = FakeRunner(
+                repo,
+                [
+                    codex_plan_mode_pending_contact("old message"),
+                    codex_plan_mode_pending_contact("old message"),
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact("new message"),
+                    f"{guarded_line('new message')}\n{CODEX_IDLE}",
+                ],
+            )
             stdout = io.StringIO()
             code = main(
                 [
@@ -879,19 +918,21 @@ class AgentContactCliTests(unittest.TestCase):
                     "--message",
                     "new message",
                     "--json",
+                    "--contact-id",
+                    "AC-TEST",
                 ],
                 runner=runner,
                 stdout=stdout,
             )
             payload = json.loads(stdout.getvalue())
-            self.assertEqual(code, EXIT_REFUSED)
-            self.assertEqual(payload["status"], "refused")
-            self.assertEqual(payload["stage"], "pre_send_state")
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
             self.assertEqual(payload["pane_state"], "pending_user_text")
-            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
-            self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+            self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
+            self.assertTrue(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+            self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
-    def test_dry_run_recovers_claude_v2_pending_guarded_contact_with_hidden_space_wrap(self):
+    def test_dry_run_reports_clear_path_for_claude_v2_pending_guarded_contact_with_hidden_space_wrap(self):
         message = "alpha beta"
         pending = claude_v2_pending_contact_with_hidden_space_wrap(message)
         with tempfile.TemporaryDirectory() as repo:
@@ -914,12 +955,13 @@ class AgentContactCliTests(unittest.TestCase):
             )
             payload = json.loads(stdout.getvalue())
             self.assertEqual(code, EXIT_OK)
-            self.assertEqual(payload["status"], "would_submit_pending")
-            self.assertEqual(payload["recovery"], "pending_guarded_contact")
+            self.assertEqual(payload["status"], "would_clear_and_send")
+            self.assertEqual(payload["clear_command"], "agent-tmux clear-input claude-demo")
+            self.assertEqual(payload["pane_state"], "pending_user_text")
             self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
             self.assertFalse(any(call[0][:3] == ("tmux", "send-keys", "-t") for call in runner.calls))
 
-    def test_dry_run_recovers_claude_ticket_payload_with_working_wrapped_continuation(self):
+    def test_dry_run_reports_clear_path_for_claude_ticket_payload_with_working_wrapped_continuation(self):
         message = (
             "Ticket #126 for project SkillPackagingDiscipline: http://127.0.0.1:8765/task/126\n"
             "Use `agent-ticket show 126` for full title/body. If taking it, move to 'Agent "
@@ -962,14 +1004,13 @@ class AgentContactCliTests(unittest.TestCase):
             )
             payload = json.loads(stdout.getvalue())
             self.assertEqual(code, EXIT_OK)
-            self.assertEqual(payload["status"], "would_submit_pending")
+            self.assertEqual(payload["status"], "would_clear_and_send")
             self.assertEqual(payload["pane_state"], "pending_user_text")
-            self.assertEqual(payload["contact_id"], contact_id)
-            self.assertEqual(payload["recovery"], "pending_guarded_contact")
+            self.assertEqual(payload["clear_command"], "agent-tmux clear-input claude-demo")
             self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
             self.assertFalse(any(call[0][:3] == ("tmux", "send-keys", "-t") for call in runner.calls))
 
-    def test_dry_run_recovers_current_live_pending_guarded_contact_without_footer(self):
+    def test_dry_run_reports_clear_path_for_current_live_pending_guarded_contact_without_footer(self):
         message = (
             "Continue from the current clean local HEAD. Do not push and do not add a remote. Determine the "
             "next smallest production slice from the approved plan after the shared Standard/Sculpt substrate. "
@@ -1020,9 +1061,9 @@ class AgentContactCliTests(unittest.TestCase):
             )
             payload = json.loads(stdout.getvalue())
             self.assertEqual(code, EXIT_OK)
-            self.assertEqual(payload["status"], "would_submit_pending")
-            self.assertEqual(payload["contact_id"], contact_id)
-            self.assertEqual(payload["recovery"], "pending_guarded_contact")
+            self.assertEqual(payload["status"], "would_clear_and_send")
+            self.assertEqual(payload["pane_state"], "pending_user_text")
+            self.assertEqual(payload["clear_command"], "agent-tmux clear-input codex-demo")
             self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
             self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
             self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
@@ -1054,27 +1095,43 @@ class AgentContactCliTests(unittest.TestCase):
                 stdout=stdout,
             )
             payload = json.loads(stdout.getvalue())
-            self.assertEqual(code, EXIT_REFUSED)
-            self.assertEqual(payload["status"], "refused")
-            self.assertEqual(payload["stage"], "pending_guarded_contact")
-            self.assertEqual(payload["contact_id"], contact_id)
-            self.assertEqual(payload["recovery"], "clear_pending_guarded_contact")
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "would_clear_and_send")
             self.assertEqual(payload["clear_command"], "agent-tmux clear-input codex-demo")
-            self.assertIn("duplicated guarded-contact residue", payload["reason"])
+            self.assertEqual(payload["pane_state"], "pending_user_text")
             self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
             self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
             self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
-    def test_real_send_refuses_duplicated_pending_guarded_residue_without_submit(self):
-        message = "Continue next smallest 3dSculptTool implementation slice."
-        contact_id = "AC-20260519T035916Z-4425d81a"
-        first = guarded_line(message, contact_id=contact_id)
-        duplicated_capture = codex_plan_mode_wrapped_lines_without_footer([first, first])
+    def test_real_send_clears_split_guarded_residue_before_fresh_send(self):
+        message = (
+            "Continue from the current clean local HEAD. Determine the next smallest production slice, "
+            "validate exact behavior, and report commands."
+        )
+        stale_contact_id = "AC-20260519T035916Z-4425d81a"
+        live_wrapped_lines = [
+            f'CONTACT_ID: {stale_contact_id} MESSAGE_JSON: "Continue from the',
+            "current clean local HEAD. Determine the next smallest production slice,",
+            "validate exact behavior, and report commands.\"",
+        ]
+        split_capture = codex_plan_mode_wrapped_lines_without_footer(live_wrapped_lines)
         plan_hint_index = next(
-            index for index, line in enumerate(duplicated_capture.splitlines()) if "Create a plan?" in line
+            index for index, line in enumerate(split_capture.splitlines()) if "Create a plan?" in line
         )
         with tempfile.TemporaryDirectory() as repo:
-            runner = FakeRunner(repo, duplicated_capture, cursor_line_index=plan_hint_index)
+            runner = FakeRunner(
+                repo,
+                [
+                    split_capture,
+                    split_capture,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact(message),
+                    f"{guarded_line(message)}\n{CODEX_IDLE}",
+                ],
+                cursor_line_indexes=[plan_hint_index, plan_hint_index, 2, 2, 2, 2, 3],
+            )
             stdout = io.StringIO()
             code = main(
                 [
@@ -1086,18 +1143,21 @@ class AgentContactCliTests(unittest.TestCase):
                     "--message",
                     message,
                     "--json",
+                    "--contact-id",
+                    "AC-TEST",
                 ],
                 runner=runner,
                 stdout=stdout,
             )
             payload = json.loads(stdout.getvalue())
-            self.assertEqual(code, EXIT_REFUSED)
-            self.assertEqual(payload["status"], "refused")
-            self.assertEqual(payload["stage"], "pending_guarded_contact")
-            self.assertEqual(payload["recovery"], "clear_pending_guarded_contact")
-            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
-            self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
-            self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertEqual(payload["contact_id"], "AC-TEST")
+            self.assertEqual(payload["pane_state"], "pending_user_text")
+            self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
+            self.assertTrue(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+            self.assertTrue(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
+            self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
     def test_agent_tmux_invalid_session_name_reports_structured_capture_error(self):
         with tempfile.TemporaryDirectory() as repo:
@@ -1150,9 +1210,12 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["pane_state"], "dead_or_unknown")
             self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
 
-    def test_real_send_refuses_attached_session_to_avoid_human_input_race(self):
+    def test_real_send_refuses_attached_session_without_clearing_composer(self):
         with tempfile.TemporaryDirectory() as repo:
-            runner = FakeRunner(repo, CODEX_IDLE)
+            runner = FakeRunner(
+                repo,
+                "previous assistant output\n\n\u203a attached session draft\n  gpt-5.5 xhigh · /tmp/project\n",
+            )
             runner.responses[("tmux", "list-panes", "-a", "-F", PANE_FORMAT)] = CommandResult(
                 (), 0, pane_line("codex-demo", "%1", repo, attached=1), ""
             )
@@ -1176,6 +1239,8 @@ class AgentContactCliTests(unittest.TestCase):
             payload = json.loads(stdout.getvalue())
             self.assertEqual(code, EXIT_REFUSED)
             self.assertEqual(payload["stage"], "attached_session")
+            self.assertEqual(payload["pane_state"], "pending_user_text")
+            self.assertFalse(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
             self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
 
     def test_dry_run_refuses_attached_session_to_avoid_misleading_acceptance(self):
@@ -1205,6 +1270,38 @@ class AgentContactCliTests(unittest.TestCase):
             payload = json.loads(stdout.getvalue())
             self.assertEqual(code, EXIT_REFUSED)
             self.assertEqual(payload["stage"], "attached_session")
+            self.assertFalse(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+
+    def test_working_state_refuses_without_clearing_or_sending(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                "Working for 12s\nRunning tests\n\n\u203a stale visible input\n  gpt-5.5 xhigh · /tmp/project\n",
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["status"], "refused")
+            self.assertEqual(payload["stage"], "pre_send_state")
+            self.assertEqual(payload["pane_state"], "agent_working")
+            self.assertFalse(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
             self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
 
     def test_control_character_message_refuses_before_discovery(self):
@@ -2273,7 +2370,7 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertTrue(payload["delivery_proven"])
             self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
-    def test_pending_text_inside_transport_before_paste_refuses_without_paste(self):
+    def test_pending_text_inside_transport_before_paste_clears_then_pastes(self):
         with tempfile.TemporaryDirectory() as repo:
             runner = FakeRunner(
                 repo,
@@ -2282,6 +2379,9 @@ class AgentContactCliTests(unittest.TestCase):
                     CODEX_IDLE,
                     CODEX_IDLE,
                     "previous assistant output\n\n\u203a critical user draft\n  gpt-5.5 xhigh · /tmp/project\n",
+                    CODEX_IDLE,
+                    codex_pending_contact(),
+                    f"{guarded_line()}\n{CODEX_IDLE}",
                 ],
             )
             stdout = io.StringIO()
@@ -2302,11 +2402,11 @@ class AgentContactCliTests(unittest.TestCase):
                 stdout=stdout,
             )
             payload = json.loads(stdout.getvalue())
-            self.assertEqual(code, EXIT_REFUSED)
-            self.assertEqual(payload["stage"], "pre_send_revalidate")
-            self.assertIn("pending user text", payload["reason"])
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
             self.assertTrue(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
-            self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
+            self.assertTrue(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
 
     def test_unsafe_post_send_state_is_unproven_even_with_contact_id(self):
         with tempfile.TemporaryDirectory() as repo:
@@ -2343,7 +2443,7 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["status"], "sent_unproven")
             self.assertEqual(payload["post_send_state"], "dead_or_unknown")
 
-    def test_final_recapture_refuses_if_user_types_after_latest_recapture(self):
+    def test_final_recapture_clears_pending_text_before_send(self):
         with tempfile.TemporaryDirectory() as repo:
             runner = FakeRunner(
                 repo,
@@ -2351,6 +2451,10 @@ class AgentContactCliTests(unittest.TestCase):
                     CODEX_IDLE,
                     CODEX_IDLE,
                     "previous assistant output\n\n\u203a final user draft appeared\n  gpt-5.5 xhigh · /tmp/project\n",
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact(),
+                    f"{guarded_line()}\n{CODEX_IDLE}",
                 ],
             )
             stdout = io.StringIO()
@@ -2371,18 +2475,23 @@ class AgentContactCliTests(unittest.TestCase):
                 stdout=stdout,
             )
             payload = json.loads(stdout.getvalue())
-            self.assertEqual(code, EXIT_REFUSED)
-            self.assertEqual(payload["stage"], "pre_send_final_state")
-            self.assertEqual(payload["pane_state"], "pending_user_text")
-            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
+            self.assertTrue(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
 
-    def test_recapture_refuses_if_user_types_after_initial_capture(self):
+    def test_recapture_clears_pending_text_after_initial_capture(self):
         with tempfile.TemporaryDirectory() as repo:
             runner = FakeRunner(
                 repo,
                 [
                     CODEX_IDLE,
                     "previous assistant output\n\n\u203a user draft appeared\n  gpt-5.5 xhigh · /tmp/project\n",
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact(),
+                    f"{guarded_line()}\n{CODEX_IDLE}",
                 ],
             )
             stdout = io.StringIO()
@@ -2403,10 +2512,10 @@ class AgentContactCliTests(unittest.TestCase):
                 stdout=stdout,
             )
             payload = json.loads(stdout.getvalue())
-            self.assertEqual(code, EXIT_REFUSED)
-            self.assertEqual(payload["stage"], "pre_send_recapture")
-            self.assertEqual(payload["pane_state"], "pending_user_text")
-            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
+            self.assertTrue(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
 
     def test_existing_contact_id_before_send_refuses(self):
         with tempfile.TemporaryDirectory() as repo:
