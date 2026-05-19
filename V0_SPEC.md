@@ -27,9 +27,12 @@ V0 must prove:
 - the post-send readback waits briefly for delayed Codex redraws and proves
   delivery when the guarded contact is visible in either an idle prompt state or
   an active agent-working state
+- if the guarded contact is not visible after submit, an active post-send
+  `agent_working` state proves delivery only when the same send already proved
+  the guarded contact as composer text immediately before submit
 - if post-send readback cannot prove delivery, the result is reported as
   `sent_unproven` after mutation and includes `delivery_proof_reason` plus
-  `post_send_guarded_contact_visible`
+  `post_send_guarded_contact_visible` and `pre_submit_contact_proven`
 - installed AgentTerminalContact artifacts can be resolved through a source
   manifest that reports installed path, source path, install/check commands,
   ownership, and source-match status in JSON

@@ -58,8 +58,14 @@ current `PATH`.
   instead of using raw tmux input.
 - If `agent-contact` returns `sent_unproven`, inspect
   `delivery_proof_reason`, `post_send_guarded_contact_visible`, and
-  `post_send_state`; do not treat it as delivered unless the current operator
-  explicitly accepts that ambiguity.
+  `pre_submit_contact_proven`, and `post_send_state`; do not treat it as
+  delivered unless the current operator explicitly accepts that ambiguity.
+- A successful guarded send can report `delivery_proven: true` even when
+  `post_send_guarded_contact_visible` is false, but only when
+  `pre_submit_contact_proven: true` and the post-send state is `agent_working`.
+  That means the same send proved the guarded payload in the composer
+  immediately before submit, then observed the worker actively processing after
+  submit.
 - In a validated, detached tmux-managed worker session, visible composer text is
   a control surface. Use guarded `agent-contact send`; do not manually clear,
   submit, or send raw tmux input. `--dry-run` reports `would_clear_and_send`

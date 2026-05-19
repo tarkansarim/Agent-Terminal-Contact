@@ -64,9 +64,12 @@ immediately before paste; if later post-send evidence cannot be collected, the
 result is reported as `sent_unproven`, not as a pre-send refusal. Post-send
 readback waits briefly for Codex redraws after submit; delivery is proven when
 the guarded contact is visible in either an idle prompt state or an active
-agent-working state. Unproven results include `delivery_proof_reason` and
-`post_send_guarded_contact_visible` so callers can distinguish missing contact
-evidence from unsafe post-send state.
+agent-working state. If the guarded contact has scrolled out of the post-send
+capture, active `agent_working` also proves delivery only when the same send
+already proved the guarded payload in the composer immediately before submit.
+Unproven results include `delivery_proof_reason`,
+`post_send_guarded_contact_visible`, and `pre_submit_contact_proven` so callers
+can distinguish missing contact evidence from unsafe post-send state.
 
 ## Development
 

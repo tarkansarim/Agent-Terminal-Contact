@@ -2127,6 +2127,61 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertGreater(len(literal_calls), 1)
             self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
+    def test_post_send_proves_agent_working_after_pre_submit_guard_without_visible_echo(self):
+        long_message = (
+            "Ticket #151 reopened exact path. Long guarded supervisor payload for a Codex worker: use source only, "
+            "validate the exact requested behavior, comment evidence before closing, keep Rewind coverage, and do "
+            "not use raw tmux fallback. This text is intentionally long enough to use literal chunked input and to "
+            "make the submitted prompt likely to scroll out of the post-send readback once the worker starts."
+        ) * 4
+        working_without_visible_contact = "• Working (1s • esc to interrupt)\n"
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_plan_mode_pending_contact(long_message),
+                    working_without_visible_contact,
+                    working_without_visible_contact,
+                    working_without_visible_contact,
+                    working_without_visible_contact,
+                    working_without_visible_contact,
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            literal_calls = [
+                call for call in runner.calls if call[0][:5] == ("tmux", "send-keys", "-t", "%1", "-l")
+            ]
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(payload["delivery_proven"])
+            self.assertEqual(payload["post_send_state"], "agent_working")
+            self.assertFalse(payload["post_send_guarded_contact_visible"])
+            self.assertTrue(payload["pre_submit_contact_proven"])
+            self.assertIn("pre-submit", payload["delivery_proof_reason"])
+            self.assertGreater(len(literal_calls), 1)
+            self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+
     def test_pre_submit_failure_clears_own_literal_guarded_residue(self):
         long_message = (
             "Ticket #150 long Codex send repro. "

@@ -470,6 +470,19 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         )
         return EXIT_TRANSPORT
 
+    pre_submit_contact_proven = False
+
+    def _prove_pre_submit_contact() -> None:
+        nonlocal pre_submit_contact_proven
+        _revalidate_pasted_contact(
+            selection,
+            runner,
+            transport,
+            args.capture_lines,
+            guarded_message,
+        )
+        pre_submit_contact_proven = True
+
     try:
         literal_key_chunk_size = None
         literal_key_chunk_delay_seconds = 0.0
@@ -488,13 +501,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                 args.capture_lines,
                 contact_marker,
             ),
-            pre_submit_check=lambda: _revalidate_pasted_contact(
-                selection,
-                runner,
-                transport,
-                args.capture_lines,
-                guarded_message,
-            ),
+            pre_submit_check=_prove_pre_submit_contact,
             literal_key_chunk_size=literal_key_chunk_size,
             literal_key_chunk_delay_seconds=literal_key_chunk_delay_seconds,
         )
@@ -555,6 +562,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
             transport,
             args.capture_lines,
             guarded_message,
+            pre_submit_contact_proven=pre_submit_contact_proven,
         )
     except DiscoveryError as exc:
         _emit(
@@ -566,6 +574,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                 "stage": "post_send_revalidate",
                 "contact_id": contact_id,
                 "reason": str(exc),
+                "pre_submit_contact_proven": pre_submit_contact_proven,
                 "delivery_proven": False,
             },
         )
@@ -580,6 +589,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                 "stage": "post_send_capture",
                 "contact_id": contact_id,
                 "reason": str(exc),
+                "pre_submit_contact_proven": pre_submit_contact_proven,
                 "delivery_proven": False,
             },
         )
@@ -599,6 +609,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
             "post_send_reason": post_send_result["post_send_reason"],
             "delivery_proof_reason": post_send_result["delivery_proof_reason"],
             "post_send_guarded_contact_visible": post_send_result["guarded_contact_visible"],
+            "pre_submit_contact_proven": post_send_result["pre_submit_contact_proven"],
             "delivery_proven": delivery_proven,
         },
     )
@@ -611,6 +622,8 @@ def _read_post_send_delivery_result(
     transport: AgentTmuxTransport,
     lines: int,
     guarded_message: str,
+    *,
+    pre_submit_contact_proven: bool,
 ) -> dict[str, object]:
     last_result: dict[str, object] | None = None
     stable_mismatch_key: tuple[str, str, bool] | None = None
@@ -625,15 +638,21 @@ def _read_post_send_delivery_result(
             cursor_column_index=capture.cursor_x,
         )
         guarded_contact_visible = _capture_contains_guarded_message(capture.text, guarded_message)
-        delivery_proven = (
-            guarded_contact_visible
-            and classification.state in (PaneState.IDLE_EMPTY_PROMPT, PaneState.AGENT_WORKING)
+        delivery_proven = _post_send_delivery_proven(
+            classification,
+            guarded_contact_visible=guarded_contact_visible,
+            pre_submit_contact_proven=pre_submit_contact_proven,
         )
         result = {
             "post_send_state": classification.state.value,
             "post_send_reason": classification.reason,
             "guarded_contact_visible": guarded_contact_visible,
-            "delivery_proof_reason": _delivery_proof_reason(classification, guarded_contact_visible),
+            "delivery_proof_reason": _delivery_proof_reason(
+                classification,
+                guarded_contact_visible=guarded_contact_visible,
+                pre_submit_contact_proven=pre_submit_contact_proven,
+            ),
+            "pre_submit_contact_proven": pre_submit_contact_proven,
             "delivery_proven": delivery_proven,
         }
         if delivery_proven:
@@ -655,17 +674,39 @@ def _read_post_send_delivery_result(
             "post_send_reason": "post-send readback produced no capture",
             "guarded_contact_visible": False,
             "delivery_proof_reason": "post-send readback produced no capture",
+            "pre_submit_contact_proven": pre_submit_contact_proven,
             "delivery_proven": False,
         }
     return last_result
 
 
-def _delivery_proof_reason(classification, guarded_contact_visible: bool) -> str:
+def _post_send_delivery_proven(
+    classification,
+    *,
+    guarded_contact_visible: bool,
+    pre_submit_contact_proven: bool,
+) -> bool:
+    if guarded_contact_visible and classification.state in (
+        PaneState.IDLE_EMPTY_PROMPT,
+        PaneState.AGENT_WORKING,
+    ):
+        return True
+    return pre_submit_contact_proven and classification.state == PaneState.AGENT_WORKING
+
+
+def _delivery_proof_reason(
+    classification,
+    *,
+    guarded_contact_visible: bool,
+    pre_submit_contact_proven: bool,
+) -> str:
     if guarded_contact_visible and classification.state in (
         PaneState.IDLE_EMPTY_PROMPT,
         PaneState.AGENT_WORKING,
     ):
         return "guarded contact is visible in a safe post-send state"
+    if pre_submit_contact_proven and classification.state == PaneState.AGENT_WORKING:
+        return "pre-submit guarded composer proof plus post-submit agent_working state"
     if not guarded_contact_visible:
         return "guarded contact is not visible in the post-send capture"
     return (
@@ -964,6 +1005,7 @@ def _emit(args: argparse.Namespace, stdout: TextIO, payload: dict[str, object]) 
         "post_send_reason",
         "delivery_proof_reason",
         "post_send_guarded_contact_visible",
+        "pre_submit_contact_proven",
         "delivery_proven",
         "log_path",
     ):
