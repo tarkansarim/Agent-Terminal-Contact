@@ -2067,6 +2067,66 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertGreater(len(literal_calls), 1)
             self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
+    def test_post_send_waits_for_delayed_codex_working_echo_after_long_submit(self):
+        long_message = (
+            "Blocking visible viewport bug. Do not patch first. Reproduce with app-owned viewport/OSTM before "
+            "evidence: Standard/Sculpt stroke is not tracking mouse drag direction/path, and product viewport "
+            "looks like orange/red paint on the sphere. Prior green checks are insufficient: they proved "
+            "checksum/revision changes, not spatial correctness or product visual semantics. Load CppStudio, "
+            "viewport-session-testing, native-cpp-gui-hud, systematic-debugging, OSTM, code-map/watchlist. "
+            "Gate Rewind/code-map first. Capture before/mid/after screenshots plus mouse positions, screen drag "
+            "vector, ray/hit points, affected vertex/delta path, and color/material readback. Write why old "
+            "verification missed it. Fix only Standard/Sculpt stroke/path and/or debug/product overlay. No extra "
+            "brushes/CUDA/topology/import/export/broad UI. After: same/equivalent viewport proof must show "
+            "deformation follows mouse path and no red/orange paint-looking product overlay unless debug-only "
+            "and disabled. Rerun Standard stroke, viewport-session, product-surface smokes. Update docs/map/"
+            "watchlist if changed. Do not commit. Final include artifact paths and launch command."
+        )
+        submitted_working = (
+            f"{guarded_line(long_message)}\n\n"
+            "• Working (1s • esc to interrupt)\n"
+        )
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_plan_mode_pending_contact(long_message),
+                    CODEX_STARTER,
+                    submitted_working,
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            literal_calls = [
+                call for call in runner.calls if call[0][:5] == ("tmux", "send-keys", "-t", "%1", "-l")
+            ]
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(payload["delivery_proven"])
+            self.assertEqual(payload["post_send_state"], "agent_working")
+            self.assertGreater(len(literal_calls), 1)
+            self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+
     def test_pre_submit_failure_clears_own_literal_guarded_residue(self):
         long_message = (
             "Ticket #150 long Codex send repro. "

@@ -38,6 +38,9 @@ MESSAGE_ALLOWED_CONTROLS = {"\n", "\t"}
 POST_PASTE_READBACK_ATTEMPTS = 40
 POST_PASTE_READBACK_STABLE_MISMATCH_ATTEMPTS = 5
 POST_PASTE_READBACK_DELAY_SECONDS = 0.05
+POST_SEND_READBACK_ATTEMPTS = 40
+POST_SEND_READBACK_STABLE_MISMATCH_ATTEMPTS = 5
+POST_SEND_READBACK_DELAY_SECONDS = 0.05
 CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS = 1024
 CODEX_LITERAL_INPUT_CHUNK_SIZE = 200
 CODEX_LITERAL_INPUT_DELAY_SECONDS = 0.03
@@ -546,9 +549,13 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         return EXIT_TRANSPORT
 
     try:
-        after_target = revalidate_target(selection, runner)
-        after_capture = transport.capture_state(after_target.pane_id, args.capture_lines)
-        after = after_capture.text
+        post_send_result = _read_post_send_delivery_result(
+            selection,
+            runner,
+            transport,
+            args.capture_lines,
+            guarded_message,
+        )
     except DiscoveryError as exc:
         _emit(
             args,
@@ -578,16 +585,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         )
         return EXIT_UNPROVEN
 
-    after_classification = classify_pane(
-        after,
-        provider=selection.provider,
-        cursor_line_index=after_capture.cursor_line_index,
-        cursor_column_index=after_capture.cursor_x,
-    )
-    delivery_proven = (
-        _capture_contains_guarded_message(after, guarded_message)
-        and after_classification.state == PaneState.IDLE_EMPTY_PROMPT
-    )
+    delivery_proven = bool(post_send_result["delivery_proven"])
     status = "sent" if delivery_proven else "sent_unproven"
     _emit(
         args,
@@ -597,12 +595,83 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
             "status": status,
             "contact_id": contact_id,
             "cleared_composer": composer_cleared,
-            "post_send_state": after_classification.state.value,
-            "post_send_reason": after_classification.reason,
+            "post_send_state": post_send_result["post_send_state"],
+            "post_send_reason": post_send_result["post_send_reason"],
+            "delivery_proof_reason": post_send_result["delivery_proof_reason"],
+            "post_send_guarded_contact_visible": post_send_result["guarded_contact_visible"],
             "delivery_proven": delivery_proven,
         },
     )
     return EXIT_OK if delivery_proven else EXIT_UNPROVEN
+
+
+def _read_post_send_delivery_result(
+    selection,
+    runner: Runner,
+    transport: AgentTmuxTransport,
+    lines: int,
+    guarded_message: str,
+) -> dict[str, object]:
+    last_result: dict[str, object] | None = None
+    stable_mismatch_key: tuple[str, str, bool] | None = None
+    stable_mismatch_count = 0
+    for attempt in range(POST_SEND_READBACK_ATTEMPTS):
+        target = revalidate_target(selection, runner)
+        capture = transport.capture_state(target.pane_id, lines)
+        classification = classify_pane(
+            capture.text,
+            provider=selection.provider,
+            cursor_line_index=capture.cursor_line_index,
+            cursor_column_index=capture.cursor_x,
+        )
+        guarded_contact_visible = _capture_contains_guarded_message(capture.text, guarded_message)
+        delivery_proven = (
+            guarded_contact_visible
+            and classification.state in (PaneState.IDLE_EMPTY_PROMPT, PaneState.AGENT_WORKING)
+        )
+        result = {
+            "post_send_state": classification.state.value,
+            "post_send_reason": classification.reason,
+            "guarded_contact_visible": guarded_contact_visible,
+            "delivery_proof_reason": _delivery_proof_reason(classification, guarded_contact_visible),
+            "delivery_proven": delivery_proven,
+        }
+        if delivery_proven:
+            return result
+        last_result = result
+        mismatch_key = (classification.state.value, classification.reason, guarded_contact_visible)
+        if mismatch_key == stable_mismatch_key:
+            stable_mismatch_count += 1
+        else:
+            stable_mismatch_key = mismatch_key
+            stable_mismatch_count = 1
+        if stable_mismatch_count >= POST_SEND_READBACK_STABLE_MISMATCH_ATTEMPTS:
+            break
+        if attempt + 1 < POST_SEND_READBACK_ATTEMPTS:
+            time.sleep(POST_SEND_READBACK_DELAY_SECONDS)
+    if last_result is None:
+        return {
+            "post_send_state": PaneState.DEAD_OR_UNKNOWN.value,
+            "post_send_reason": "post-send readback produced no capture",
+            "guarded_contact_visible": False,
+            "delivery_proof_reason": "post-send readback produced no capture",
+            "delivery_proven": False,
+        }
+    return last_result
+
+
+def _delivery_proof_reason(classification, guarded_contact_visible: bool) -> str:
+    if guarded_contact_visible and classification.state in (
+        PaneState.IDLE_EMPTY_PROMPT,
+        PaneState.AGENT_WORKING,
+    ):
+        return "guarded contact is visible in a safe post-send state"
+    if not guarded_contact_visible:
+        return "guarded contact is not visible in the post-send capture"
+    return (
+        "guarded contact is visible, but post-send state is "
+        f"{classification.state.value}: {classification.reason}"
+    )
 
 
 def _revalidate_idle_prompt(selection, runner: Runner, transport: AgentTmuxTransport, lines: int, contact_marker: str) -> None:
@@ -893,6 +962,8 @@ def _emit(args: argparse.Namespace, stdout: TextIO, payload: dict[str, object]) 
         "cleared_composer",
         "post_send_state",
         "post_send_reason",
+        "delivery_proof_reason",
+        "post_send_guarded_contact_visible",
         "delivery_proven",
         "log_path",
     ):

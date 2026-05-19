@@ -24,7 +24,12 @@ V0 must prove:
 - pre-submit failures after guarded input that leave the current `CONTACT_ID`
   payload in the composer clear that owned residue before returning
   `mutated_unsubmitted` with `delivery_proven: false`
-- the post-send capture gives delivery evidence, or the result is reported as unproven after mutation
+- the post-send readback waits briefly for delayed Codex redraws and proves
+  delivery when the guarded contact is visible in either an idle prompt state or
+  an active agent-working state
+- if post-send readback cannot prove delivery, the result is reported as
+  `sent_unproven` after mutation and includes `delivery_proof_reason` plus
+  `post_send_guarded_contact_visible`
 - installed AgentTerminalContact artifacts can be resolved through a source
   manifest that reports installed path, source path, install/check commands,
   ownership, and source-match status in JSON

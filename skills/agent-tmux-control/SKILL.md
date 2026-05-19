@@ -56,6 +56,10 @@ current `PATH`.
   it clears that owned residue and reports
   `recovery: cleared_own_guarded_payload`; otherwise rerun guarded contact
   instead of using raw tmux input.
+- If `agent-contact` returns `sent_unproven`, inspect
+  `delivery_proof_reason`, `post_send_guarded_contact_visible`, and
+  `post_send_state`; do not treat it as delivered unless the current operator
+  explicitly accepts that ambiguity.
 - In a validated, detached tmux-managed worker session, visible composer text is
   a control surface. Use guarded `agent-contact send`; do not manually clear,
   submit, or send raw tmux input. `--dry-run` reports `would_clear_and_send`

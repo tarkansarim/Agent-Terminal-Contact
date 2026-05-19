@@ -61,7 +61,12 @@ Idle prompt detection uses both text and tmux cursor metadata. Text that merely
 prints a prompt marker and model footer in the pane output is not enough to prove
 the target composer is idle. The sender performs a final prompt-state recapture
 immediately before paste; if later post-send evidence cannot be collected, the
-result is reported as `sent_unproven`, not as a pre-send refusal.
+result is reported as `sent_unproven`, not as a pre-send refusal. Post-send
+readback waits briefly for Codex redraws after submit; delivery is proven when
+the guarded contact is visible in either an idle prompt state or an active
+agent-working state. Unproven results include `delivery_proof_reason` and
+`post_send_guarded_contact_visible` so callers can distinguish missing contact
+evidence from unsafe post-send state.
 
 ## Development
 
