@@ -496,33 +496,27 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
             literal_key_chunk_delay_seconds=literal_key_chunk_delay_seconds,
         )
     except UnsubmittedMessageError as exc:
-        try:
-            contaminated_capture = transport.capture_state(selection.pane.pane_id, args.capture_lines)
-            contaminated_classification = classify_pane(
-                contaminated_capture.text,
-                provider=selection.provider,
-                cursor_line_index=contaminated_capture.cursor_line_index,
-                cursor_column_index=contaminated_capture.cursor_x,
-            )
-            contaminated_state = contaminated_classification.state.value
-            contaminated_reason = contaminated_classification.reason
-        except TransportError as capture_exc:
-            contaminated_state = PaneState.DEAD_OR_UNKNOWN.value
-            contaminated_reason = f"post-failure capture failed: {capture_exc}"
-        _emit(
-            args,
-            stdout,
-            {
-                **base,
-                "status": "mutated_unsubmitted",
-                "stage": "submit",
-                "contact_id": contact_id,
-                "reason": str(exc),
-                "pane_state": contaminated_state,
-                "pane_reason": contaminated_reason,
-                "delivery_proven": False,
-            },
+        recovery, contaminated_state, contaminated_reason = _recover_own_guarded_payload_residue(
+            selection,
+            runner,
+            transport,
+            args.capture_lines,
+            contact_id,
+            guarded_message,
         )
+        payload = {
+            **base,
+            "status": "mutated_unsubmitted",
+            "stage": "submit",
+            "contact_id": contact_id,
+            "reason": str(exc),
+            "pane_state": contaminated_state,
+            "pane_reason": contaminated_reason,
+            "delivery_proven": False,
+        }
+        if recovery is not None:
+            payload["recovery"] = recovery
+        _emit(args, stdout, payload)
         return EXIT_TRANSPORT
     except DiscoveryError as exc:
         _emit(
@@ -707,6 +701,79 @@ def _revalidate_pasted_contact(selection, runner: Runner, transport: AgentTmuxTr
         if attempt + 1 < POST_PASTE_READBACK_ATTEMPTS:
             time.sleep(POST_PASTE_READBACK_DELAY_SECONDS)
     raise DiscoveryError(last_reason)
+
+
+def _recover_own_guarded_payload_residue(
+    selection,
+    runner: Runner,
+    transport: AgentTmuxTransport,
+    lines: int,
+    contact_id: str,
+    guarded_message: str,
+) -> tuple[str | None, str, str]:
+    # DELICATE_FIX: Carefully debugged. Modify only with failing repro + targeted tests.
+    try:
+        target = revalidate_target(selection, runner)
+        capture = transport.capture_state(target.pane_id, lines)
+    except (DiscoveryError, TransportError) as exc:
+        return None, PaneState.DEAD_OR_UNKNOWN.value, f"post-failure capture failed: {exc}"
+
+    classification = classify_pane(
+        capture.text,
+        provider=selection.provider,
+        cursor_line_index=capture.cursor_line_index,
+        cursor_column_index=capture.cursor_x,
+    )
+    prompt_body = current_prompt_body(
+        capture.text,
+        provider=selection.provider,
+        cursor_line_index=capture.cursor_line_index,
+        cursor_column_index=capture.cursor_x,
+        allow_cursor_backed_prompt_without_footer=True,
+    )
+    if classification.state != PaneState.PENDING_USER_TEXT or prompt_body is None:
+        return None, classification.state.value, classification.reason
+    if not _prompt_body_contains_own_guarded_residue(
+        prompt_body,
+        guarded_message,
+        contact_id,
+        provider=selection.provider,
+    ):
+        return None, classification.state.value, classification.reason
+
+    try:
+        transport.clear_input(target.session_name)
+        target = revalidate_target(selection, runner)
+        recovered_capture = transport.capture_state(target.pane_id, lines)
+    except (DiscoveryError, TransportError) as exc:
+        return "clear_failed_own_guarded_payload", classification.state.value, str(exc)
+
+    recovered_classification = classify_pane(
+        recovered_capture.text,
+        provider=selection.provider,
+        cursor_line_index=recovered_capture.cursor_line_index,
+        cursor_column_index=recovered_capture.cursor_x,
+    )
+    if recovered_classification.state == PaneState.IDLE_EMPTY_PROMPT:
+        recovery = "cleared_own_guarded_payload"
+    else:
+        recovery = "clear_attempted_own_guarded_payload"
+    return recovery, recovered_classification.state.value, recovered_classification.reason
+
+
+def _prompt_body_contains_own_guarded_residue(
+    prompt_body: str,
+    guarded_message: str,
+    contact_id: str,
+    *,
+    provider: str,
+) -> bool:
+    normalized = _normalized_prompt_body(prompt_body)
+    return (
+        _normalized_prompt_body_matches_pasted_contact(prompt_body, guarded_message, provider=provider)
+        or contact_id in prompt_body
+        or contact_id in normalized
+    )
 
 
 def _message_payload_error(message: str) -> str | None:

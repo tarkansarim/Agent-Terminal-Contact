@@ -1632,6 +1632,7 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["stage"], "submit")
             self.assertIn("current composer prompt body", payload["reason"])
             self.assertTrue(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
+            self.assertFalse(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
             self.assertFalse(any(call[0][:3] == ("tmux", "send-keys", "-t") for call in runner.calls))
 
     def test_pre_submit_requires_full_guarded_message_json_in_current_composer(self):
@@ -2065,6 +2066,65 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertTrue(payload["delivery_proven"])
             self.assertGreater(len(literal_calls), 1)
             self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+
+    def test_pre_submit_failure_clears_own_literal_guarded_residue(self):
+        long_message = (
+            "Ticket #150 long Codex send repro. "
+            "This payload is intentionally long enough to use literal chunk input and then render only a split "
+            "fragment before submit, matching the guarded-contact failure mode where Codex leaves the composer "
+            "contaminated with an unsubmitted CONTACT_ID/MESSAGE_JSON payload. "
+        ) * 8
+        guarded = guarded_line(long_message)
+        split_residue = codex_plan_mode_wrapped_lines(
+            [
+                guarded[:84],
+                guarded[84:168],
+                guarded[168:252],
+            ]
+        )
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    split_residue,
+                    split_residue,
+                    split_residue,
+                    split_residue,
+                    split_residue,
+                    split_residue,
+                    CODEX_IDLE,
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_TRANSPORT)
+            self.assertEqual(payload["status"], "mutated_unsubmitted")
+            self.assertEqual(payload["stage"], "submit")
+            self.assertEqual(payload["recovery"], "cleared_own_guarded_payload")
+            self.assertEqual(payload["pane_state"], "idle_empty_prompt")
+            self.assertFalse(payload["delivery_proven"])
+            self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
+            self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
     def test_pre_submit_accepts_current_live_plan_mode_residue_without_footer_before_enter(self):
         message = (

@@ -51,6 +51,11 @@ current `PATH`.
 - Existing non-tmux agents cannot be safely contacted through this skill. Report that they are outside the guarded channel.
 - Before sending to another Codex/Claude chat, run `agent-contact send --dry-run` or use `agent-contact send` directly.
 - If `agent-contact` refuses, stop. Do not fall back to raw `agent-tmux send`.
+- If `agent-contact` returns `mutated_unsubmitted`, delivery failed. When the
+  failed send leaves its current guarded `CONTACT_ID` payload in the composer,
+  it clears that owned residue and reports
+  `recovery: cleared_own_guarded_payload`; otherwise rerun guarded contact
+  instead of using raw tmux input.
 - In a validated, detached tmux-managed worker session, visible composer text is
   a control surface. Use guarded `agent-contact send`; do not manually clear,
   submit, or send raw tmux input. `--dry-run` reports `would_clear_and_send`
@@ -323,9 +328,12 @@ pane:
 agent-contact send --repo <repo> --provider codex --session <sidecar-session> --message "..." --dry-run
 ```
 
-If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed and
-rerun guarded contact instead of switching to raw tmux input. For a validated,
-detached tmux-managed worker session, visible composer text is a control
+If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed. When
+the failed send leaves its current guarded `CONTACT_ID` payload in the composer,
+it clears that owned residue and reports
+`recovery: cleared_own_guarded_payload`; otherwise rerun guarded contact instead
+of switching to raw tmux input. For a validated, detached tmux-managed worker
+session, visible composer text is a control
 surface: `--dry-run` reports `would_clear_and_send` plus
 `agent-tmux clear-input <sidecar-session>`, and a real send clears the composer
 before sending a fresh guarded payload. This includes starter placeholder text,

@@ -335,9 +335,12 @@ pane:
 agent-contact send --repo /path/to/repo --provider codex --session <sidecar-session> --message "..." --dry-run
 ```
 
-If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed and
-rerun guarded contact instead of using raw tmux input. For detached
-tmux-managed worker sessions, any visible composer text is a control surface:
+If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed. When
+the failed send leaves the current guarded `CONTACT_ID` payload in the composer,
+`agent-contact` clears that owned residue and reports
+`recovery: cleared_own_guarded_payload`; otherwise rerun guarded contact instead
+of using raw tmux input. For detached tmux-managed worker sessions, any visible
+composer text is a control surface:
 `--dry-run` reports `would_clear_and_send` plus the `clear_command`, and a real
 send clears the composer with `agent-tmux clear-input <sidecar-session>` before
 sending a fresh guarded payload. This includes starter placeholder text, stale

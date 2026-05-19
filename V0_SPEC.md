@@ -21,6 +21,9 @@ V0 must prove:
 - the guarded contact payload is a single line containing a generated `CONTACT_ID` and `MESSAGE_JSON`, without tmux bracketed-paste wrapping
 - Codex starter-placeholder prompts that dry-run accepts report `would_clear_and_send` and are sent with literal key input after clearing instead of `paste-buffer`, so live send can materialize the guarded contact before submit
 - pending composer text, including stale `CONTACT_ID`/`MESSAGE_JSON` residue, Codex pasted-content placeholders, wrapped/truncated residue, and arbitrary leftover worker text, dry-runs as `would_clear_and_send` and live send clears before pasting
+- pre-submit failures after guarded input that leave the current `CONTACT_ID`
+  payload in the composer clear that owned residue before returning
+  `mutated_unsubmitted` with `delivery_proven: false`
 - the post-send capture gives delivery evidence, or the result is reported as unproven after mutation
 - installed AgentTerminalContact artifacts can be resolved through a source
   manifest that reports installed path, source path, install/check commands,
@@ -147,8 +150,10 @@ source-owned user wrapper delegates to that explicitly non-owned helper.
 Code-map sidecar launch does not select or message an existing owner lane; use
 guarded `agent-contact send --session <sidecar-session>` only after the exact
 sidecar identity is known and a dry-run accepts it.
-If guarded contact returns `mutated_unsubmitted`, delivery is failed. Rerun
-guarded `agent-contact send --dry-run` rather than switching to raw tmux input.
+If guarded contact returns `mutated_unsubmitted`, delivery is failed. When it
+reports `recovery: cleared_own_guarded_payload`, the failed current
+`CONTACT_ID` residue was cleared before return; otherwise rerun guarded
+`agent-contact send --dry-run` rather than switching to raw tmux input.
 For detached tmux-managed workers, dry-run reports `would_clear_and_send` when
 the composer contains visible text, and live send clears the composer before
 sending a fresh guarded payload. Attached sessions, busy/working panes, trust
