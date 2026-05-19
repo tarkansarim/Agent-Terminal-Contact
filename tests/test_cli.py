@@ -119,6 +119,20 @@ def claude_v2_pending_contact_with_hidden_space_wrap(message='hello', *, contact
     )
 
 
+def claude_v2_wrapped_lines(lines, *, session="owner-SkillPackagingDiscipline-126-142-claude"):
+    first, *rest = lines
+    return (
+        "╭─── Claude Code v2.1.143 ─────────────────────────────────────────────────────╮\n"
+        "│                Welcome back Tarkan!                                          │\n"
+        "╰──────────────────────────────────────────────────────────────────────────────╯\n\n"
+        f"─────────────────────────────── {session} ──\n"
+        f"❯\u00a0{first}\n"
+        + "".join(f"  {line}\n" for line in rest)
+        + "────────────────────────────────────────────────────────────────────────────────\n"
+        + "  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+    )
+
+
 def wrapped_guarded_echo(message='hello', width=24):
     line = guarded_line(message)
     return "\n".join(line[index : index + width] for index in range(0, len(line), width))
@@ -901,6 +915,56 @@ class AgentContactCliTests(unittest.TestCase):
             payload = json.loads(stdout.getvalue())
             self.assertEqual(code, EXIT_OK)
             self.assertEqual(payload["status"], "would_submit_pending")
+            self.assertEqual(payload["recovery"], "pending_guarded_contact")
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+            self.assertFalse(any(call[0][:3] == ("tmux", "send-keys", "-t") for call in runner.calls))
+
+    def test_dry_run_recovers_claude_ticket_payload_with_working_wrapped_continuation(self):
+        message = (
+            "Ticket #126 for project SkillPackagingDiscipline: http://127.0.0.1:8765/task/126\n"
+            "Use `agent-ticket show 126` for full title/body. If taking it, move to 'Agent "
+            "working', work from SOURCE, validate exact request, comment evidence, run "
+            "`agent-ticket closeout-check 126 --strict`, then close."
+        )
+        contact_id = "AC-20260519T002857Z-0dae3206"
+        live_wrapped_lines = [
+            f'CONTACT_ID: {contact_id} MESSAGE_JSON: "Ticket #126 for',
+            "project SkillPackagingDiscipline: http://127.0.0.1:8765/task/126\\nUse",
+            "`agent-ticket show 126` for full title/body. If taking it, move to 'Agent",
+            "working', work from SOURCE, validate exact request, comment evidence, run",
+            "`agent-ticket closeout-check 126 --strict`, then close.\"",
+        ]
+        capture = claude_v2_wrapped_lines(live_wrapped_lines)
+        cursor_index = next(index for index, line in enumerate(capture.splitlines()) if "working', work" in line)
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                capture,
+                provider="claude",
+                cursor_line_index=cursor_index,
+                cursor_x=58,
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "claude",
+                    "--message",
+                    message,
+                    "--dry-run",
+                    "--json",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "would_submit_pending")
+            self.assertEqual(payload["pane_state"], "pending_user_text")
+            self.assertEqual(payload["contact_id"], contact_id)
             self.assertEqual(payload["recovery"], "pending_guarded_contact")
             self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
             self.assertFalse(any(call[0][:3] == ("tmux", "send-keys", "-t") for call in runner.calls))

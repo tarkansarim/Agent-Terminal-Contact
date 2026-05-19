@@ -226,7 +226,10 @@ def _working_status_is_active_for_prompt(
     *,
     provider: str | None,
 ) -> bool:
-    if status_index >= prompt.line_index:
+    if status_index > prompt.line_index:
+        footer_index = _footer_index_after_prompt(lines, prompt.line_index, provider=provider)
+        if footer_index is None or status_index < footer_index:
+            return False
         return True
     for index in range(status_index + 1, prompt.line_index):
         candidate = lines[index].strip()
