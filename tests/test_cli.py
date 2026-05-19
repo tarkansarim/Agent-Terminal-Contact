@@ -1027,6 +1027,78 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
             self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
+    def test_dry_run_reports_clear_path_for_duplicated_pending_guarded_residue(self):
+        message = "Continue next smallest 3dSculptTool implementation slice."
+        contact_id = "AC-20260519T035916Z-4425d81a"
+        first = guarded_line(message, contact_id=contact_id)
+        duplicated_capture = codex_plan_mode_wrapped_lines_without_footer([first, first])
+        plan_hint_index = next(
+            index for index, line in enumerate(duplicated_capture.splitlines()) if "Create a plan?" in line
+        )
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, duplicated_capture, cursor_line_index=plan_hint_index)
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    message,
+                    "--dry-run",
+                    "--json",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["status"], "refused")
+            self.assertEqual(payload["stage"], "pending_guarded_contact")
+            self.assertEqual(payload["contact_id"], contact_id)
+            self.assertEqual(payload["recovery"], "clear_pending_guarded_contact")
+            self.assertEqual(payload["clear_command"], "agent-tmux clear-input codex-demo")
+            self.assertIn("duplicated guarded-contact residue", payload["reason"])
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+            self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
+            self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+
+    def test_real_send_refuses_duplicated_pending_guarded_residue_without_submit(self):
+        message = "Continue next smallest 3dSculptTool implementation slice."
+        contact_id = "AC-20260519T035916Z-4425d81a"
+        first = guarded_line(message, contact_id=contact_id)
+        duplicated_capture = codex_plan_mode_wrapped_lines_without_footer([first, first])
+        plan_hint_index = next(
+            index for index, line in enumerate(duplicated_capture.splitlines()) if "Create a plan?" in line
+        )
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(repo, duplicated_capture, cursor_line_index=plan_hint_index)
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    message,
+                    "--json",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["status"], "refused")
+            self.assertEqual(payload["stage"], "pending_guarded_contact")
+            self.assertEqual(payload["recovery"], "clear_pending_guarded_contact")
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+            self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
+            self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+
     def test_agent_tmux_invalid_session_name_reports_structured_capture_error(self):
         with tempfile.TemporaryDirectory() as repo:
             runner = FakeRunner(repo, CODEX_IDLE)

@@ -50,6 +50,12 @@ class PendingGuardedContact:
     guarded_message: str
 
 
+@dataclass(frozen=True)
+class PendingGuardedResidue:
+    contact_id: str
+    guarded_message: str
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -290,6 +296,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
     }
 
     pending_guarded_contact = None
+    pending_guarded_residue = None
     if classification.state == PaneState.PENDING_USER_TEXT:
         pending_guarded_contact = _matching_pending_guarded_contact(
             before,
@@ -298,8 +305,20 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
             cursor_column_index=before_capture.cursor_x,
             requested_message=args.message,
         )
+        if pending_guarded_contact is None:
+            pending_guarded_residue = _matching_pending_guarded_residue(
+                before,
+                provider=selection.provider,
+                cursor_line_index=before_capture.cursor_line_index,
+                cursor_column_index=before_capture.cursor_x,
+                requested_message=args.message,
+            )
 
-    if classification.state != PaneState.IDLE_EMPTY_PROMPT and pending_guarded_contact is None:
+    if (
+        classification.state != PaneState.IDLE_EMPTY_PROMPT
+        and pending_guarded_contact is None
+        and pending_guarded_residue is None
+    ):
         _emit(
             args,
             stdout,
@@ -308,6 +327,40 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                 "status": "refused",
                 "stage": "pre_send_state",
                 "reason": classification.reason,
+            },
+        )
+        return EXIT_REFUSED
+
+    if pending_guarded_residue is not None:
+        if selection.pane.attached > 0:
+            _emit(
+                args,
+                stdout,
+                {
+                    **base,
+                    "status": "refused",
+                    "stage": "attached_session",
+                    "contact_id": pending_guarded_residue.contact_id,
+                    "recovery": "clear_pending_guarded_contact",
+                    "clear_command": _clear_input_command(selection.pane.session_name),
+                    "reason": "target tmux session is attached; refusing contact to avoid human input races",
+                },
+            )
+            return EXIT_REFUSED
+        _emit(
+            args,
+            stdout,
+            {
+                **base,
+                "status": "refused",
+                "stage": "pending_guarded_contact",
+                "contact_id": pending_guarded_residue.contact_id,
+                "recovery": "clear_pending_guarded_contact",
+                "clear_command": _clear_input_command(selection.pane.session_name),
+                "reason": (
+                    "pending composer contains duplicated guarded-contact residue for the requested message; "
+                    "clear the proven residue and rerun guarded contact"
+                ),
             },
         )
         return EXIT_REFUSED
@@ -930,6 +983,34 @@ def _matching_pending_guarded_contact(
     return PendingGuardedContact(contact_id=contact_id, guarded_message=guarded_message)
 
 
+def _matching_pending_guarded_residue(
+    text: str,
+    *,
+    provider: str,
+    cursor_line_index: int,
+    cursor_column_index: int,
+    requested_message: str,
+) -> PendingGuardedResidue | None:
+    prompt_body = current_prompt_body(
+        text,
+        provider=provider,
+        cursor_line_index=cursor_line_index,
+        cursor_column_index=cursor_column_index,
+        allow_cursor_backed_prompt_without_footer=True,
+    )
+    if prompt_body is None:
+        return None
+    contact_id = _contact_id_from_prompt_body(prompt_body)
+    if contact_id is None:
+        return None
+    guarded_message = _guarded_message(contact_id, requested_message)
+    if _normalized_prompt_body_matches_pasted_contact(prompt_body, guarded_message, provider=provider):
+        return None
+    if not _prompt_body_is_duplicated_guarded_residue(prompt_body, guarded_message):
+        return None
+    return PendingGuardedResidue(contact_id=contact_id, guarded_message=guarded_message)
+
+
 def _contact_id_from_prompt_body(prompt_body: str) -> str | None:
     normalized = _normalized_prompt_body(prompt_body)
     match = re.match(r"^CONTACT_ID: (?P<contact_id>AC-[A-Za-z0-9_.:-]+)\b", normalized)
@@ -957,6 +1038,54 @@ def _normalized_prompt_body_matches_pasted_contact(prompt_body: str, guarded_mes
     if match is None:
         return False
     return int(match.group("count")) == len(guarded_message)
+
+
+def _prompt_body_is_duplicated_guarded_residue(prompt_body: str, guarded_message: str) -> bool:
+    # DELICATE_FIX: Carefully debugged. Modify only with failing repro + targeted tests.
+    normalized = _normalized_prompt_body(prompt_body)
+    if _normalized_body_is_repeated_guarded_residue(normalized, guarded_message):
+        return True
+    return _visual_wrapped_body_is_repeated_guarded_residue(prompt_body, guarded_message)
+
+
+def _normalized_body_is_repeated_guarded_residue(normalized: str, guarded_message: str) -> bool:
+    remaining = normalized
+    full_matches = 0
+    while remaining.startswith(guarded_message):
+        full_matches += 1
+        remaining = remaining[len(guarded_message) :]
+    if full_matches == 0:
+        return False
+    if not remaining:
+        return full_matches > 1
+    return guarded_message.startswith(remaining)
+
+
+def _visual_wrapped_body_is_repeated_guarded_residue(prompt_body: str, guarded_message: str) -> bool:
+    pieces = [piece.replace("\u258c", "").strip() for piece in prompt_body.splitlines()]
+    pieces = [piece for piece in pieces if piece]
+    if not pieces:
+        return False
+
+    position = 0
+    full_matches = 0
+    for piece in pieces:
+        if guarded_message.startswith(piece, position):
+            position += len(piece)
+        elif (
+            position < len(guarded_message)
+            and guarded_message[position] == " "
+            and guarded_message.startswith(piece, position + 1)
+        ):
+            position += len(piece) + 1
+        else:
+            return False
+        if position == len(guarded_message):
+            full_matches += 1
+            position = 0
+    if full_matches == 0:
+        return False
+    return full_matches > 1 or position > 0
 
 
 def _codex_visual_wrapped_prompt_body_matches_guarded_message(prompt_body: str, guarded_message: str) -> bool:
@@ -1037,6 +1166,7 @@ def _emit(args: argparse.Namespace, stdout: TextIO, payload: dict[str, object]) 
         "pane_reason",
         "contact_id",
         "recovery",
+        "clear_command",
         "post_send_state",
         "post_send_reason",
         "delivery_proven",
@@ -1049,3 +1179,7 @@ def _emit(args: argparse.Namespace, stdout: TextIO, payload: dict[str, object]) 
 def _new_contact_id() -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"AC-{stamp}-{secrets.token_hex(4)}"
+
+
+def _clear_input_command(session_name: str) -> str:
+    return f"agent-tmux clear-input {session_name}"

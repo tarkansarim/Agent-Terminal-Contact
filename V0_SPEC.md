@@ -21,6 +21,7 @@ V0 must prove:
 - the guarded contact payload is a single line containing a generated `CONTACT_ID` and `MESSAGE_JSON`, without tmux bracketed-paste wrapping
 - Codex starter-placeholder prompts that dry-run accepts are sent with literal key input instead of `paste-buffer`, so live send can materialize the guarded contact before submit
 - retrying `agent-contact send` with the same message may submit an already-pending guarded-contact residue only when the current prompt body matches that exact requested `MESSAGE_JSON`; mismatched pending text still refuses
+- duplicated guarded-contact residue for the same requested message is recognized as proven residue but not submit-safe; dry-run reports `clear_pending_guarded_contact` plus a clear command, and live send refuses without pasting or pressing enter
 - the post-send capture gives delivery evidence, or the result is reported as unproven after mutation
 - installed AgentTerminalContact artifacts can be resolved through a source
   manifest that reports installed path, source path, install/check commands,
@@ -150,6 +151,8 @@ sidecar identity is known and a dry-run accepts it.
 If guarded contact returns `mutated_unsubmitted`, delivery is failed. If the
 current composer still contains the full guarded payload for the same intended
 message, rerun guarded `agent-contact send --dry-run` and then `send` to submit
-that matching residue without another paste. Otherwise clear only proven
-guarded-contact residue and launch a new sidecar anchor for the revised focus
-rather than switching to raw tmux injection.
+that matching residue without another paste. If the composer contains duplicated
+full guarded payload residue for the same intended message, dry-run reports
+`clear_pending_guarded_contact` because submitting that text would be malformed.
+Otherwise clear only proven guarded-contact residue and launch a new sidecar
+anchor for the revised focus rather than switching to raw tmux injection.

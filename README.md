@@ -341,8 +341,11 @@ that failed `CONTACT_ID`/`MESSAGE_JSON` payload or Codex pasted-content
 placeholder. If the visible residue is the full guarded payload for the same
 message, rerun guarded contact with the same `--message`: `--dry-run` reports
 `would_submit_pending`, and a real send submits the existing composer text
-without pasting again. If the residue is only a Codex pasted-content placeholder
-or does not match the intended message, clear only proven residue with
+without pasting again. If the residue contains a duplicated full guarded payload
+for the same message, it is proven residue but not submit-safe: `--dry-run`
+reports `clear_pending_guarded_contact` and the `clear_command` to use. If the
+residue is only a Codex pasted-content placeholder or does not match the
+intended message, clear only proven residue with
 `agent-tmux clear-input <sidecar-session>` and relaunch a new sidecar with a new
 anchor for the revised focus. Do not fall back to raw `agent-tmux send` for
 sidecar contact unless the current operator explicitly authorizes that exact
