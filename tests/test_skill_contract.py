@@ -73,14 +73,36 @@ def write_fake_tmux(tmp_path):
     bin_dir = tmp_path / "fake-bin"
     bin_dir.mkdir()
     tmux = bin_dir / "tmux"
+    state_file = tmp_path / "fake-tmux-session-state"
     tmux.write_text(
         "#!/usr/bin/env bash\n"
+        f"STATE_FILE={str(state_file)!r}\n"
+        "case \"$1\" in\n"
+        "  start-server|set-option|set-window-option)\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "esac\n"
         "if [ \"$1\" = new-session ]; then\n"
         "  if [ \"${AGENT_TMUX_FAIL_NEW:-0}\" = 1 ]; then\n"
         "    printf 'duplicate session\\n' >&2\n"
         "    exit 1\n"
         "  fi\n"
+        "  printf 'live\\n' >\"$STATE_FILE\"\n"
         "  printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"$1\" = capture-pane ]; then\n"
+        "  printf 'fake captured pane\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"$1\" = pipe-pane ]; then\n"
+        "  if [ \"${AGENT_TMUX_FAIL_PIPE:-0}\" = 1 ]; then\n"
+        "    printf 'forced pipe failure\\n' >&2\n"
+        "    exit 1\n"
+        "  fi\n"
+        "  if [ -n \"${AGENT_TMUX_PIPE_CAPTURE:-}\" ]; then\n"
+        "    printf '%s\\n' \"$4\" >\"${AGENT_TMUX_PIPE_CAPTURE}\"\n"
+        "  fi\n"
         "  exit 0\n"
         "fi\n"
         "if [ \"$1\" = kill-session ]; then\n"
@@ -88,10 +110,12 @@ def write_fake_tmux(tmp_path):
         "    printf 'forced kill failure\\n' >&2\n"
         "    exit 1\n"
         "  fi\n"
+        "  rm -f \"$STATE_FILE\"\n"
         "  exit 0\n"
         "fi\n"
         "if [ \"$1\" = has-session ]; then\n"
-        "  exit 1\n"
+        "  [ -f \"$STATE_FILE\" ] && exit 0\n"
+        "  exit ${AGENT_TMUX_INITIAL_HAS_SESSION_RC:-1}\n"
         "fi\n"
         "printf 'unexpected tmux command: %s\\n' \"$*\" >&2\n"
         "exit 2\n",
@@ -704,18 +728,17 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
             tmp_path = Path(tmp)
             capture = tmp_path / "args.txt"
-            env_capture = tmp_path / "env.txt"
             delegate = tmp_path / "delegate-agent-tmux"
             delegate.write_text(
                 "#!/usr/bin/env bash\n"
                 "if [ \"$1\" = has ]; then\n"
                 "  exit 1\n"
                 "fi\n"
-                "printf '%s\\n' \"${AGENT_TMUX_ALLOW_DUPLICATE:-}\" >\"${AGENT_TMUX_ENV_CAPTURE}\"\n"
-                "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                "exit 2\n",
                 encoding="utf-8",
             )
             delegate.chmod(0o755)
+            fake_bin = write_fake_tmux(tmp_path)
             result = subprocess.run(
                 ["bash", "bin/agent-tmux", "codex-full", "sess", repo, "--model", "gpt-5.5"],
                 cwd=ROOT,
@@ -726,17 +749,16 @@ class SkillContractTests(unittest.TestCase):
                 env={
                     "AGENT_TMUX_DELEGATE": str(delegate),
                     "AGENT_TMUX_CAPTURE": str(capture),
-                    "AGENT_TMUX_ENV_CAPTURE": str(env_capture),
-                    "PATH": "/usr/bin:/bin",
+                    "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                    "HOME": str(tmp_path / "home"),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
                 },
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("-s danger-full-access -a never", result.stderr)
-            self.assertEqual(env_capture.read_text(encoding="utf-8").strip(), "1")
-            self.assertEqual(
-                capture.read_text(encoding="utf-8").splitlines(),
-                ["codex", "sess", repo, "-s", "danger-full-access", "-a", "never", "--model", "gpt-5.5"],
-            )
+            lines = capture.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(lines[:6], ["new-session", "-d", "-s", "sess", "-c", repo])
+            self.assertEqual(lines[6], "codex -s danger-full-access -a never --model gpt-5.5")
+            self.assertIn("__log-writer", (tmp_path / "pipe.txt").read_text(encoding="utf-8"))
 
     def test_agent_tmux_full_alias_refuses_existing_requested_session(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
@@ -814,7 +836,9 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(lines[4:6], ["-c", str(artifact_dir)])
             self.assertTrue(artifact_dir.is_dir())
             runtime_dir = artifact_root / ".agent-tmux-sidecar-runtime" / session
-            self.assertEqual(pipe_capture.read_text(encoding="utf-8").strip(), session)
+            pipe_command = pipe_capture.read_text(encoding="utf-8").strip()
+            self.assertIn("__log-writer", pipe_command)
+            self.assertIn(f"{session}.log", pipe_command)
             command = lines[6]
             self.assertNotIn("--ro-bind / /", command)
             self.assertIn("bwrap --die-with-parent --unshare-all --share-net --clearenv --dir /usr", command)
@@ -893,7 +917,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(f"code-map sidecar artifact-dir: {artifact_dir}", result.stderr)
             self.assertIn(f"code-map sidecar runtime-dir: {runtime_dir}", result.stderr)
             self.assertIn(f"code-map sidecar registry: {registry_file}", result.stderr)
-            self.assertIn(f"code-map sidecar log: /tmp/agent-tmux/{session}.log", result.stderr)
+            self.assertIn(f"code-map sidecar log: {tmp_path / 'home' / '.local' / 'state' / 'agent-tmux' / f'{session}.log'}", result.stderr)
 
             env["AGENT_TMUX_CAPTURE"] = str(capture_second)
             env["AGENT_TMUX_PIPE_CAPTURE"] = str(tmp_path / "pipe-second.txt")
@@ -3056,6 +3080,7 @@ class SkillContractTests(unittest.TestCase):
                     "AGENT_TMUX_DELEGATE": str(delegate),
                     "AGENT_TMUX_CAPTURE": str(capture),
                     "AGENT_TMUX_FAIL_KILL": "1",
+                    "AGENT_TMUX_FAIL_PIPE": "1",
                     "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
                     "AGENT_TMUX_CODE_MAP_ARTIFACT_ROOT": str(artifact_root),
                     "HOME": str(tmp_path / "home"),
@@ -3303,6 +3328,7 @@ class SkillContractTests(unittest.TestCase):
                 env={
                     "AGENT_TMUX_DELEGATE": str(delegate),
                     "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_FAIL_PIPE": "1",
                     "AGENT_TMUX_CODE_MAP_ARTIFACT_ROOT": str(artifact_root),
                     "HOME": str(tmp_path / "home"),
                     "PATH": f"{fake_bin}:{TEST_PATH}",
@@ -3312,27 +3338,14 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("failed to enable log pipe for code-map sidecar session", result.stderr)
             self.assertFalse(any(artifact_root.iterdir()))
 
-    def test_agent_tmux_code_map_sidecar_refuses_log_path_failure_before_artifact_creation(self):
+    def test_agent_tmux_code_map_sidecar_uses_source_owned_log_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             repo = tmp_path / "Example Repo"
             repo.mkdir()
             capture = tmp_path / "args.txt"
             artifact_root = tmp_path / "artifacts"
-            delegate = tmp_path / "delegate-agent-tmux"
-            delegate.write_text(
-                "#!/usr/bin/env bash\n"
-                "if [ \"$1\" = has ]; then\n"
-                "  exit 1\n"
-                "fi\n"
-                "if [ \"$1\" = log ]; then\n"
-                "  printf 'log failed\\n' >&2\n"
-                "  exit 2\n"
-                "fi\n"
-                "exit 2\n",
-                encoding="utf-8",
-            )
-            delegate.chmod(0o755)
+            delegate = write_code_map_delegate(tmp_path, has_rc=1)
             fake_bin = write_fake_tmux(tmp_path)
             result = subprocess.run(
                 ["bash", "bin/agent-tmux", "codex-code-map-sidecar", str(repo), "cp-123", "Focus"],
@@ -3349,14 +3362,15 @@ class SkillContractTests(unittest.TestCase):
                     "PATH": f"{fake_bin}:{TEST_PATH}",
                 },
             )
-            self.assertEqual(result.returncode, 2)
-            self.assertIn("failed to resolve code-map sidecar log path", result.stderr)
-            self.assertFalse(capture.exists())
-            self.assertFalse(artifact_root.exists())
+            self.assertEqual(result.returncode, 0, result.stderr)
+            session = capture.read_text(encoding="utf-8").splitlines()[3]
+            expected_log = tmp_path / "home" / ".local" / "state" / "agent-tmux" / f"{session}.log"
+            self.assertIn(f"code-map sidecar log: {expected_log}", result.stderr)
 
     def test_agent_tmux_code_map_permissions_are_accepted_by_codex_cli(self):
         with tempfile.TemporaryDirectory() as tmp:
-            codex_home = str(Path(tmp) / "codex-home")
+            codex_home = Path(tmp) / "codex-home"
+            codex_home.mkdir()
             result = subprocess.run(
                 [
                     "codex",
@@ -3375,7 +3389,7 @@ class SkillContractTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                env={"PATH": TEST_PATH},
+                env={"HOME": tmp, "CODEX_HOME": str(codex_home), "PATH": TEST_PATH},
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("`sandbox_mode` is `workspace-write`", result.stdout)
@@ -3622,7 +3636,6 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
             tmp_path = Path(tmp)
             capture = tmp_path / "args.txt"
-            env_capture = tmp_path / "env.txt"
             delegate = tmp_path / "delegate-agent-tmux"
             delegate.write_text(
                 "#!/usr/bin/env bash\n"
@@ -3633,11 +3646,11 @@ class SkillContractTests(unittest.TestCase):
                 "  printf 'Thread Name\\tid-123\\t2026-05-12T00:00:00Z\\t/tmp/session.jsonl\\n'\n"
                 "  exit 0\n"
                 "fi\n"
-                "printf '%s\\n' \"${AGENT_TMUX_ALLOW_DUPLICATE:-}\" >\"${AGENT_TMUX_ENV_CAPTURE}\"\n"
-                "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                "exit 2\n",
                 encoding="utf-8",
             )
             delegate.chmod(0o755)
+            fake_bin = write_fake_tmux(tmp_path)
             result = subprocess.run(
                 ["bash", "bin/agent-tmux", "codex-resume-latest-full", "sess", repo, "Please", "do", "work"],
                 cwd=ROOT,
@@ -3648,27 +3661,15 @@ class SkillContractTests(unittest.TestCase):
                 env={
                     "AGENT_TMUX_DELEGATE": str(delegate),
                     "AGENT_TMUX_CAPTURE": str(capture),
-                    "AGENT_TMUX_ENV_CAPTURE": str(env_capture),
-                    "PATH": "/usr/bin:/bin",
+                    "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                    "HOME": str(tmp_path / "home"),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
                 },
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(env_capture.read_text(encoding="utf-8").strip(), "1")
-            self.assertEqual(
-                capture.read_text(encoding="utf-8").splitlines(),
-                [
-                    "codex",
-                    "sess",
-                    repo,
-                    "-s",
-                    "danger-full-access",
-                    "-a",
-                    "never",
-                    "resume",
-                    "Thread Name",
-                    "Please do work",
-                ],
-            )
+            lines = capture.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(lines[:6], ["new-session", "-d", "-s", "sess", "-c", repo])
+            self.assertEqual(lines[6], "codex -s danger-full-access -a never resume Thread\\ Name Please\\ do\\ work")
 
     def test_agent_tmux_resume_latest_full_refuses_existing_session_before_thread_lookup(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
@@ -3712,7 +3713,6 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
             tmp_path = Path(tmp)
             capture = tmp_path / "args.txt"
-            env_capture = tmp_path / "env.txt"
             delegate = tmp_path / "delegate-agent-tmux"
             delegate.write_text(
                 "#!/usr/bin/env bash\n"
@@ -3723,11 +3723,11 @@ class SkillContractTests(unittest.TestCase):
                 "  printf 'Thread Name\\tid-123\\t2026-05-12T00:00:00Z\\t/tmp/session.jsonl\\n'\n"
                 "  exit 0\n"
                 "fi\n"
-                "printf '%s\\n' \"${AGENT_TMUX_ALLOW_DUPLICATE:-}\" >\"${AGENT_TMUX_ENV_CAPTURE}\"\n"
-                "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                "exit 2\n",
                 encoding="utf-8",
             )
             delegate.chmod(0o755)
+            fake_bin = write_fake_tmux(tmp_path)
             result = subprocess.run(
                 [
                     "bash",
@@ -3751,27 +3751,15 @@ class SkillContractTests(unittest.TestCase):
                 env={
                     "AGENT_TMUX_DELEGATE": str(delegate),
                     "AGENT_TMUX_CAPTURE": str(capture),
-                    "AGENT_TMUX_ENV_CAPTURE": str(env_capture),
-                    "PATH": "/usr/bin:/bin",
+                    "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                    "HOME": str(tmp_path / "home"),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
                 },
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(env_capture.read_text(encoding="utf-8").strip(), "1")
-            self.assertEqual(
-                capture.read_text(encoding="utf-8").splitlines(),
-                [
-                    "codex",
-                    "sess",
-                    repo,
-                    "-s",
-                    "danger-full-access",
-                    "-a",
-                    "never",
-                    "resume",
-                    "Thread Name",
-                    "Please do work",
-                ],
-            )
+            lines = capture.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(lines[:6], ["new-session", "-d", "-s", "sess", "-c", repo])
+            self.assertEqual(lines[6], "codex -s danger-full-access -a never resume Thread\\ Name Please\\ do\\ work")
 
     def test_agent_tmux_legacy_full_profile_resume_latest_refuses_existing_session_before_thread_lookup(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
@@ -3826,18 +3814,17 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
             tmp_path = Path(tmp)
             capture = tmp_path / "args.txt"
-            env_capture = tmp_path / "env.txt"
             delegate = tmp_path / "delegate-agent-tmux"
             delegate.write_text(
                 "#!/usr/bin/env bash\n"
                 "if [ \"$1\" = has ]; then\n"
                 "  exit 1\n"
                 "fi\n"
-                "printf '%s\\n' \"${AGENT_TMUX_ALLOW_DUPLICATE:-}\" >\"${AGENT_TMUX_ENV_CAPTURE}\"\n"
-                "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                "exit 2\n",
                 encoding="utf-8",
             )
             delegate.chmod(0o755)
+            fake_bin = write_fake_tmux(tmp_path)
             result = subprocess.run(
                 [
                     "bash",
@@ -3862,62 +3849,52 @@ class SkillContractTests(unittest.TestCase):
                 env={
                     "AGENT_TMUX_DELEGATE": str(delegate),
                     "AGENT_TMUX_CAPTURE": str(capture),
-                    "AGENT_TMUX_ENV_CAPTURE": str(env_capture),
-                    "PATH": "/usr/bin:/bin",
+                    "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                    "HOME": str(tmp_path / "home"),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
                 },
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(env_capture.read_text(encoding="utf-8").strip(), "1")
-            self.assertEqual(
-                capture.read_text(encoding="utf-8").splitlines(),
-                [
-                    "codex",
-                    "sess",
-                    repo,
-                    "-s",
-                    "danger-full-access",
-                    "-a",
-                    "never",
-                    "resume",
-                    "Thread Name",
-                    "Please do work",
-                ],
-            )
+            lines = capture.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(lines[:6], ["new-session", "-d", "-s", "sess", "-c", repo])
+            self.assertEqual(lines[6], "codex -s danger-full-access -a never resume Thread\\ Name Please\\ do\\ work")
 
     def test_agent_tmux_non_full_codex_commands_use_requested_session(self):
         cases = [
             (
                 ["codex", "sess", "{repo}", "--model", "gpt-5.5"],
-                ["codex", "sess", "{repo}", "--model", "gpt-5.5"],
+                "codex --model gpt-5.5",
             ),
             (
                 ["codex-resume", "sess", "{repo}", "Thread Name", "Please", "do", "work"],
-                ["codex-resume", "sess", "{repo}", "Thread Name", "Please", "do", "work"],
+                "codex resume Thread\\ Name Please do work",
             ),
             (
                 ["codex-resume-latest", "sess", "{repo}", "Please", "do", "work"],
-                ["codex-resume-latest", "sess", "{repo}", "Please", "do", "work"],
+                "codex resume Thread\\ Name Please\\ do\\ work",
             ),
         ]
-        for argv_template, expected_template in cases:
+        for argv_template, expected_command in cases:
             with self.subTest(command=argv_template[0]):
                 with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
                     argv = [repo if arg == "{repo}" else arg for arg in argv_template]
-                    expected = [repo if arg == "{repo}" else arg for arg in expected_template]
                     tmp_path = Path(tmp)
                     capture = tmp_path / "args.txt"
-                    env_capture = tmp_path / "env.txt"
                     delegate = tmp_path / "delegate-agent-tmux"
                     delegate.write_text(
                         "#!/usr/bin/env bash\n"
                         "if [ \"$1\" = has ]; then\n"
                         "  exit 1\n"
                         "fi\n"
-                        "printf '%s\\n' \"${AGENT_TMUX_ALLOW_DUPLICATE:-}\" >\"${AGENT_TMUX_ENV_CAPTURE}\"\n"
-                        "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                        "if [ \"$1\" = codex-latest ]; then\n"
+                        "  printf 'Thread Name\\tid-123\\t2026-05-12T00:00:00Z\\t/tmp/session.jsonl\\n'\n"
+                        "  exit 0\n"
+                        "fi\n"
+                        "exit 2\n",
                         encoding="utf-8",
                     )
                     delegate.chmod(0o755)
+                    fake_bin = write_fake_tmux(tmp_path)
                     result = subprocess.run(
                         ["bash", "bin/agent-tmux", *argv],
                         cwd=ROOT,
@@ -3928,13 +3905,18 @@ class SkillContractTests(unittest.TestCase):
                         env={
                             "AGENT_TMUX_DELEGATE": str(delegate),
                             "AGENT_TMUX_CAPTURE": str(capture),
-                            "AGENT_TMUX_ENV_CAPTURE": str(env_capture),
-                            "PATH": "/usr/bin:/bin",
+                            "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                            "HOME": str(tmp_path / "home"),
+                            "PATH": f"{fake_bin}:{TEST_PATH}",
                         },
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(env_capture.read_text(encoding="utf-8").strip(), "1")
-                    self.assertEqual(capture.read_text(encoding="utf-8").splitlines(), expected)
+                    lines = capture.read_text(encoding="utf-8").splitlines()
+                    self.assertEqual(lines[:6], ["new-session", "-d", "-s", "sess", "-c", repo])
+                    self.assertEqual(lines[6], expected_command)
+                    pipe_command = (tmp_path / "pipe.txt").read_text(encoding="utf-8")
+                    self.assertIn("__log-writer", pipe_command)
+                    self.assertIn("sess.log", pipe_command)
 
     def test_agent_tmux_non_full_codex_commands_refuse_existing_requested_session(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
@@ -3967,7 +3949,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("requested session already exists: sess", result.stderr)
             self.assertFalse(capture.exists())
 
-    def test_agent_tmux_regular_command_delegates_unchanged(self):
+    def test_agent_tmux_regular_non_log_command_delegates_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             capture = tmp_path / "args.txt"
@@ -3981,7 +3963,7 @@ class SkillContractTests(unittest.TestCase):
             )
             delegate.chmod(0o755)
             result = subprocess.run(
-                ["bash", "bin/agent-tmux", "log", "sess"],
+                ["bash", "bin/agent-tmux", "capture", "sess", "20"],
                 cwd=ROOT,
                 check=False,
                 stdout=subprocess.PIPE,
@@ -3996,7 +3978,7 @@ class SkillContractTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(env_capture.read_text(encoding="utf-8").strip(), "")
-            self.assertEqual(capture.read_text(encoding="utf-8").splitlines(), ["log", "sess"])
+            self.assertEqual(capture.read_text(encoding="utf-8").splitlines(), ["capture", "sess", "20"])
 
     def test_agent_tmux_codex_existing_empty_absence_gets_explicit_message(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
@@ -4319,6 +4301,73 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("must use -s danger-full-access -a never", result.stderr)
             self.assertFalse(capture.exists())
+
+    def test_agent_tmux_log_writer_rotates_at_configured_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "state" / "agent-tmux" / "sess.log"
+            payload = b"a" * 40 + b"b" * 40 + b"c" * 40
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "__log-writer", str(log_path), "50", "2"],
+                cwd=ROOT,
+                input=payload,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", errors="replace"))
+            self.assertTrue(log_path.exists())
+            rotated = log_path.with_name("sess.log.1")
+            self.assertTrue(rotated.exists())
+            self.assertLessEqual(log_path.stat().st_size, 50)
+            self.assertLessEqual(rotated.stat().st_size, 80)
+            self.assertEqual(oct(log_path.stat().st_mode & 0o777), "0o600")
+
+    def test_agent_tmux_logs_status_and_prune_reclaim_closed_log_space(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_dir = tmp_path / ".local" / "state" / "agent-tmux"
+            log_dir.mkdir(parents=True)
+            old_log = log_dir / "closed.log"
+            old_log.write_bytes(b"x" * 120)
+            old_time = 1_700_000_000
+            os.utime(old_log, (old_time, old_time))
+            oversized_log = log_dir / "recent.log"
+            oversized_log.write_bytes(b"y" * 120)
+            status = subprocess.run(
+                ["bash", "bin/agent-tmux", "logs", "status"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(status.returncode, 0, status.stderr)
+            self.assertIn("files=2", status.stdout)
+            self.assertIn("total_bytes=240", status.stdout)
+            prune = subprocess.run(
+                [
+                    "bash",
+                    "bin/agent-tmux",
+                    "logs",
+                    "prune",
+                    "--older-than",
+                    "1d",
+                    "--max-size",
+                    "50",
+                ],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(prune.returncode, 0, prune.stderr)
+            self.assertIn("deleted=1", prune.stdout)
+            self.assertIn("capped=1", prune.stdout)
+            self.assertFalse(old_log.exists())
+            self.assertEqual(oversized_log.stat().st_size, 50)
 
 
 if __name__ == "__main__":

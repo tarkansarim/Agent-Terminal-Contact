@@ -15,6 +15,8 @@ Usage:
   agent-tmux codex-code-map-sidecar-fork <workdir> <anchor> <codex-session-id> [focus prompt...]
   agent-tmux codex-code-map-validate-artifacts <artifact-dir>
   agent-tmux codex-existing <workdir> [preferred-session]
+  agent-tmux logs status
+  agent-tmux logs prune [--older-than 14d] [--max-size 50M] [--keep 3]
   agent-tmux <regular-agent-tmux-command> [...]
 
 Full-permission aliases expand visibly to Codex args:
@@ -40,6 +42,12 @@ codex-existing is delegated, but an empty rc=1 absence result is normalized into
 a clear stderr line for machine callers. Other regular commands are delegated
 unchanged to /usr/local/bin/agent-tmux by default. Set AGENT_TMUX_DELEGATE to
 test or override the delegated helper path.
+
+Session logs are source-owned by this wrapper for start/codex launch routes and
+pipe-log. The default cap is 50M per live log with 3 rotated parts. Override with
+AGENT_TMUX_LOG_MAX_BYTES and AGENT_TMUX_LOG_KEEP_PARTS. Use `agent-tmux logs
+status` to inspect footprint and `agent-tmux logs prune --older-than 14d
+--max-size 50M` to reclaim old or oversized closed-session logs.
 EOF
 }
 
@@ -98,6 +106,400 @@ require_delegate() {
     if [[ "$(resolved_path "${DELEGATE}")" == "$(resolved_path "$0")" ]]; then
         die "AGENT_TMUX_DELEGATE resolves to this wrapper; refusing recursive delegation"
     fi
+}
+
+require_tmux() {
+    command -v tmux >/dev/null 2>&1 || die "tmux is required"
+}
+
+session_exists() {
+    local session="$1"
+    require_tmux
+    tmux has-session -t "${session}" 2>/dev/null
+}
+
+configure_tmux_scrollback() {
+    require_tmux
+    local history_limit="${AGENT_TMUX_HISTORY_LIMIT:-200000}"
+    local native_scroll="${AGENT_TMUX_NATIVE_SCROLL:-0}"
+    [[ "${history_limit}" =~ ^[0-9]+$ ]] || die "AGENT_TMUX_HISTORY_LIMIT must be numeric"
+
+    tmux start-server
+    tmux set-option -g history-limit "${history_limit}" >/dev/null
+    tmux set-window-option -g mode-keys vi >/dev/null
+    tmux set-option -g set-clipboard on >/dev/null 2>&1 || true
+
+    local disable_alt_screen="${AGENT_TMUX_DISABLE_ALT_SCREEN:-0}"
+    case "${disable_alt_screen}" in
+        1|true|TRUE|yes|YES|on|ON)
+            tmux set-window-option -g alternate-screen off >/dev/null
+            tmux set-option -g terminal-overrides ',*:smcup@:rmcup@' >/dev/null
+            ;;
+        *)
+            tmux set-window-option -g alternate-screen on >/dev/null
+            local terminal_overrides
+            terminal_overrides="$(tmux show-option -gqv terminal-overrides 2>/dev/null || true)"
+            if [[ "${terminal_overrides}" == "*:smcup@:rmcup@" || "${terminal_overrides}" == ",*:smcup@:rmcup@" ]]; then
+                tmux set-option -gu terminal-overrides >/dev/null 2>&1 || true
+            fi
+            ;;
+    esac
+
+    case "${native_scroll}" in
+        1|true|TRUE|yes|YES|on|ON)
+            tmux set-option -g mouse off >/dev/null
+            ;;
+        *)
+            tmux set-option -g mouse on >/dev/null
+            ;;
+    esac
+}
+
+agent_tmux_log_dir() {
+    local home="${HOME:-${PWD}}"
+    local state_home="${XDG_STATE_HOME:-${home}/.local/state}"
+    resolved_path "${AGENT_TMUX_LOG_DIR:-${state_home}/agent-tmux}"
+}
+
+agent_tmux_log_path() {
+    local session="$1"
+    validate_session_name "${session}"
+    printf "%s/%s.log\n" "$(agent_tmux_log_dir)" "${session}"
+}
+
+parse_size_bytes() {
+    local raw="$1"
+    local number
+    local unit
+    [[ "${raw}" =~ ^([0-9]+)([KkMmGg]?)$ ]] || die "size must be numeric with optional K, M, or G suffix: ${raw}"
+    number="${BASH_REMATCH[1]}"
+    unit="${BASH_REMATCH[2],,}"
+    case "${unit}" in
+        k) printf "%s\n" "$((10#${number} * 1024))" ;;
+        m) printf "%s\n" "$((10#${number} * 1024 * 1024))" ;;
+        g) printf "%s\n" "$((10#${number} * 1024 * 1024 * 1024))" ;;
+        *) printf "%s\n" "$((10#${number}))" ;;
+    esac
+}
+
+parse_duration_seconds() {
+    local raw="$1"
+    local number
+    local unit
+    [[ "${raw}" =~ ^([0-9]+)([DdHhMmSs]?)$ ]] || die "duration must be numeric with optional d, h, m, or s suffix: ${raw}"
+    number="${BASH_REMATCH[1]}"
+    unit="${BASH_REMATCH[2],,}"
+    case "${unit}" in
+        d) printf "%s\n" "$((10#${number} * 86400))" ;;
+        h) printf "%s\n" "$((10#${number} * 3600))" ;;
+        m) printf "%s\n" "$((10#${number} * 60))" ;;
+        s|"") printf "%s\n" "$((10#${number}))" ;;
+    esac
+}
+
+default_log_max_bytes() {
+    parse_size_bytes "${AGENT_TMUX_LOG_MAX_BYTES:-50M}"
+}
+
+default_log_keep_parts() {
+    local keep="${AGENT_TMUX_LOG_KEEP_PARTS:-3}"
+    [[ "${keep}" =~ ^[0-9]+$ ]] || die "AGENT_TMUX_LOG_KEEP_PARTS must be numeric"
+    printf "%s\n" "$((10#${keep}))"
+}
+
+run_log_writer() {
+    (($# == 3)) || die "__log-writer requires <log-path> <max-bytes> <keep-parts>"
+    local log_path="$1"
+    local max_bytes="$2"
+    local keep_parts="$3"
+    [[ "${max_bytes}" =~ ^[0-9]+$ && "${max_bytes}" -gt 0 ]] || die "log max bytes must be greater than zero"
+    [[ "${keep_parts}" =~ ^[0-9]+$ ]] || die "log keep parts must be numeric"
+    python3 - "$log_path" "$max_bytes" "$keep_parts" 3<&0 <<'PY'
+import os
+import sys
+
+path = sys.argv[1]
+max_bytes = int(sys.argv[2])
+keep_parts = int(sys.argv[3])
+chunk_size = 65536
+
+
+def rotate() -> None:
+    if keep_parts <= 0:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        return
+    oldest = f"{path}.{keep_parts}"
+    try:
+        os.unlink(oldest)
+    except FileNotFoundError:
+        pass
+    for index in range(keep_parts - 1, 0, -1):
+        source = f"{path}.{index}"
+        target = f"{path}.{index + 1}"
+        if os.path.exists(source):
+            os.replace(source, target)
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        os.replace(path, f"{path}.1")
+
+
+def current_size() -> int:
+    try:
+        return os.path.getsize(path)
+    except FileNotFoundError:
+        return 0
+
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+stream = os.fdopen(3, "rb", closefd=False)
+while True:
+    data = stream.read(chunk_size)
+    if not data:
+        break
+    offset = 0
+    while offset < len(data):
+        size = current_size()
+        if size >= max_bytes:
+            rotate()
+            size = 0
+        available = max_bytes - size
+        part = data[offset : offset + available]
+        with open(path, "ab") as handle:
+            handle.write(part)
+        offset += len(part)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+PY
+}
+
+append_capped_log() {
+    local log_path="$1"
+    local max_bytes="$2"
+    local keep_parts="$3"
+    shift 3
+    "$@" | "$(resolved_path "$0")" __log-writer "${log_path}" "${max_bytes}" "${keep_parts}"
+}
+
+enable_pipe_log() {
+    local session="$1"
+    validate_session_name "${session}"
+    session_exists "${session}" || die "session does not exist: ${session}"
+
+    local log_dir
+    local log_path
+    local max_bytes
+    local keep_parts
+    local writer
+    local pipe_command
+    log_dir="$(agent_tmux_log_dir)"
+    log_path="$(agent_tmux_log_path "${session}")"
+    max_bytes="$(default_log_max_bytes)"
+    keep_parts="$(default_log_keep_parts)"
+    writer="$(resolved_path "$0")"
+    mkdir -p "${log_dir}"
+    touch "${log_path}"
+    chmod 600 "${log_path}" 2>/dev/null || true
+
+    append_capped_log "${log_path}" "${max_bytes}" "${keep_parts}" bash -c \
+        'printf "\n==== agent-tmux capture bootstrap %s ====\n" "$(date -Is)"; tmux capture-pane -p -t "$1" -S -200; printf "==== agent-tmux live pipe follows ====\n"' \
+        _ "${session}"
+
+    pipe_command="$(quote_command "${writer}" __log-writer "${log_path}" "${max_bytes}" "${keep_parts}")"
+    if ! tmux pipe-pane -t "${session}" "${pipe_command}"; then
+        return 1
+    fi
+    echo "agent-tmux: log ${log_path} (cap ${max_bytes} bytes, keep ${keep_parts})"
+}
+
+start_session() {
+    local session="$1"
+    local workdir="$2"
+    shift 2
+
+    validate_session_name "${session}"
+    [[ -d "${workdir}" ]] || die "workdir does not exist: ${workdir}"
+    configure_tmux_scrollback
+    if session_exists "${session}"; then
+        echo "agent-tmux: session already exists: ${session}"
+        enable_pipe_log "${session}"
+        return 0
+    fi
+
+    local command_string
+    if (($# == 0)); then
+        command_string="$(quote_command "${SHELL:-/bin/bash}" -l)"
+    else
+        command_string="$(quote_command "$@")"
+    fi
+
+    tmux new-session -d -s "${session}" -c "${workdir}" "${command_string}"
+    enable_pipe_log "${session}"
+    echo "agent-tmux: started ${session} in ${workdir}"
+}
+
+log_session_name_from_path() {
+    local path="$1"
+    local base
+    base="$(basename "${path}")"
+    base="${base%.log}"
+    if [[ "${base}" == *".log."* ]]; then
+        base="${base%%.log.*}"
+    fi
+    printf "%s\n" "${base}"
+}
+
+log_file_is_for_live_session() {
+    local path="$1"
+    local session
+    session="$(log_session_name_from_path "${path}")"
+    [[ -n "${session}" ]] || return 1
+    [[ "${session}" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+    session_exists "${session}" >/dev/null 2>&1
+}
+
+cap_existing_log_file() {
+    local path="$1"
+    local max_bytes="$2"
+    [[ -f "${path}" && ! -L "${path}" ]] || return 0
+    local size
+    size="$(stat -c '%s' -- "${path}")" || return 1
+    ((size > max_bytes)) || return 0
+    local tmp_path
+    tmp_path="${path}.tmp.$$"
+    tail -c "${max_bytes}" -- "${path}" >"${tmp_path}"
+    chmod 600 "${tmp_path}" 2>/dev/null || true
+    mv -f -- "${tmp_path}" "${path}"
+}
+
+logs_status() {
+    local log_dir
+    log_dir="$(agent_tmux_log_dir)"
+    if [[ ! -d "${log_dir}" ]]; then
+        echo "agent-tmux logs: dir=${log_dir} files=0 total_bytes=0 total_human=0B"
+        return 0
+    fi
+    local total=0
+    local files=0
+    local live=0
+    local closed=0
+    local path
+    local size
+    while IFS= read -r -d '' path; do
+        size="$(stat -c '%s' -- "${path}")" || continue
+        total=$((total + size))
+        files=$((files + 1))
+        if log_file_is_for_live_session "${path}"; then
+            live=$((live + 1))
+        else
+            closed=$((closed + 1))
+        fi
+    done < <(find "${log_dir}" -maxdepth 1 -type f \( -name '*.log' -o -name '*.log.[0-9]*' \) -print0)
+    local human
+    human="$(numfmt --to=iec --suffix=B "${total}" 2>/dev/null || printf "%sB" "${total}")"
+    echo "agent-tmux logs: dir=${log_dir} files=${files} live_files=${live} closed_files=${closed} total_bytes=${total} total_human=${human}"
+}
+
+logs_prune() {
+    local older_than=""
+    local max_size=""
+    local keep_parts
+    keep_parts="$(default_log_keep_parts)"
+    while (($# > 0)); do
+        case "$1" in
+            --older-than)
+                (($# >= 2)) || die "--older-than requires a duration"
+                older_than="$(parse_duration_seconds "$2")"
+                shift 2
+                ;;
+            --max-size)
+                (($# >= 2)) || die "--max-size requires a size"
+                max_size="$(parse_size_bytes "$2")"
+                shift 2
+                ;;
+            --keep)
+                (($# >= 2)) || die "--keep requires a count"
+                [[ "$2" =~ ^[0-9]+$ ]] || die "--keep must be numeric"
+                keep_parts="$((10#$2))"
+                shift 2
+                ;;
+            *)
+                die "unknown logs prune argument: $1"
+                ;;
+        esac
+    done
+    [[ -n "${older_than}" || -n "${max_size}" ]] || die "logs prune requires --older-than and/or --max-size"
+
+    local log_dir
+    log_dir="$(agent_tmux_log_dir)"
+    [[ -d "${log_dir}" ]] || {
+        echo "agent-tmux logs prune: dir=${log_dir} deleted=0 capped=0 bytes_reclaimed=0"
+        return 0
+    }
+    local now
+    now="$(date +%s)"
+    local deleted=0
+    local capped=0
+    local reclaimed=0
+    local path
+    local size_before
+    local size_after
+    local mtime
+    while IFS= read -r -d '' path; do
+        [[ -f "${path}" && ! -L "${path}" ]] || continue
+        size_before="$(stat -c '%s' -- "${path}")" || continue
+        if [[ -n "${older_than}" ]] && ! log_file_is_for_live_session "${path}"; then
+            mtime="$(stat -c '%Y' -- "${path}")" || continue
+            if ((now - mtime >= older_than)); then
+                rm -f -- "${path}"
+                deleted=$((deleted + 1))
+                reclaimed=$((reclaimed + size_before))
+                continue
+            fi
+        fi
+        if [[ -n "${max_size}" ]]; then
+            cap_existing_log_file "${path}" "${max_size}"
+            size_after="$(stat -c '%s' -- "${path}" 2>/dev/null || printf "0")"
+            if ((size_after < size_before)); then
+                capped=$((capped + 1))
+                reclaimed=$((reclaimed + size_before - size_after))
+            fi
+        fi
+    done < <(find "${log_dir}" -maxdepth 1 -type f \( -name '*.log' -o -name '*.log.[0-9]*' \) -print0)
+
+    if ((keep_parts >= 0)); then
+        while IFS= read -r -d '' path; do
+            [[ "${path}" =~ \.log\.([0-9]+)$ ]] || continue
+            if ((10#${BASH_REMATCH[1]} > keep_parts)); then
+                size_before="$(stat -c '%s' -- "${path}")" || continue
+                rm -f -- "${path}"
+                deleted=$((deleted + 1))
+                reclaimed=$((reclaimed + size_before))
+            fi
+        done < <(find "${log_dir}" -maxdepth 1 -type f -name '*.log.[0-9]*' -print0)
+    fi
+
+    echo "agent-tmux logs prune: dir=${log_dir} deleted=${deleted} capped=${capped} bytes_reclaimed=${reclaimed}"
+}
+
+logs_command() {
+    local subcommand="${1:-}"
+    shift || true
+    case "${subcommand}" in
+        status)
+            (($# == 0)) || die "logs status takes no arguments"
+            logs_status
+            ;;
+        prune)
+            logs_prune "$@"
+            ;;
+        *)
+            die "logs requires status or prune"
+            ;;
+    esac
 }
 
 reject_bypass_arg() {
@@ -1903,10 +2305,7 @@ validate_code_map_artifacts() {
 
 code_map_log_path() {
     local session="$1"
-    local log_path
-    log_path="$("${DELEGATE}" log "${session}")" || die "failed to resolve code-map sidecar log path for session: ${session}"
-    [[ -n "${log_path}" ]] || die "empty code-map sidecar log path for session: ${session}"
-    printf "%s\n" "${log_path}"
+    agent_tmux_log_path "${session}"
 }
 
 terminate_code_map_sidecar_session() {
@@ -2056,7 +2455,7 @@ start_code_map_sidecar_session() {
     fi
     rm -f "${stderr_file}"
 
-    if ! "${DELEGATE}" pipe-log "${session}"; then
+    if ! enable_pipe_log "${session}"; then
         local termination_failed=0
         terminate_code_map_sidecar_session "${session}" "pipe-log failure" || termination_failed=1
         cleanup_code_map_artifact_dir "${artifact_dir}" "${owner_token}"
@@ -2374,13 +2773,21 @@ main() {
     shift
 
     case "${command}" in
+        __log-writer)
+            run_log_writer "$@"
+            ;;
+        start)
+            (($# >= 2)) || die "start requires <session> <workdir> [command...]"
+            start_session "$@"
+            ;;
         codex-full)
             (($# >= 2)) || die "codex-full requires <session> <workdir> [codex-args...]"
             reject_bypass_arg "$@"
             local session="$1"
             local workdir="$2"
             shift 2
-            delegate_new_codex_session "${session}" codex "${session}" "${workdir}" "${FULL_PERMISSION_ARGS[@]}" "$@"
+            require_new_requested_session "${session}"
+            start_session "${session}" "${workdir}" codex "${FULL_PERMISSION_ARGS[@]}" "$@"
             ;;
         codex-resume-full)
             (($# >= 3)) || die "codex-resume-full requires <session> <workdir> <thread-name-or-id> [prompt...]"
@@ -2393,7 +2800,8 @@ main() {
             if (($# > 0)); then
                 prompt_args=("$*")
             fi
-            delegate_new_codex_session "${session}" codex "${session}" "${workdir}" "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
+            require_new_requested_session "${session}"
+            start_session "${session}" "${workdir}" codex "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
             ;;
         codex-resume-latest-full)
             (($# >= 2)) || die "codex-resume-latest-full requires <session> <workdir> [prompt...]"
@@ -2409,7 +2817,7 @@ main() {
             if (($# > 0)); then
                 prompt_args=("$*")
             fi
-            delegate_new_codex_session "${session}" codex "${session}" "${workdir}" "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
+            start_session "${session}" "${workdir}" codex "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
             ;;
         codex-code-map-sidecar)
             launch_code_map_sidecar launch "$@"
@@ -2426,7 +2834,8 @@ main() {
             local session="$1"
             local workdir="$2"
             shift 2
-            delegate_new_codex_session "${session}" codex "${session}" "${workdir}" "$@"
+            require_new_requested_session "${session}"
+            start_session "${session}" "${workdir}" codex "$@"
             ;;
         codex-resume)
             (($# >= 3)) || die "codex-resume requires <session> <workdir> <thread-name-or-id> [prompt...]"
@@ -2441,9 +2850,12 @@ main() {
                 if (($# > 0)); then
                     prompt_args=("$*")
                 fi
-                delegate_new_codex_session "${session}" codex "${session}" "${workdir}" "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
+                require_new_requested_session "${session}"
+                start_session "${session}" "${workdir}" codex "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
+                return
             fi
-            delegate_new_codex_session "${session}" "${command}" "${session}" "${workdir}" "${thread_name}" "$@"
+            require_new_requested_session "${session}"
+            start_session "${session}" "${workdir}" codex resume "${thread_name}" "$@"
             ;;
         codex-resume-latest)
             (($# >= 2)) || die "codex-resume-latest requires <session> <workdir> [prompt...]"
@@ -2461,15 +2873,35 @@ main() {
                 if (($# > 0)); then
                     prompt_args=("$*")
                 fi
-                delegate_new_codex_session "${session}" codex "${session}" "${workdir}" "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
+                start_session "${session}" "${workdir}" codex "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
+                return
             fi
-            delegate_new_codex_session "${session}" "${command}" "${session}" "${workdir}" "$@"
+            require_delegate
+            require_new_requested_session "${session}"
+            local thread_name
+            thread_name="$(latest_thread_for_workdir "${workdir}")"
+            local prompt_args=()
+            if (($# > 0)); then
+                prompt_args=("$*")
+            fi
+            start_session "${session}" "${workdir}" codex resume "${thread_name}" "${prompt_args[@]}"
             ;;
         -h|--help|help)
             usage
             ;;
         codex-existing)
             delegate_codex_existing "$@"
+            ;;
+        pipe-log)
+            (($# == 1)) || die "pipe-log requires <session>"
+            enable_pipe_log "$1"
+            ;;
+        log)
+            (($# == 1)) || die "log requires <session>"
+            agent_tmux_log_path "$1"
+            ;;
+        logs)
+            logs_command "$@"
             ;;
         *)
             require_delegate

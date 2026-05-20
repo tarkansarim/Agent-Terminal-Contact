@@ -207,6 +207,36 @@ When a preferred session is supplied, `agent-tmux codex-existing <repo>
 If the exact session is absent, wrong-repo, or not Codex-like, the wrapper
 reports that precise session evidence instead of delegating into unrelated
 multiple-session ambiguity.
+
+## Session Log Retention
+
+The source-owned wrapper owns launch-time logging for `start`, `codex`,
+`codex-resume`, `codex-resume-latest`, the full-permission aliases, code-map
+sidecars, and explicit `pipe-log`. It writes logs under
+`${AGENT_TMUX_LOG_DIR:-${XDG_STATE_HOME:-~/.local/state}/agent-tmux}` and pipes
+tmux output through a capped writer instead of unbounded `cat >>`.
+
+Defaults:
+
+- `AGENT_TMUX_LOG_MAX_BYTES=50M`
+- `AGENT_TMUX_LOG_KEEP_PARTS=3`
+
+Inspect footprint before it becomes disk pressure:
+
+```bash
+agent-tmux logs status
+```
+
+Prune old closed-session logs and cap existing oversized files:
+
+```bash
+agent-tmux logs prune --older-than 14d --max-size 50M
+```
+
+`logs prune` only targets `agent-tmux` log files (`*.log` and rotated
+`*.log.N`) in the agent-tmux log directory. It does not touch
+`~/.codex/sessions/` or `~/.codex/archived_sessions/`.
+
 Other non-wrapper commands are delegated unchanged.
 
 ## Code-Map Sidecar Workers

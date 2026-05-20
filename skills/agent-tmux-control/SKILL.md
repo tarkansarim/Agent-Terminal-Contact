@@ -24,6 +24,17 @@ AgentTerminalContact source-owned user-level wrapper at `~/.local/bin/agent-tmux
 which delegates normal commands unchanged to the non-owned
 `/usr/local/bin/agent-tmux` helper.
 
+The source-owned wrapper owns launch-time logging for `start`, `codex`,
+`codex-resume`, `codex-resume-latest`, full-permission aliases, code-map
+sidecars, and explicit `pipe-log`. Logs live under
+`${AGENT_TMUX_LOG_DIR:-${XDG_STATE_HOME:-~/.local/state}/agent-tmux}` and are
+capped by default at `AGENT_TMUX_LOG_MAX_BYTES=50M` with
+`AGENT_TMUX_LOG_KEEP_PARTS=3` rotated parts. Use `agent-tmux logs status` before
+long-running supervision to see total footprint. Use
+`agent-tmux logs prune --older-than 14d --max-size 50M` to reclaim closed or
+oversized agent-tmux logs; it must not touch `~/.codex/sessions/` or
+`~/.codex/archived_sessions/`.
+
 Use `agent-contact send` for sending messages to another live terminal agent.
 Raw `agent-tmux send` is a low-level transport primitive and must not be used for
 cross-agent Codex/Claude messages unless the user explicitly asks for a bypass
