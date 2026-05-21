@@ -2241,6 +2241,65 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
             self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
+    def test_pre_submit_failure_waits_for_delayed_own_literal_guarded_residue(self):
+        long_message = (
+            "Ticket #162 long Codex send repro. "
+            "The pre-submit proof can fail before Codex has fully repainted the long literal guarded payload, "
+            "leaving CONTACT_ID/MESSAGE_JSON residue visible immediately after the first recovery capture. "
+        ) * 8
+        guarded = guarded_line(long_message)
+        delayed_residue = codex_plan_mode_wrapped_lines(
+            [
+                guarded[:92],
+                guarded[92:184],
+                guarded[184:276],
+            ]
+        )
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    delayed_residue,
+                    CODEX_IDLE,
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_TRANSPORT)
+            self.assertEqual(payload["status"], "mutated_unsubmitted")
+            self.assertEqual(payload["stage"], "submit")
+            self.assertEqual(payload["recovery"], "cleared_own_guarded_payload")
+            self.assertEqual(payload["pane_state"], "idle_empty_prompt")
+            self.assertFalse(payload["delivery_proven"])
+            self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
+            self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+
     def test_pre_submit_accepts_current_live_plan_mode_residue_without_footer_before_enter(self):
         message = (
             "Continue from the current clean local HEAD. Do not push and do not add a remote. Determine the "

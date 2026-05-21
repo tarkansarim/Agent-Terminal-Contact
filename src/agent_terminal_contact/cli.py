@@ -41,6 +41,9 @@ POST_PASTE_READBACK_DELAY_SECONDS = 0.05
 POST_SEND_READBACK_ATTEMPTS = 40
 POST_SEND_READBACK_STABLE_MISMATCH_ATTEMPTS = 5
 POST_SEND_READBACK_DELAY_SECONDS = 0.05
+POST_FAILURE_RECOVERY_READBACK_ATTEMPTS = 10
+POST_FAILURE_RECOVERY_STABLE_SAFE_ATTEMPTS = 3
+POST_FAILURE_RECOVERY_DELAY_SECONDS = 0.05
 CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS = 1024
 CODEX_LITERAL_INPUT_CHUNK_SIZE = 200
 CODEX_LITERAL_INPUT_DELAY_SECONDS = 0.03
@@ -822,41 +825,81 @@ def _recover_own_guarded_payload_residue(
     guarded_message: str,
 ) -> tuple[str | None, str, str]:
     # DELICATE_FIX: Carefully debugged. Modify only with failing repro + targeted tests.
-    try:
-        target = revalidate_target(selection, runner)
-        capture = transport.capture_state(target.pane_id, lines)
-    except (DiscoveryError, TransportError) as exc:
-        return None, PaneState.DEAD_OR_UNKNOWN.value, f"post-failure capture failed: {exc}"
+    last_state = PaneState.DEAD_OR_UNKNOWN.value
+    last_reason = "post-failure recovery produced no capture"
+    stable_safe_key: tuple[str, str] | None = None
+    stable_safe_count = 0
+    for attempt in range(POST_FAILURE_RECOVERY_READBACK_ATTEMPTS):
+        try:
+            target = revalidate_target(selection, runner)
+            capture = transport.capture_state(target.pane_id, lines)
+        except (DiscoveryError, TransportError) as exc:
+            return None, PaneState.DEAD_OR_UNKNOWN.value, f"post-failure capture failed: {exc}"
 
-    classification = classify_pane(
-        capture.text,
-        provider=selection.provider,
-        cursor_line_index=capture.cursor_line_index,
-        cursor_column_index=capture.cursor_x,
-    )
-    prompt_body = current_prompt_body(
-        capture.text,
-        provider=selection.provider,
-        cursor_line_index=capture.cursor_line_index,
-        cursor_column_index=capture.cursor_x,
-        allow_cursor_backed_prompt_without_footer=True,
-    )
-    if classification.state != PaneState.PENDING_USER_TEXT or prompt_body is None:
-        return None, classification.state.value, classification.reason
-    if not _prompt_body_contains_own_guarded_residue(
-        prompt_body,
-        guarded_message,
-        contact_id,
-        provider=selection.provider,
-    ):
-        return None, classification.state.value, classification.reason
+        classification = classify_pane(
+            capture.text,
+            provider=selection.provider,
+            cursor_line_index=capture.cursor_line_index,
+            cursor_column_index=capture.cursor_x,
+        )
+        prompt_body = current_prompt_body(
+            capture.text,
+            provider=selection.provider,
+            cursor_line_index=capture.cursor_line_index,
+            cursor_column_index=capture.cursor_x,
+            allow_cursor_backed_prompt_without_footer=True,
+        )
+        last_state = classification.state.value
+        last_reason = classification.reason
+        if classification.state == PaneState.PENDING_USER_TEXT:
+            if prompt_body is None:
+                return None, classification.state.value, classification.reason
+            if not _prompt_body_contains_own_guarded_residue(
+                prompt_body,
+                guarded_message,
+                contact_id,
+                provider=selection.provider,
+            ):
+                return None, classification.state.value, classification.reason
+            return _clear_recovered_own_guarded_payload(
+                selection,
+                runner,
+                transport,
+                target.session_name,
+                lines,
+                classification,
+            )
 
+        if classification.state not in (PaneState.IDLE_EMPTY_PROMPT, PaneState.DEAD_OR_UNKNOWN):
+            return None, classification.state.value, classification.reason
+
+        safe_key = (classification.state.value, classification.reason)
+        if safe_key == stable_safe_key:
+            stable_safe_count += 1
+        else:
+            stable_safe_key = safe_key
+            stable_safe_count = 1
+        if stable_safe_count >= POST_FAILURE_RECOVERY_STABLE_SAFE_ATTEMPTS:
+            break
+        if attempt + 1 < POST_FAILURE_RECOVERY_READBACK_ATTEMPTS:
+            time.sleep(POST_FAILURE_RECOVERY_DELAY_SECONDS)
+    return None, last_state, last_reason
+
+
+def _clear_recovered_own_guarded_payload(
+    selection,
+    runner: Runner,
+    transport: AgentTmuxTransport,
+    session_name: str,
+    lines: int,
+    contaminated_classification,
+) -> tuple[str, str, str]:
     try:
-        transport.clear_input(target.session_name)
+        transport.clear_input(session_name)
         target = revalidate_target(selection, runner)
         recovered_capture = transport.capture_state(target.pane_id, lines)
     except (DiscoveryError, TransportError) as exc:
-        return "clear_failed_own_guarded_payload", classification.state.value, str(exc)
+        return "clear_failed_own_guarded_payload", contaminated_classification.state.value, str(exc)
 
     recovered_classification = classify_pane(
         recovered_capture.text,
