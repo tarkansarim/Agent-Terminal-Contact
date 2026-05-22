@@ -41,8 +41,7 @@ POST_PASTE_READBACK_DELAY_SECONDS = 0.05
 POST_SEND_READBACK_ATTEMPTS = 40
 POST_SEND_READBACK_STABLE_MISMATCH_ATTEMPTS = 5
 POST_SEND_READBACK_DELAY_SECONDS = 0.05
-POST_FAILURE_RECOVERY_READBACK_ATTEMPTS = 10
-POST_FAILURE_RECOVERY_STABLE_SAFE_ATTEMPTS = 3
+POST_FAILURE_RECOVERY_READBACK_ATTEMPTS = 40
 POST_FAILURE_RECOVERY_DELAY_SECONDS = 0.05
 CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS = 1024
 CODEX_LITERAL_INPUT_CHUNK_SIZE = 200
@@ -827,8 +826,6 @@ def _recover_own_guarded_payload_residue(
     # DELICATE_FIX: Carefully debugged. Modify only with failing repro + targeted tests.
     last_state = PaneState.DEAD_OR_UNKNOWN.value
     last_reason = "post-failure recovery produced no capture"
-    stable_safe_key: tuple[str, str] | None = None
-    stable_safe_count = 0
     for attempt in range(POST_FAILURE_RECOVERY_READBACK_ATTEMPTS):
         try:
             target = revalidate_target(selection, runner)
@@ -873,14 +870,6 @@ def _recover_own_guarded_payload_residue(
         if classification.state not in (PaneState.IDLE_EMPTY_PROMPT, PaneState.DEAD_OR_UNKNOWN):
             return None, classification.state.value, classification.reason
 
-        safe_key = (classification.state.value, classification.reason)
-        if safe_key == stable_safe_key:
-            stable_safe_count += 1
-        else:
-            stable_safe_key = safe_key
-            stable_safe_count = 1
-        if stable_safe_count >= POST_FAILURE_RECOVERY_STABLE_SAFE_ATTEMPTS:
-            break
         if attempt + 1 < POST_FAILURE_RECOVERY_READBACK_ATTEMPTS:
             time.sleep(POST_FAILURE_RECOVERY_DELAY_SECONDS)
     return None, last_state, last_reason
