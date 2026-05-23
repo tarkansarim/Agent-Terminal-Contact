@@ -132,8 +132,8 @@ guessing from filenames.
 This repo owns:
 
 - `~/.local/bin/agent-contact`
-- `~/.local/bin/agent-tmux`, a wrapper that delegates normal commands to
-  `/usr/local/bin/agent-tmux`
+- `~/.local/bin/agent-tmux`, a wrapper that owns selected safety-critical
+  commands and delegates normal commands to `/usr/local/bin/agent-tmux`
 - `${CODEX_HOME:-~/.codex}/skills/agent-tmux-control/SKILL.md`
 
 It explicitly does not own `/usr/local/bin/agent-tmux`.
@@ -184,10 +184,15 @@ agent-tmux codex-resume-latest-full <session> <repo> [prompt]
 
 These aliases expand to Codex CLI args `-s danger-full-access -a never` and
 refuse `--dangerously-bypass-approvals-and-sandbox`. After the requested tmux
-session preflight passes, the latest-resume alias resolves the latest thread and
-launches `codex ... resume <thread> [prompt]` so a prompt is not misread as the
-resume session id. Latest-thread parsing is fail-closed: stderr, multi-line
-stdout, or anything other than the expected four tab-separated fields is refused.
+session preflight passes, the latest-resume alias resolves the latest thread
+through the source-owned `codex-latest` path and launches
+`codex ... resume <thread> [prompt]` so a prompt is not misread as the resume
+session id. `codex-latest` reads `${CODEX_HOME:-~/.codex}/session_index.jsonl`
+and the matching session file directly. A session qualifies only when the
+session file has exact resolved `cwd`/function-call `workdir` evidence for the
+repo, or when the index `thread_name` exactly equals the repo basename. Missing
+metadata, duplicate newest candidates, and ambiguous session-file matches fail
+closed.
 
 Codex launch/resume routes through this wrapper require the requested tmux
 session name to be unused. If that session already exists, the wrapper refuses

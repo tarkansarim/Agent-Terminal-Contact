@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import re
 import subprocess
@@ -123,6 +124,38 @@ def write_fake_tmux(tmp_path):
     )
     tmux.chmod(0o755)
     return bin_dir
+
+
+def write_codex_latest_fixture(tmp_path, repo, *, thread_name="Thread Name", session_id=None, updated_at="2026-05-12T00:00:00Z"):
+    codex_home = Path(tmp_path) / "codex-home"
+    sessions = codex_home / "sessions" / "2026" / "05" / "12"
+    sessions.mkdir(parents=True, exist_ok=True)
+    session_id = session_id or "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    (codex_home / "session_index.jsonl").write_text(
+        json.dumps(
+            {
+                "id": session_id,
+                "thread_name": thread_name,
+                "updated_at": updated_at,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (sessions / f"rollout-2026-05-12T00-00-00-{session_id}.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": session_id,
+                    "cwd": str(Path(repo).resolve()),
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return codex_home
 
 
 def write_fake_chmod(bin_dir, body):
@@ -3636,15 +3669,12 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
             tmp_path = Path(tmp)
             capture = tmp_path / "args.txt"
+            codex_home = write_codex_latest_fixture(tmp_path, repo)
             delegate = tmp_path / "delegate-agent-tmux"
             delegate.write_text(
                 "#!/usr/bin/env bash\n"
                 "if [ \"$1\" = has ]; then\n"
                 "  exit 1\n"
-                "fi\n"
-                "if [ \"$1\" = codex-latest ]; then\n"
-                "  printf 'Thread Name\\tid-123\\t2026-05-12T00:00:00Z\\t/tmp/session.jsonl\\n'\n"
-                "  exit 0\n"
                 "fi\n"
                 "exit 2\n",
                 encoding="utf-8",
@@ -3662,6 +3692,7 @@ class SkillContractTests(unittest.TestCase):
                     "AGENT_TMUX_DELEGATE": str(delegate),
                     "AGENT_TMUX_CAPTURE": str(capture),
                     "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                    "CODEX_HOME": str(codex_home),
                     "HOME": str(tmp_path / "home"),
                     "PATH": f"{fake_bin}:{TEST_PATH}",
                 },
@@ -3670,6 +3701,213 @@ class SkillContractTests(unittest.TestCase):
             lines = capture.read_text(encoding="utf-8").splitlines()
             self.assertEqual(lines[:6], ["new-session", "-d", "-s", "sess", "-c", repo])
             self.assertEqual(lines[6], "codex -s danger-full-access -a never resume Thread\\ Name Please\\ do\\ work")
+
+    def test_agent_tmux_codex_latest_uses_source_index_instead_of_delegate_stale_thread(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            repo_path = Path(repo)
+            codex_home = tmp_path / "codex-home"
+            sessions = codex_home / "sessions" / "2026" / "05" / "19"
+            sessions.mkdir(parents=True)
+            stale_id = "11111111-1111-4111-8111-111111111111"
+            latest_id = "22222222-2222-4222-8222-222222222222"
+            (codex_home / "session_index.jsonl").write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "id": stale_id,
+                                "thread_name": f"{repo_path.name}_old",
+                                "updated_at": "2026-05-10T20:00:00Z",
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "id": latest_id,
+                                "thread_name": repo_path.name,
+                                "updated_at": "2026-05-19T20:05:56Z",
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (sessions / f"rollout-2026-05-10T20-00-00-{stale_id}.jsonl").write_text(
+                json.dumps(
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": stale_id,
+                            "cwd": str(repo_path.resolve()),
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (sessions / f"rollout-2026-05-19T20-05-56-{latest_id}.jsonl").write_text(
+                json.dumps(
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": latest_id,
+                            "cwd": str(tmp_path / "other-repo"),
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = codex-latest ]; then\n"
+                "  printf 'stale-thread\\t11111111-1111-4111-8111-111111111111\\t2026-05-10T20:00:00Z\\t/tmp/stale.jsonl\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-latest", str(repo_path)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "CODEX_HOME": str(codex_home),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            fields = result.stdout.rstrip("\n").split("\t")
+            self.assertEqual(fields[:3], [repo_path.name, latest_id, "2026-05-19T20:05:56Z"])
+            self.assertIn(latest_id, fields[3])
+
+    def test_agent_tmux_codex_latest_fails_closed_on_equal_timestamp_ambiguity(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            repo_path = Path(repo)
+            codex_home = tmp_path / "codex-home"
+            sessions = codex_home / "sessions" / "2026" / "05" / "19"
+            sessions.mkdir(parents=True)
+            left_id = "33333333-3333-4333-8333-333333333333"
+            right_id = "44444444-4444-4444-8444-444444444444"
+            (codex_home / "session_index.jsonl").write_text(
+                "\n".join(
+                    json.dumps(
+                        {
+                            "id": session_id,
+                            "thread_name": repo_path.name,
+                            "updated_at": "2026-05-19T20:05:56Z",
+                        }
+                    )
+                    for session_id in (left_id, right_id)
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            for session_id in (left_id, right_id):
+                (sessions / f"rollout-2026-05-19T20-05-56-{session_id}.jsonl").write_text(
+                    json.dumps(
+                        {
+                            "type": "session_meta",
+                            "payload": {
+                                "id": session_id,
+                                "cwd": str(repo_path.resolve()),
+                            },
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-latest", str(repo_path)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "CODEX_HOME": str(codex_home),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("multiple latest Codex sessions found", result.stderr)
+
+    def test_agent_tmux_resume_latest_full_uses_source_owned_latest_thread(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            repo_path = Path(repo)
+            codex_home = tmp_path / "codex-home"
+            sessions = codex_home / "sessions" / "2026" / "05" / "19"
+            sessions.mkdir(parents=True)
+            latest_id = "55555555-5555-4555-8555-555555555555"
+            (codex_home / "session_index.jsonl").write_text(
+                json.dumps(
+                    {
+                        "id": latest_id,
+                        "thread_name": "Source Owned Thread",
+                        "updated_at": "2026-05-19T20:05:56Z",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (sessions / f"rollout-2026-05-19T20-05-56-{latest_id}.jsonl").write_text(
+                json.dumps(
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": latest_id,
+                            "cwd": str(repo_path.resolve()),
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 1\n"
+                "fi\n"
+                "if [ \"$1\" = codex-latest ]; then\n"
+                "  exit 2\n"
+                "fi\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            capture = tmp_path / "args.txt"
+            fake_bin = write_fake_tmux(tmp_path)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-resume-latest-full", "sess", str(repo_path), "Please", "work"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                    "CODEX_HOME": str(codex_home),
+                    "HOME": str(tmp_path / "home"),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            lines = capture.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(lines[:6], ["new-session", "-d", "-s", "sess", "-c", str(repo_path)])
+            self.assertEqual(lines[6], "codex -s danger-full-access -a never resume Source\\ Owned\\ Thread Please\\ work")
 
     def test_agent_tmux_resume_latest_full_refuses_existing_session_before_thread_lookup(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
@@ -3713,15 +3951,12 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
             tmp_path = Path(tmp)
             capture = tmp_path / "args.txt"
+            codex_home = write_codex_latest_fixture(tmp_path, repo)
             delegate = tmp_path / "delegate-agent-tmux"
             delegate.write_text(
                 "#!/usr/bin/env bash\n"
                 "if [ \"$1\" = has ]; then\n"
                 "  exit 1\n"
-                "fi\n"
-                "if [ \"$1\" = codex-latest ]; then\n"
-                "  printf 'Thread Name\\tid-123\\t2026-05-12T00:00:00Z\\t/tmp/session.jsonl\\n'\n"
-                "  exit 0\n"
                 "fi\n"
                 "exit 2\n",
                 encoding="utf-8",
@@ -3752,6 +3987,7 @@ class SkillContractTests(unittest.TestCase):
                     "AGENT_TMUX_DELEGATE": str(delegate),
                     "AGENT_TMUX_CAPTURE": str(capture),
                     "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                    "CODEX_HOME": str(codex_home),
                     "HOME": str(tmp_path / "home"),
                     "PATH": f"{fake_bin}:{TEST_PATH}",
                 },
@@ -3880,15 +4116,12 @@ class SkillContractTests(unittest.TestCase):
                     argv = [repo if arg == "{repo}" else arg for arg in argv_template]
                     tmp_path = Path(tmp)
                     capture = tmp_path / "args.txt"
+                    codex_home = write_codex_latest_fixture(tmp_path, repo)
                     delegate = tmp_path / "delegate-agent-tmux"
                     delegate.write_text(
                         "#!/usr/bin/env bash\n"
                         "if [ \"$1\" = has ]; then\n"
                         "  exit 1\n"
-                        "fi\n"
-                        "if [ \"$1\" = codex-latest ]; then\n"
-                        "  printf 'Thread Name\\tid-123\\t2026-05-12T00:00:00Z\\t/tmp/session.jsonl\\n'\n"
-                        "  exit 0\n"
                         "fi\n"
                         "exit 2\n",
                         encoding="utf-8",
@@ -3906,6 +4139,7 @@ class SkillContractTests(unittest.TestCase):
                             "AGENT_TMUX_DELEGATE": str(delegate),
                             "AGENT_TMUX_CAPTURE": str(capture),
                             "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                            "CODEX_HOME": str(codex_home),
                             "HOME": str(tmp_path / "home"),
                             "PATH": f"{fake_bin}:{TEST_PATH}",
                         },
@@ -4172,17 +4406,18 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual("", result.stderr)
             self.assertFalse(capture.exists())
 
-    def test_agent_tmux_resume_latest_full_rejects_malformed_latest_output(self):
+    def test_agent_tmux_resume_latest_full_rejects_malformed_source_index(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
-            delegate = Path(tmp) / "delegate-agent-tmux"
+            tmp_path = Path(tmp)
+            codex_home = tmp_path / "codex-home"
+            codex_home.mkdir()
+            (codex_home / "sessions").mkdir()
+            (codex_home / "session_index.jsonl").write_text("not-json\n", encoding="utf-8")
+            delegate = tmp_path / "delegate-agent-tmux"
             delegate.write_text(
                 "#!/usr/bin/env bash\n"
                 "if [ \"$1\" = has ]; then\n"
                 "  exit 1\n"
-                "fi\n"
-                "if [ \"$1\" = codex-latest ]; then\n"
-                "  echo malformed-success-line-without-tabs\n"
-                "  exit 0\n"
                 "fi\n"
                 "exit 2\n",
                 encoding="utf-8",
@@ -4197,23 +4432,22 @@ class SkillContractTests(unittest.TestCase):
                 text=True,
                 env={
                     "AGENT_TMUX_DELEGATE": str(delegate),
+                    "CODEX_HOME": str(codex_home),
                     "PATH": "/usr/bin:/bin",
                 },
             )
             self.assertEqual(result.returncode, 2)
-            self.assertIn("codex-latest returned malformed output", result.stderr)
+            self.assertIn("malformed Codex session index record", result.stderr)
 
-    def test_agent_tmux_resume_latest_full_rejects_latest_extra_output_line(self):
+    def test_agent_tmux_resume_latest_full_rejects_missing_source_index(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
-            delegate = Path(tmp) / "delegate-agent-tmux"
+            tmp_path = Path(tmp)
+            codex_home = tmp_path / "codex-home"
+            delegate = tmp_path / "delegate-agent-tmux"
             delegate.write_text(
                 "#!/usr/bin/env bash\n"
                 "if [ \"$1\" = has ]; then\n"
                 "  exit 1\n"
-                "fi\n"
-                "if [ \"$1\" = codex-latest ]; then\n"
-                "  printf 'Thread\\tid-123\\t2026-05-12T00:00:00Z\\t/tmp/session.jsonl\\nextra\\n'\n"
-                "  exit 0\n"
                 "fi\n"
                 "exit 2\n",
                 encoding="utf-8",
@@ -4228,24 +4462,51 @@ class SkillContractTests(unittest.TestCase):
                 text=True,
                 env={
                     "AGENT_TMUX_DELEGATE": str(delegate),
+                    "CODEX_HOME": str(codex_home),
                     "PATH": "/usr/bin:/bin",
                 },
             )
             self.assertEqual(result.returncode, 2)
-            self.assertIn("codex-latest returned malformed output", result.stderr)
+            self.assertIn("Codex session index not found", result.stderr)
 
-    def test_agent_tmux_resume_latest_full_rejects_latest_stderr_warning(self):
+    def test_agent_tmux_resume_latest_full_rejects_multiple_session_files(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
-            delegate = Path(tmp) / "delegate-agent-tmux"
+            tmp_path = Path(tmp)
+            repo_path = Path(repo)
+            codex_home = tmp_path / "codex-home"
+            sessions = codex_home / "sessions" / "2026" / "05" / "12"
+            sessions.mkdir(parents=True)
+            session_id = "66666666-6666-4666-8666-666666666666"
+            (codex_home / "session_index.jsonl").write_text(
+                json.dumps(
+                    {
+                        "id": session_id,
+                        "thread_name": repo_path.name,
+                        "updated_at": "2026-05-12T00:00:00Z",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            for prefix in ("left", "right"):
+                (sessions / f"{prefix}-{session_id}.jsonl").write_text(
+                    json.dumps(
+                        {
+                            "type": "session_meta",
+                            "payload": {
+                                "id": session_id,
+                                "cwd": str(repo_path.resolve()),
+                            },
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            delegate = tmp_path / "delegate-agent-tmux"
             delegate.write_text(
                 "#!/usr/bin/env bash\n"
                 "if [ \"$1\" = has ]; then\n"
                 "  exit 1\n"
-                "fi\n"
-                "if [ \"$1\" = codex-latest ]; then\n"
-                "  printf 'warning: stale state\\n' >&2\n"
-                "  printf 'Thread\\tid-123\\t2026-05-12T00:00:00Z\\t/tmp/session.jsonl\\n'\n"
-                "  exit 0\n"
                 "fi\n"
                 "exit 2\n",
                 encoding="utf-8",
@@ -4260,12 +4521,12 @@ class SkillContractTests(unittest.TestCase):
                 text=True,
                 env={
                     "AGENT_TMUX_DELEGATE": str(delegate),
+                    "CODEX_HOME": str(codex_home),
                     "PATH": "/usr/bin:/bin",
                 },
             )
             self.assertEqual(result.returncode, 2)
-            self.assertIn("warning: stale state", result.stderr)
-            self.assertIn("codex-latest wrote stderr", result.stderr)
+            self.assertIn("Codex session id matched multiple files", result.stderr)
 
     def test_agent_tmux_full_alias_rejects_bypass_flag(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:

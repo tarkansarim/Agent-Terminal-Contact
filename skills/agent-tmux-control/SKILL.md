@@ -201,8 +201,9 @@ agent-tmux codex-resume-full <session> <repo> <thread-name-or-id>
 
 Resume the latest recorded Codex thread for a repo with the same visible
 profile. After the requested tmux session preflight passes, this helper resolves
-the latest thread and starts `codex ... resume <thread> [prompt]`; it does not
-pass a prompt to ambiguous `resume --last` positional parsing:
+the latest thread through the source-owned `codex-latest` path and starts
+`codex ... resume <thread> [prompt]`; it does not pass a prompt to ambiguous
+`resume --last` positional parsing:
 
 ```bash
 agent-tmux codex-resume-latest-full <session> <repo>
@@ -212,9 +213,13 @@ The wrapper expands these aliases to Codex CLI flags `-s danger-full-access -a
 never` in the delegated command line so later captures and process inspection
 show the worker was started with `danger-full-access` and `never` approval. Do not use
 `--dangerously-bypass-approvals-and-sandbox` for this workflow.
-Latest-thread parsing for these aliases is fail-closed: stderr, multi-line
-stdout, or anything other than the expected four tab-separated `codex-latest`
-fields is refused before a worker launch.
+Latest-thread parsing for these aliases is fail-closed. `codex-latest` reads
+`${CODEX_HOME:-~/.codex}/session_index.jsonl` and the matching session file
+directly. A session qualifies only when the session file has exact resolved
+`cwd`/function-call `workdir` evidence for the repo, or when the index
+`thread_name` exactly equals the repo basename. Missing metadata, duplicate
+newest candidates, and ambiguous session-file matches fail closed before a
+worker launch.
 
 Codex launch/resume routes through this wrapper require the requested tmux
 session name to be unused. If that session already exists, the wrapper refuses

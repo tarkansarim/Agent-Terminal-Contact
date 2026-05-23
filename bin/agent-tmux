@@ -15,6 +15,7 @@ Usage:
   agent-tmux codex-code-map-sidecar-fork <workdir> <anchor> <codex-session-id> [focus prompt...]
   agent-tmux codex-code-map-validate-artifacts <artifact-dir>
   agent-tmux codex-existing <workdir> [preferred-session]
+  agent-tmux codex-latest <workdir>
   agent-tmux logs status
   agent-tmux logs prune [--older-than 14d] [--max-size 50M] [--keep 3]
   agent-tmux <regular-agent-tmux-command> [...]
@@ -39,9 +40,10 @@ inside a stale pane. Older same-repo sessions are ignored for these explicit
 routes.
 
 codex-existing is delegated, but an empty rc=1 absence result is normalized into
-a clear stderr line for machine callers. Other regular commands are delegated
-unchanged to /usr/local/bin/agent-tmux by default. Set AGENT_TMUX_DELEGATE to
-test or override the delegated helper path.
+a clear stderr line for machine callers. codex-latest is source-owned and reads
+the Codex session index plus session files directly. Other regular commands are
+delegated unchanged to /usr/local/bin/agent-tmux by default. Set
+AGENT_TMUX_DELEGATE to test or override the delegated helper path.
 
 Session logs are source-owned by this wrapper for start/codex launch routes and
 pipe-log. The default cap is 50M per live log with 3 rotated parts. Override with
@@ -2651,6 +2653,218 @@ inspect_exact_codex_existing() {
 
 latest_thread_for_workdir() {
     local workdir="$1"
+    source_owned_codex_latest "${workdir}" | {
+        local latest_line
+        IFS= read -r latest_line || die "codex-latest returned no session for workdir: ${workdir}"
+        [[ -n "${latest_line}" ]] || die "codex-latest returned no session for workdir: ${workdir}"
+        local extra_line
+        if IFS= read -r extra_line; then
+            die "codex-latest returned malformed output for workdir: ${workdir}"
+        fi
+        local thread_name
+        local session_id
+        local timestamp
+        local path
+        local extra
+        IFS=$'\t' read -r thread_name session_id timestamp path extra <<<"${latest_line}"
+        [[ -z "${extra:-}" && -n "${thread_name}" && -n "${session_id}" && -n "${timestamp}" && -n "${path}" ]] || die "codex-latest returned malformed output: ${latest_line}"
+        printf "%s\n" "${thread_name}"
+    }
+}
+
+source_owned_codex_latest() {
+    (($# == 1)) || die "codex-latest requires <workdir>"
+    local workdir="$1"
+    local resolved_workdir
+    resolved_workdir="$(canonical_workdir "${workdir}")"
+    local codex_home="${CODEX_HOME:-${HOME:-}/.codex}"
+    python3 - "${resolved_workdir}" "${codex_home}" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+repo = Path(sys.argv[1]).resolve()
+codex_home = Path(sys.argv[2]).expanduser()
+index_path = codex_home / "session_index.jsonl"
+sessions_dir = codex_home / "sessions"
+repo_name = repo.name
+repo_string = str(repo)
+SESSION_ID_RE = re.compile(
+    r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
+)
+
+if not index_path.is_file():
+    print(f"agent-tmux: Codex session index not found: {index_path}", file=sys.stderr)
+    raise SystemExit(1)
+if not sessions_dir.is_dir():
+    print(f"agent-tmux: Codex sessions directory not found: {sessions_dir}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def parse_record(raw: str, source: str) -> dict:
+    try:
+        record = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"agent-tmux: malformed Codex session index record in {source}: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+    if not isinstance(record, dict):
+        print(f"agent-tmux: malformed Codex session index record in {source}: not an object", file=sys.stderr)
+        raise SystemExit(1)
+    return record
+
+
+def resolve_path(raw: object) -> Path | None:
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return Path(raw).expanduser().resolve()
+    except OSError:
+        return None
+
+
+session_files_by_id: dict[str, list[Path]] = {}
+for session_file in sessions_dir.rglob("*.jsonl"):
+    for match in SESSION_ID_RE.findall(session_file.name):
+        session_files_by_id.setdefault(match.lower(), []).append(session_file)
+
+
+def session_file_for(session_id: str) -> Path | None:
+    matches = sorted(session_files_by_id.get(session_id.lower(), []))
+    if not matches:
+        return None
+    if len(matches) > 1:
+        print(f"agent-tmux: Codex session id matched multiple files: {session_id}", file=sys.stderr)
+        raise SystemExit(1)
+    return matches[0]
+
+
+def session_file_matches_repo(path: Path, *, deep: bool) -> bool:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for raw in handle:
+                if not deep and '"session_meta"' not in raw:
+                    return False
+                try:
+                    record = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                payload = record.get("payload")
+                if record.get("type") == "session_meta" and isinstance(payload, dict):
+                    cwd = resolve_path(payload.get("cwd"))
+                    if cwd == repo:
+                        return True
+                    continue
+                if not deep or repo_string not in raw:
+                    continue
+                if isinstance(payload, dict) and payload.get("type") == "function_call":
+                    arguments = payload.get("arguments")
+                    if not isinstance(arguments, str):
+                        continue
+                    try:
+                        parsed_args = json.loads(arguments)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(parsed_args, dict):
+                        continue
+                    workdir = resolve_path(parsed_args.get("workdir"))
+                    if workdir == repo:
+                        return True
+    except OSError as exc:
+        print(f"agent-tmux: failed to read Codex session file {path}: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+    return False
+
+
+records = []
+with index_path.open("r", encoding="utf-8", errors="replace") as handle:
+    for line_number, raw in enumerate(handle, 1):
+        raw = raw.strip()
+        if not raw:
+            continue
+        record = parse_record(raw, f"{index_path}:{line_number}")
+        session_id = record.get("id")
+        thread_name = record.get("thread_name")
+        updated_at = record.get("updated_at")
+        if not all(isinstance(value, str) and value for value in (session_id, thread_name, updated_at)):
+            print(f"agent-tmux: malformed Codex session index record in {index_path}:{line_number}: missing id, thread_name, or updated_at", file=sys.stderr)
+            raise SystemExit(1)
+        records.append(
+            {
+                "id": session_id,
+                "thread_name": thread_name,
+                "updated_at": updated_at,
+                "line_number": line_number,
+            }
+        )
+
+if not records:
+    print(f"agent-tmux: Codex session index is empty: {index_path}", file=sys.stderr)
+    raise SystemExit(1)
+
+records.sort(key=lambda item: (item["updated_at"], item["line_number"]), reverse=True)
+candidates = []
+best_updated = None
+for record in records:
+    if best_updated is not None and record["updated_at"] != best_updated:
+        break
+    path = session_file_for(record["id"])
+    exact_thread_name = record["thread_name"] == repo_name
+    repo_named_thread = repo_name in record["thread_name"]
+    exact_session_repo = path is not None and session_file_matches_repo(path, deep=repo_named_thread)
+    if exact_thread_name or exact_session_repo:
+        best_updated = record["updated_at"]
+        candidates.append({**record, "path": path})
+
+if not candidates:
+    for record in records:
+        path = session_file_for(record["id"])
+        if path is None:
+            continue
+        exact_thread_name = record["thread_name"] == repo_name
+        repo_named_thread = repo_name in record["thread_name"]
+        exact_session_repo = session_file_matches_repo(path, deep=repo_named_thread)
+        if exact_thread_name or exact_session_repo:
+            best_updated = record["updated_at"]
+            candidates.append({**record, "path": path})
+            break
+    if best_updated is not None:
+        for record in records:
+            if record["updated_at"] != best_updated:
+                continue
+            if any(candidate["id"] == record["id"] for candidate in candidates):
+                continue
+            path = session_file_for(record["id"])
+            if path is None:
+                continue
+            exact_thread_name = record["thread_name"] == repo_name
+            repo_named_thread = repo_name in record["thread_name"]
+            exact_session_repo = session_file_matches_repo(path, deep=repo_named_thread)
+            if exact_thread_name or exact_session_repo:
+                candidates.append({**record, "path": path})
+    if not candidates:
+        print(f"agent-tmux: no Codex session found for workdir: {repo}", file=sys.stderr)
+        raise SystemExit(1)
+
+candidates.sort(key=lambda item: (item["updated_at"], item["line_number"]), reverse=True)
+best = candidates[0]
+same_updated = [item for item in candidates if item["updated_at"] == best["updated_at"]]
+if len(same_updated) > 1 and len({item["id"] for item in same_updated}) > 1:
+    ids = ", ".join(item["id"] for item in same_updated)
+    print(f"agent-tmux: multiple latest Codex sessions found for workdir {repo}: {ids}", file=sys.stderr)
+    raise SystemExit(1)
+path = best["path"] or session_file_for(best["id"])
+if path is None:
+    print(f"agent-tmux: latest Codex session file not found for id: {best['id']}", file=sys.stderr)
+    raise SystemExit(1)
+print(f"{best['thread_name']}\t{best['id']}\t{best['updated_at']}\t{path}")
+PY
+}
+
+delegated_latest_thread_for_workdir() {
+    local workdir="$1"
     require_delegate
     local stdout_file
     local stderr_file
@@ -2670,25 +2884,25 @@ latest_thread_for_workdir() {
             cat "${stderr_file}" >&2
         fi
         rm -f "${stdout_file}" "${stderr_file}"
-        die "codex-latest failed for workdir: ${workdir}"
+        die "delegated codex-latest failed for workdir: ${workdir}"
     fi
     if ((stderr_present)); then
         cat "${stderr_file}" >&2
         rm -f "${stdout_file}" "${stderr_file}"
-        die "codex-latest wrote stderr for workdir: ${workdir}"
+        die "delegated codex-latest wrote stderr for workdir: ${workdir}"
     fi
     rm -f "${stdout_file}" "${stderr_file}"
-    ((${#latest_lines[@]} == 1)) || die "codex-latest returned malformed output for workdir: ${workdir}"
+    ((${#latest_lines[@]} == 1)) || die "delegated codex-latest returned malformed output for workdir: ${workdir}"
     local latest_line
     latest_line="${latest_lines[0]}"
-    [[ -n "${latest_line}" ]] || die "codex-latest returned no session for workdir: ${workdir}"
+    [[ -n "${latest_line}" ]] || die "delegated codex-latest returned no session for workdir: ${workdir}"
     local thread_name
     local session_id
     local timestamp
     local path
     local extra
     IFS=$'\t' read -r thread_name session_id timestamp path extra <<<"${latest_line}"
-    [[ -z "${extra:-}" && -n "${thread_name}" && -n "${session_id}" && -n "${timestamp}" && -n "${path}" ]] || die "codex-latest returned malformed output: ${latest_line}"
+    [[ -z "${extra:-}" && -n "${thread_name}" && -n "${session_id}" && -n "${timestamp}" && -n "${path}" ]] || die "delegated codex-latest returned malformed output: ${latest_line}"
     printf "%s\n" "${thread_name}"
 }
 
@@ -2891,6 +3105,9 @@ main() {
             ;;
         codex-existing)
             delegate_codex_existing "$@"
+            ;;
+        codex-latest)
+            source_owned_codex_latest "$@"
             ;;
         pipe-log)
             (($# == 1)) || die "pipe-log requires <session>"
