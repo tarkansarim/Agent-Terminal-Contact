@@ -163,11 +163,11 @@ def write_sidecar_request(artifact_dir, *, session, repo):
     (registry_dir / f"{session}.txt").write_text(content, encoding="utf-8")
 
 
-def ps_response(pid=1234, args="node /home/tarkan/.nvm/lib/node_modules/@openai/codex/bin/codex.js --no-alt-screen"):
+def ps_response(pid=1234, args="node /opt/node/lib/node_modules/@openai/codex/bin/codex.js --no-alt-screen"):
     return {("ps", "-p", str(pid), "-o", "args="): CommandResult((), 0, args + "\n", "")}
 
 
-def tty_response(tty="/dev/pts/7", args="node /home/tarkan/.nvm/lib/node_modules/@openai/codex/bin/codex.js --no-alt-screen", pid=1234):
+def tty_response(tty="/dev/pts/7", args="node /opt/node/lib/node_modules/@openai/codex/bin/codex.js --no-alt-screen", pid=1234):
     return {
         ("ps", "-t", tty, "-o", "pid=,ppid=,pgid=,stat=,args="): CommandResult(
             (), 0, f"{pid} 1 {pid} Sl+ {args}\n", ""
@@ -175,7 +175,7 @@ def tty_response(tty="/dev/pts/7", args="node /home/tarkan/.nvm/lib/node_modules
     }
 
 
-def proc_response(pid=1234, args="node /home/tarkan/.nvm/lib/node_modules/@openai/codex/bin/codex.js --no-alt-screen", exe="/usr/bin/node"):
+def proc_response(pid=1234, args="node /opt/node/lib/node_modules/@openai/codex/bin/codex.js --no-alt-screen", exe="/usr/bin/node"):
     argv = tuple(shlex.split(args))
     return {
         ("cat", f"/proc/{pid}/cmdline"): CommandResult((), 0, "\0".join(argv) + "\0", ""),
@@ -184,7 +184,7 @@ def proc_response(pid=1234, args="node /home/tarkan/.nvm/lib/node_modules/@opena
     }
 
 
-def proc_argv_response(pid=1234, argv=("node", "/home/tarkan/.nvm/lib/node_modules/@openai/codex/bin/codex.js"), exe="/usr/bin/node"):
+def proc_argv_response(pid=1234, argv=("node", "/opt/node/lib/node_modules/@openai/codex/bin/codex.js"), exe="/usr/bin/node"):
     return {
         ("cat", f"/proc/{pid}/cmdline"): CommandResult((), 0, "\0".join(argv) + "\0", ""),
         ("readlink", "-f", f"/proc/{pid}/exe"): CommandResult((), 0, f"{exe}\n", ""),

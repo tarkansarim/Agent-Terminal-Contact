@@ -526,6 +526,101 @@ canonical_workdir() {
     printf "%s\n" "${resolved}"
 }
 
+require_codex_project_trust() {
+    local workdir="$1"
+    local resolved_workdir
+    local home="${HOME:-${PWD}}"
+    local codex_home="${CODEX_HOME:-${home}/.codex}"
+    local config_path="${codex_home}/config.toml"
+    local result
+    local rc
+
+    resolved_workdir="$(canonical_workdir "${workdir}")"
+    if [[ ! -f "${config_path}" ]]; then
+        die "Codex project trust is not configured for ${resolved_workdir}; missing config: ${config_path}. Run Codex once in that project and approve the trust prompt, or add an exact [projects.<path>] trust entry before launching a tmux Codex worker."
+    fi
+
+    set +e
+    result="$(python3 - "${config_path}" "${resolved_workdir}" <<'PY'
+from __future__ import annotations
+
+import ast
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+workdir = sys.argv[2]
+
+
+def suggested_entry(path: str) -> str:
+    escaped = path.replace("\\", "\\\\").replace('"', '\\"')
+    return f'[projects."{escaped}"]\ntrust_level = "trusted"'
+
+
+def fallback_trusted(text: str) -> bool:
+    current_project = None
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current_project = None
+            table = line[1:-1].strip()
+            if not table.startswith("projects."):
+                continue
+            key = table[len("projects.") :].strip()
+            try:
+                current_project = ast.literal_eval(key)
+            except (SyntaxError, ValueError):
+                current_project = None
+            continue
+        if current_project == workdir and "=" in line:
+            key, value = [part.strip() for part in line.split("=", 1)]
+            if key == "trust_level":
+                try:
+                    return ast.literal_eval(value) == "trusted"
+                except (SyntaxError, ValueError):
+                    return value.strip('"') == "trusted"
+    return False
+
+
+try:
+    import tomllib  # type: ignore[import-not-found]
+except ModuleNotFoundError:
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"failed to read Codex config {config_path}: {exc}")
+        sys.exit(3)
+    if fallback_trusted(text):
+        sys.exit(0)
+else:
+    try:
+        with config_path.open("rb") as handle:
+            data = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        print(f"failed to parse Codex config {config_path}: {exc}")
+        sys.exit(3)
+    project = data.get("projects", {}).get(workdir)
+    if isinstance(project, dict) and project.get("trust_level") == "trusted":
+        sys.exit(0)
+
+print(
+    "Codex project trust is not configured for "
+    f"{workdir}. Add this exact entry to {config_path} before launching a tmux Codex worker:\n"
+    f"{suggested_entry(workdir)}\n"
+    "Alternatively, run Codex once in that project and approve the trust prompt, then retry."
+)
+sys.exit(1)
+PY
+)"
+    rc=$?
+    set -e
+    if ((rc != 0)); then
+        die "${result}"
+    fi
+}
+
 slug_component() {
     local raw="${1,,}"
     local slug
@@ -584,8 +679,9 @@ require_bwrap() {
 
 code_map_codex_bin() {
     local codex_bin
-    if [[ -x "/home/tarkan/.local/bin/codex" ]]; then
-        codex_bin="/home/tarkan/.local/bin/codex"
+    local user_codex_bin="${HOME:-}/.local/bin/codex"
+    if [[ -n "${HOME:-}" && -x "${user_codex_bin}" ]]; then
+        codex_bin="${user_codex_bin}"
     else
         codex_bin="$(command -v codex 2>/dev/null || true)"
     fi
@@ -609,15 +705,17 @@ code_map_real_codex_bin() {
 require_trusted_codex_executable() {
     local codex_bin="$1"
     local real_codex_bin="$2"
+    local home_dir="${HOME:-}"
+    [[ -n "${home_dir}" ]] || die "HOME is required to trust user-scoped Codex executable paths"
     case "${codex_bin}" in
-        /home/tarkan/.local/bin/codex|/home/tarkan/.nvm/versions/node/*/bin/codex|/home/tarkan/.nvm/versions/node/*/lib/node_modules/@openai/codex/bin/codex.js)
+        "${home_dir}"/.local/bin/codex|"${home_dir}"/.nvm/versions/node/*/bin/codex|"${home_dir}"/.nvm/versions/node/*/lib/node_modules/@openai/codex/bin/codex.js)
             ;;
         *)
             die "untrusted Codex executable for code-map sidecar: ${codex_bin}"
             ;;
     esac
     case "${real_codex_bin}" in
-        /home/tarkan/.nvm/versions/node/*/lib/node_modules/@openai/codex/bin/codex.js)
+        "${home_dir}"/.nvm/versions/node/*/lib/node_modules/@openai/codex/bin/codex.js)
             ;;
         *)
             die "untrusted real Codex executable for code-map sidecar: ${real_codex_bin}"
@@ -2545,9 +2643,21 @@ start_code_map_bwrap_codex_session() {
 
 require_new_requested_session() {
     local session="$1"
+    local output
+    local rc
     require_delegate
-    if "${DELEGATE}" has "${session}" >/dev/null 2>&1; then
+    set +e
+    output="$("${DELEGATE}" has "${session}" 2>&1)"
+    rc=$?
+    set -e
+    if ((rc == 0)); then
         die "requested session already exists: ${session}; choose a unique session name or stop it before launching"
+    fi
+    if ((rc != 1)); then
+        if [[ -n "${output}" ]]; then
+            die "failed to preflight requested session ${session}: delegated agent-tmux has exited ${rc}: ${output}"
+        fi
+        die "failed to preflight requested session ${session}: delegated agent-tmux has exited ${rc}"
     fi
 }
 
@@ -3001,6 +3111,7 @@ main() {
             local workdir="$2"
             shift 2
             require_new_requested_session "${session}"
+            require_codex_project_trust "${workdir}"
             start_session "${session}" "${workdir}" codex "${FULL_PERMISSION_ARGS[@]}" "$@"
             ;;
         codex-resume-full)
@@ -3015,6 +3126,7 @@ main() {
                 prompt_args=("$*")
             fi
             require_new_requested_session "${session}"
+            require_codex_project_trust "${workdir}"
             start_session "${session}" "${workdir}" codex "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
             ;;
         codex-resume-latest-full)
@@ -3031,6 +3143,7 @@ main() {
             if (($# > 0)); then
                 prompt_args=("$*")
             fi
+            require_codex_project_trust "${workdir}"
             start_session "${session}" "${workdir}" codex "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
             ;;
         codex-code-map-sidecar)
@@ -3049,6 +3162,7 @@ main() {
             local workdir="$2"
             shift 2
             require_new_requested_session "${session}"
+            require_codex_project_trust "${workdir}"
             start_session "${session}" "${workdir}" codex "$@"
             ;;
         codex-resume)
@@ -3065,10 +3179,12 @@ main() {
                     prompt_args=("$*")
                 fi
                 require_new_requested_session "${session}"
+                require_codex_project_trust "${workdir}"
                 start_session "${session}" "${workdir}" codex "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
                 return
             fi
             require_new_requested_session "${session}"
+            require_codex_project_trust "${workdir}"
             start_session "${session}" "${workdir}" codex resume "${thread_name}" "$@"
             ;;
         codex-resume-latest)
@@ -3087,6 +3203,7 @@ main() {
                 if (($# > 0)); then
                     prompt_args=("$*")
                 fi
+                require_codex_project_trust "${workdir}"
                 start_session "${session}" "${workdir}" codex "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
                 return
             fi
@@ -3098,6 +3215,7 @@ main() {
             if (($# > 0)); then
                 prompt_args=("$*")
             fi
+            require_codex_project_trust "${workdir}"
             start_session "${session}" "${workdir}" codex resume "${thread_name}" "${prompt_args[@]}"
             ;;
         -h|--help|help)

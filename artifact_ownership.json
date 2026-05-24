@@ -35,6 +35,28 @@
       "check_command": "cd {source_repo} && bash scripts/install.sh --check"
     },
     {
+      "id": "agent-contact-windows-powershell",
+      "kind": "command",
+      "ownership": "owned",
+      "installed_path": "$HOME/.local/bin/agent-contact.ps1",
+      "source_path": "bin/agent-contact.ps1",
+      "install_command": "cd {source_repo}; pwsh scripts/install.ps1 -Force",
+      "check_command": "cd {source_repo}; pwsh scripts/install.ps1 -Check",
+      "command_names": ["agent-contact.ps1"],
+      "notes": "Windows PowerShell shim; scripts/install.ps1 also writes agent-contact.root beside it so the copied shim can find this source repo."
+    },
+    {
+      "id": "agent-contact-windows-cmd",
+      "kind": "command",
+      "ownership": "owned",
+      "installed_path": "$HOME/.local/bin/agent-contact.cmd",
+      "source_path": "bin/agent-contact.cmd",
+      "install_command": "cd {source_repo}; pwsh scripts/install.ps1 -Force",
+      "check_command": "cd {source_repo}; pwsh scripts/install.ps1 -Check",
+      "command_names": ["agent-contact", "agent-contact.cmd"],
+      "notes": "Windows cmd.exe shim; delegates to agent-contact.ps1."
+    },
+    {
       "id": "system-agent-tmux-helper",
       "kind": "command",
       "ownership": "not_owned",

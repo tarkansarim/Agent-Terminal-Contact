@@ -195,15 +195,42 @@ def _installed_match(installed_path: Path, source_path: Path | None, ownership: 
 
 def _matches_query(report: dict[str, Any], query: str, environment: dict[str, str]) -> bool:
     if query == report["id"]:
+        if query in report.get("command_names", []):
+            resolved_command = _which_command(query, environment)
+            if resolved_command is not None:
+                return _same_path(Path(resolved_command), Path(report["installed_path"]))
         return True
     if query in report.get("command_names", []):
-        resolved_command = shutil.which(query, path=environment.get("PATH", ""))
+        resolved_command = _which_command(query, environment)
         if resolved_command is None:
-            return Path(report["installed_path"]).name == query
+            installed_path = Path(report["installed_path"])
+            return installed_path.name == query and (installed_path.exists() or installed_path.is_symlink())
         return _same_path(Path(resolved_command), Path(report["installed_path"]))
     if "/" in query or query.startswith(".") or query.startswith("~") or query.startswith("$"):
         return _same_path(_expand_path(query, environment), Path(report["installed_path"]))
     return False
+
+
+def _which_command(query: str, environment: dict[str, str]) -> str | None:
+    path_value = environment.get("PATH", "")
+    resolved = shutil.which(query, path=path_value)
+    if resolved is not None:
+        return resolved
+    if Path(query).suffix:
+        return None
+    pathext = environment.get("PATHEXT", "")
+    if not pathext:
+        return None
+    extensions = [item for item in re.split(r"[;:]", pathext) if item]
+    for directory in path_value.split(os.pathsep):
+        if not directory:
+            continue
+        for extension in extensions:
+            for candidate_extension in {extension, extension.lower(), extension.upper()}:
+                candidate = Path(directory) / f"{query}{candidate_extension}"
+                if candidate.is_file():
+                    return str(candidate)
+    return None
 
 
 def _same_path(left: Path, right: Path) -> bool:

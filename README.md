@@ -8,7 +8,7 @@ V0 supports tmux-managed sessions only.
 
 ```bash
 bin/agent-contact send \
-  --repo /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2 \
+  --repo /path/to/repo \
   --provider codex \
   --message "Please report the current issue and verifier."
 ```
@@ -46,8 +46,8 @@ export narrow roots only:
 ```bash
 bin/agent-contact trust-roots --repo /path/to/repo --provider codex --json
 
-AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS=/home/tarkan/.nvm/versions/node/v22.22.0/lib/node_modules/@openai/codex \
-AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS=/home/tarkan/.nvm/versions/node/v22.22.0/bin \
+AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS="$HOME/.nvm/versions/node/vX.Y.Z/lib/node_modules/@openai/codex" \
+AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS="$HOME/.nvm/versions/node/vX.Y.Z/bin" \
   bin/agent-contact send --repo /path/to/repo --provider codex --message "..." --dry-run
 ```
 
@@ -93,6 +93,19 @@ Install the user-level command and skill:
 ```bash
 bash scripts/install.sh
 ```
+
+On Windows PowerShell, install the `agent-contact` shims and Codex skill
+snapshot with:
+
+```powershell
+pwsh scripts/install.ps1 -Force
+pwsh scripts/install.ps1 -Check
+```
+
+The source-owned `agent-tmux` wrapper is Bash/tmux-specific. Use
+`scripts/install.sh` on Linux or WSL for the wrapper; the Windows installer
+intentionally installs `agent-contact.ps1`, `agent-contact.cmd`, and the skill
+snapshot only.
 
 If an installed skill already exists and differs from this repo source, inspect
 the diff and use `--force` only when replacing it is intentional:
@@ -151,19 +164,19 @@ before launch/contact.
 For a Claude-owned repo, a safe explicit lane looks like:
 
 ```bash
-agent-tmux start owner-ComfyComannder-109-claude /home/tarkan/Dropbox/work/MyTools/ComfyComannder claude --permission-mode bypassPermissions --name owner-ComfyComannder-109-claude
+agent-tmux start owner-example-claude /path/to/claude-owned-repo claude --permission-mode bypassPermissions --name owner-example-claude
 
 agent-contact trust-roots \
-  --repo /home/tarkan/Dropbox/work/MyTools/ComfyComannder \
+  --repo /path/to/claude-owned-repo \
   --provider claude \
-  --session owner-ComfyComannder-109-claude \
+  --session owner-example-claude \
   --json
 
-AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS=/home/tarkan/.local/share/claude/versions/2.1.143 \
+AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS="$HOME/.local/share/claude/versions/X.Y.Z" \
   agent-contact send \
-    --repo /home/tarkan/Dropbox/work/MyTools/ComfyComannder \
+    --repo /path/to/claude-owned-repo \
     --provider claude \
-    --session owner-ComfyComannder-109-claude \
+    --session owner-example-claude \
     --message "Please triage the assigned ticket." \
     --dry-run
 ```
@@ -202,6 +215,20 @@ delegated helper to create the requested session. The wrapper also recognizes
 the legacy supervise-style shape `agent-tmux codex-resume-latest <session>
 <repo> -s danger-full-access -a never [prompt]` and routes it through the same
 deterministic latest-thread path.
+
+Before launching a Codex worker route, the wrapper also verifies that
+`${CODEX_HOME:-~/.codex}/config.toml` contains an exact trusted project entry
+for the resolved workdir:
+
+```toml
+[projects."/absolute/repo/path"]
+trust_level = "trusted"
+```
+
+If the exact trust entry is missing, launch refuses before `tmux new-session`
+and prints the TOML block to add. This prevents a false `started` report when a
+new worker would otherwise stop at Codex's first-launch project trust screen and
+exit before `agent-contact` can reach it.
 
 The wrapper also normalizes `agent-tmux codex-existing <repo>` for supervised
 machine callers. A true no-existing-session result is `rc=1`, empty stdout, and

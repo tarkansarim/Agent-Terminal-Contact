@@ -24,11 +24,11 @@ CODEX_STARTER = (
     "│ >_ OpenAI Codex (v0.130.0)                     │\n"
     "│                                                │\n"
     "│ model:     gpt-5.5 xhigh   /model to change    │\n"
-    "│ directory: ~/Dropbox/work/MyTools/3dSculptTool │\n"
+    "│ directory: ~/work/example-repo                 │\n"
     "╰────────────────────────────────────────────────╯\n\n"
     "  Tip: Use /side to start a side conversation in a temporary fork without polluting the main thread.\n\n\n"
     "\u203a Improve documentation in @filename\n\n"
-    "  gpt-5.5 xhigh · ~/Dropbox/work/MyTools/3dSculptTool\n"
+    "  gpt-5.5 xhigh · ~/work/example-repo\n"
 )
 CODEX_DIM_STARTER = CODEX_STARTER.replace(
     "Improve documentation in @filename",
@@ -123,7 +123,7 @@ def claude_v2_wrapped_lines(lines, *, session="owner-SkillPackagingDiscipline-12
     first, *rest = lines
     return (
         "╭─── Claude Code v2.1.143 ─────────────────────────────────────────────────────╮\n"
-        "│                Welcome back Tarkan!                                          │\n"
+        "│                Welcome back User!                                            │\n"
         "╰──────────────────────────────────────────────────────────────────────────────╯\n\n"
         f"─────────────────────────────── {session} ──\n"
         f"❯\u00a0{first}\n"
@@ -727,7 +727,7 @@ class AgentContactCliTests(unittest.TestCase):
             script = write_provider_package(resolved)
             runner = FakeRunner(repo, CODEX_IDLE)
             runner.responses[("bash", "-lc", "command -v -- codex")] = CommandResult(
-                (), 0, "/home/tarkan/.local/bin/codex\n", ""
+                (), 0, "/opt/codex/bin/codex\n", ""
             )
             runner.responses[("bash", "-lc", "command -v -- npm")] = CommandResult((), 0, "/usr/bin/npm\n", "")
             runner.responses[("/usr/bin/npm", "root", "-g")] = CommandResult(
@@ -760,7 +760,7 @@ class AgentContactCliTests(unittest.TestCase):
             script = write_provider_package(resolved)
             runner = FakeRunner(repo, CODEX_IDLE)
             runner.responses[("bash", "-lc", "command -v -- codex")] = CommandResult(
-                (), 0, "/home/tarkan/.local/bin/codex\n", ""
+                (), 0, "/opt/codex/bin/codex\n", ""
             )
             runner.responses[("bash", "-lc", "command -v -- npm")] = CommandResult((), 0, "/tmp/npm\n", "")
             runner.responses[("/tmp/npm", "root", "-g")] = CommandResult(
@@ -963,7 +963,7 @@ class AgentContactCliTests(unittest.TestCase):
 
     def test_dry_run_reports_clear_path_for_claude_ticket_payload_with_working_wrapped_continuation(self):
         message = (
-            "Ticket #126 for project SkillPackagingDiscipline: http://127.0.0.1:8765/task/126\n"
+            "Ticket #126 for project SkillPackagingDiscipline: https://tickets.example.test/task/126\n"
             "Use `agent-ticket show 126` for full title/body. If taking it, move to 'Agent "
             "working', work from SOURCE, validate exact request, comment evidence, run "
             "`agent-ticket closeout-check 126 --strict`, then close."
@@ -971,7 +971,7 @@ class AgentContactCliTests(unittest.TestCase):
         contact_id = "AC-20260519T002857Z-0dae3206"
         live_wrapped_lines = [
             f'CONTACT_ID: {contact_id} MESSAGE_JSON: "Ticket #126 for',
-            "project SkillPackagingDiscipline: http://127.0.0.1:8765/task/126\\nUse",
+            "project SkillPackagingDiscipline: https://tickets.example.test/task/126\\nUse",
             "`agent-ticket show 126` for full title/body. If taking it, move to 'Agent",
             "working', work from SOURCE, validate exact request, comment evidence, run",
             "`agent-ticket closeout-check 126 --strict`, then close.\"",

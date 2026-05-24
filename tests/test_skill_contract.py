@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -70,7 +71,32 @@ def write_code_map_delegate(tmp_path, *, has_rc=1, pipe_rc=0):
     return delegate
 
 
+def write_fake_codex_install(tmp_path):
+    home = tmp_path / "home"
+    node_version = home / ".nvm" / "versions" / "node" / "v-test"
+    node_bin = node_version / "bin" / "node"
+    real_codex = node_version / "lib" / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+    user_codex = home / ".local" / "bin" / "codex"
+    node_bin.parent.mkdir(parents=True, exist_ok=True)
+    real_codex.parent.mkdir(parents=True, exist_ok=True)
+    user_codex.parent.mkdir(parents=True, exist_ok=True)
+    node_source = Path(shutil.which("node") or "/usr/bin/node")
+    if not node_source.is_file():
+        raise RuntimeError("node is required for the fake sidecar Codex fixture")
+    if not node_bin.exists():
+        node_bin.symlink_to(node_source)
+    real_codex.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    real_codex.chmod(0o755)
+    user_codex.write_text(
+        f"#!/usr/bin/env bash\nREAL_CODEX_DEFAULT=\"{real_codex}\"\nexec \"${{REAL_CODEX_DEFAULT}}\" \"$@\"\n",
+        encoding="utf-8",
+    )
+    user_codex.chmod(0o755)
+    return home, node_version
+
+
 def write_fake_tmux(tmp_path):
+    write_fake_codex_install(tmp_path)
     bin_dir = tmp_path / "fake-bin"
     bin_dir.mkdir()
     tmux = bin_dir / "tmux"
@@ -130,6 +156,7 @@ def write_codex_latest_fixture(tmp_path, repo, *, thread_name="Thread Name", ses
     codex_home = Path(tmp_path) / "codex-home"
     sessions = codex_home / "sessions" / "2026" / "05" / "12"
     sessions.mkdir(parents=True, exist_ok=True)
+    write_codex_project_trust(codex_home, repo)
     session_id = session_id or "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     (codex_home / "session_index.jsonl").write_text(
         json.dumps(
@@ -156,6 +183,16 @@ def write_codex_latest_fixture(tmp_path, repo, *, thread_name="Thread Name", ses
         encoding="utf-8",
     )
     return codex_home
+
+
+def write_codex_project_trust(codex_home, repo):
+    codex_home = Path(codex_home)
+    codex_home.mkdir(parents=True, exist_ok=True)
+    repo_path = str(Path(repo).resolve()).replace("\\", "\\\\").replace('"', '\\"')
+    (codex_home / "config.toml").write_text(
+        f'[projects."{repo_path}"]\ntrust_level = "trusted"\n',
+        encoding="utf-8",
+    )
 
 
 def write_fake_chmod(bin_dir, body):
@@ -217,7 +254,7 @@ class SkillContractTests(unittest.TestCase):
         description = description_match.group("description")
         body = match.group("body")
 
-        self.assertLessEqual(len(description), 260)
+        self.assertLessEqual(len(description), 210)
         for trigger in (
             "agent-tmux",
             "agent-contact",
@@ -251,7 +288,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("native Claude version binary printed by `agent-contact trust-roots`", text)
         self.assertIn("fail closed before launch/contact", text)
         self.assertIn("--provider claude", text)
-        self.assertIn("owner-ComfyComannder-109-claude", text)
+        self.assertIn("owner-example-claude", text)
         self.assertIn("do not start\na fresh chat first", text)
         self.assertIn("agent-tmux codex-latest", text)
         self.assertIn("agent-tmux codex-resume-latest", text)
@@ -296,6 +333,9 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("Do not fall back to raw `agent-tmux send`", text)
         self.assertIn("Do not use\n`--dangerously-bypass-approvals-and-sandbox`", text)
         self.assertIn("Codex launch/resume routes through this wrapper require the requested tmux", text)
+        self.assertIn("Before wrapper-launched Codex workers", text)
+        self.assertIn("[projects.\"<absolute repo path>\"]", text)
+        self.assertIn("refuses before `tmux new-session`", text)
         self.assertIn("legacy supervise-style shape", text)
         self.assertIn("a true no-existing-session result is `rc=1`, empty stdout", text)
         self.assertIn("the wrapper source-inspects that\nexact tmux session name", text)
@@ -320,6 +360,18 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(".local/bin/agent-tmux", result.stdout)
             self.assertIn(".codex/skills/agent-tmux-control/SKILL.md", result.stdout)
             self.assertNotIn("/usr/local/bin/agent-tmux", result.stdout)
+
+    def test_windows_install_script_documents_supported_artifacts(self):
+        text = (ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
+        self.assertIn("agent-contact.ps1", text)
+        self.assertIn("agent-contact.cmd", text)
+        self.assertIn("agent-contact.root", text)
+        self.assertIn("agent-tmux-control/SKILL.md", text)
+        self.assertIn("Linux/WSL only", text)
+        self.assertIn("-Check", text)
+        self.assertIn("Get-Command $Name", text)
+        self.assertIn('Assert-CommandResolvesTo "agent-contact"', text)
+        self.assertIn('Assert-CommandResolvesTo "agent-contact.cmd"', text)
 
     def test_install_check_verifies_user_level_command_and_skill_are_current(self):
         with tempfile.TemporaryDirectory() as home:
@@ -760,6 +812,9 @@ class SkillContractTests(unittest.TestCase):
     def test_agent_tmux_full_alias_expands_permission_args(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
             tmp_path = Path(tmp)
+            repo_path = Path(repo).resolve()
+            codex_home = tmp_path / "codex-home"
+            write_codex_project_trust(codex_home, repo_path)
             capture = tmp_path / "args.txt"
             delegate = tmp_path / "delegate-agent-tmux"
             delegate.write_text(
@@ -783,6 +838,7 @@ class SkillContractTests(unittest.TestCase):
                     "AGENT_TMUX_DELEGATE": str(delegate),
                     "AGENT_TMUX_CAPTURE": str(capture),
                     "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                    "CODEX_HOME": str(codex_home),
                     "HOME": str(tmp_path / "home"),
                     "PATH": f"{fake_bin}:{TEST_PATH}",
                 },
@@ -792,6 +848,89 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(lines[:6], ["new-session", "-d", "-s", "sess", "-c", repo])
             self.assertEqual(lines[6], "codex -s danger-full-access -a never --model gpt-5.5")
             self.assertIn("__log-writer", (tmp_path / "pipe.txt").read_text(encoding="utf-8"))
+
+    def test_agent_tmux_codex_full_refuses_missing_project_trust_before_tmux_start(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            codex_home = tmp_path / "codex-home"
+            codex_home.mkdir()
+            (codex_home / "config.toml").write_text("", encoding="utf-8")
+            capture = tmp_path / "args.txt"
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 1\n"
+                "fi\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            fake_bin = write_fake_tmux(tmp_path)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-full", "sess", repo],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                    "CODEX_HOME": str(codex_home),
+                    "HOME": str(tmp_path / "home"),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("Codex project trust is not configured", result.stderr)
+            self.assertIn("[projects.", result.stderr)
+            self.assertFalse(capture.exists())
+
+    def test_agent_tmux_codex_full_refuses_parent_only_project_trust(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            parent = tmp_path / "parent"
+            repo = parent / "repo"
+            repo.mkdir(parents=True)
+            codex_home = tmp_path / "codex-home"
+            codex_home.mkdir()
+            (codex_home / "config.toml").write_text(
+                f'[projects."{parent.resolve()}"]\ntrust_level = "trusted"\n',
+                encoding="utf-8",
+            )
+            capture = tmp_path / "args.txt"
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 1\n"
+                "fi\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            fake_bin = write_fake_tmux(tmp_path)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-full", "sess", str(repo)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                    "CODEX_HOME": str(codex_home),
+                    "HOME": str(tmp_path / "home"),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn(str(repo.resolve()), result.stderr)
+            self.assertFalse(capture.exists())
 
     def test_agent_tmux_full_alias_refuses_existing_requested_session(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
@@ -824,6 +963,39 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("requested session already exists: sess", result.stderr)
             self.assertFalse(capture.exists())
 
+    def test_agent_tmux_full_alias_fails_closed_when_delegate_has_errors(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            capture = tmp_path / "args.txt"
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  printf 'delegate unavailable\\n' >&2\n"
+                "  exit 2\n"
+                "fi\n"
+                "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-full", "sess", repo, "--model", "gpt-5.5"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("failed to preflight requested session sess", result.stderr)
+            self.assertIn("delegate unavailable", result.stderr)
+            self.assertFalse(capture.exists())
+
     def test_agent_tmux_code_map_sidecar_uses_deterministic_artifact_prompt(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -836,12 +1008,14 @@ class SkillContractTests(unittest.TestCase):
             artifact_root_second = tmp_path / "artifacts-second"
             delegate = write_code_map_delegate(tmp_path, has_rc=1)
             fake_bin = write_fake_tmux(tmp_path)
+            home = tmp_path / "home"
+            node_version = home / ".nvm" / "versions" / "node" / "v-test"
             env = {
                 "AGENT_TMUX_DELEGATE": str(delegate),
                 "AGENT_TMUX_CAPTURE": str(capture),
                 "AGENT_TMUX_PIPE_CAPTURE": str(pipe_capture),
                 "AGENT_TMUX_CODE_MAP_ARTIFACT_ROOT": str(artifact_root),
-                "HOME": str(tmp_path / "home"),
+                "HOME": str(home),
                 "PATH": f"{fake_bin}:{TEST_PATH}",
             }
             result = subprocess.run(
@@ -888,7 +1062,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("--dev /dev", command)
             self.assertNotIn("--dev-bind /dev /dev", command)
             self.assertNotIn(f"{fake_bin}/codex", command)
-            self.assertIn("/home/tarkan/.nvm/versions/node/", command)
+            self.assertIn(str(node_version), command)
             self.assertIn("/bin/node", command)
             self.assertIn("/lib/node_modules/@openai/codex/bin/codex.js", command)
             self.assertIn(f"--ro-bind {runtime_dir}/empty-dev-shm /dev/shm", command)
@@ -2353,8 +2527,8 @@ class SkillContractTests(unittest.TestCase):
 
     def test_agent_tmux_code_map_artifact_validator_rejects_private_key_blocks(self):
         cases = [
-            "-----BEGIN OPENSSH PRIVATE KEY-----\nopaque\n-----END OPENSSH PRIVATE KEY-----\n",
-            "-----BEGIN RSA PRIVATE KEY-----\nopaque\n-----END RSA PRIVATE KEY-----\n",
+            "-----BEGIN " + "OPENSSH PRIVATE KEY-----\nopaque\n-----END " + "OPENSSH PRIVATE KEY-----\n",
+            "-----BEGIN " + "RSA PRIVATE KEY-----\nopaque\n-----END " + "RSA PRIVATE KEY-----\n",
         ]
         for content in cases:
             with self.subTest(content=content.splitlines()[0]):
@@ -3709,6 +3883,7 @@ class SkillContractTests(unittest.TestCase):
             codex_home = tmp_path / "codex-home"
             sessions = codex_home / "sessions" / "2026" / "05" / "19"
             sessions.mkdir(parents=True)
+            write_codex_project_trust(codex_home, repo_path)
             stale_id = "11111111-1111-4111-8111-111111111111"
             latest_id = "22222222-2222-4222-8222-222222222222"
             (codex_home / "session_index.jsonl").write_text(
@@ -3848,6 +4023,7 @@ class SkillContractTests(unittest.TestCase):
             codex_home = tmp_path / "codex-home"
             sessions = codex_home / "sessions" / "2026" / "05" / "19"
             sessions.mkdir(parents=True)
+            write_codex_project_trust(codex_home, repo_path)
             latest_id = "55555555-5555-4555-8555-555555555555"
             (codex_home / "session_index.jsonl").write_text(
                 json.dumps(
@@ -4050,6 +4226,8 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
             tmp_path = Path(tmp)
             capture = tmp_path / "args.txt"
+            codex_home = tmp_path / "codex-home"
+            write_codex_project_trust(codex_home, repo)
             delegate = tmp_path / "delegate-agent-tmux"
             delegate.write_text(
                 "#!/usr/bin/env bash\n"
@@ -4086,6 +4264,7 @@ class SkillContractTests(unittest.TestCase):
                     "AGENT_TMUX_DELEGATE": str(delegate),
                     "AGENT_TMUX_CAPTURE": str(capture),
                     "AGENT_TMUX_PIPE_CAPTURE": str(tmp_path / "pipe.txt"),
+                    "CODEX_HOME": str(codex_home),
                     "HOME": str(tmp_path / "home"),
                     "PATH": f"{fake_bin}:{TEST_PATH}",
                 },

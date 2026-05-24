@@ -189,7 +189,52 @@ class ArtifactOwnershipCliTests(unittest.TestCase):
         self.assertEqual(ids["agent-contact"]["ownership"], "owned")
         self.assertEqual(ids["agent-tmux-wrapper"]["ownership"], "owned")
         self.assertEqual(ids["agent-tmux-control-skill"]["ownership"], "owned")
+        self.assertEqual(ids["agent-contact-windows-powershell"]["ownership"], "owned")
+        self.assertEqual(ids["agent-contact-windows-cmd"]["ownership"], "owned")
         self.assertEqual(ids["system-agent-tmux-helper"]["ownership"], "not_owned")
+
+    def test_repository_manifest_resolves_windows_agent_contact_command_alias(self):
+        root = Path(__file__).resolve().parents[1]
+        manifest = root / "artifact_ownership.json"
+        stdout = io.StringIO()
+        old_home = os.environ.get("HOME")
+        old_codex_home = os.environ.get("CODEX_HOME")
+        old_path = os.environ.get("PATH")
+        old_pathext = os.environ.get("PATHEXT")
+        with tempfile.TemporaryDirectory() as home:
+            home_path = Path(home)
+            bin_dir = home_path / ".local" / "bin"
+            bin_dir.mkdir(parents=True)
+            installed_cmd = bin_dir / "agent-contact.cmd"
+            installed_cmd.write_text((root / "bin" / "agent-contact.cmd").read_text(encoding="utf-8"), encoding="utf-8")
+            os.environ["HOME"] = home
+            os.environ["CODEX_HOME"] = str(home_path / ".codex")
+            os.environ["PATH"] = str(bin_dir)
+            os.environ["PATHEXT"] = ".CMD;.PS1"
+            try:
+                code = main(["artifact-info", "agent-contact", "--json", "--manifest", str(manifest)], stdout=stdout)
+            finally:
+                if old_home is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = old_home
+                if old_codex_home is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = old_codex_home
+                if old_path is None:
+                    os.environ.pop("PATH", None)
+                else:
+                    os.environ["PATH"] = old_path
+                if old_pathext is None:
+                    os.environ.pop("PATHEXT", None)
+                else:
+                    os.environ["PATHEXT"] = old_pathext
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, EXIT_OK)
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual([match["id"] for match in payload["matches"]], ["agent-contact-windows-cmd"])
+        self.assertTrue(payload["matches"][0]["installed_matches_source"])
 
 
 if __name__ == "__main__":

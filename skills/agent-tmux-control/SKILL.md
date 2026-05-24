@@ -1,6 +1,6 @@
 ---
 name: agent-tmux-control
-description: "Use for tmux-managed Codex/Claude/CLI agent launch, resume, monitor, capture, contact, and coordination via agent-tmux/agent-contact; triggers: repo agent, latest Codex chat, provider mismatch, guarded contact, unsafe raw PTY."
+description: "Tmux-managed Codex/Claude/CLI agents via agent-tmux/agent-contact: launch, resume, monitor, capture, repo agent routing, latest Codex chat, provider mismatch, guarded contact, unsafe raw PTY."
 ---
 
 # Agent Tmux Control
@@ -121,21 +121,21 @@ fail closed before launch/contact.
 First inspect the latest recorded Codex thread for that repo:
 
 ```bash
-agent-tmux codex-latest /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2
+agent-tmux codex-latest /path/to/repo
 ```
 
 If a tmux-managed worker is needed for contact, resume that latest thread rather
 than opening a new one:
 
 ```bash
-agent-tmux codex-resume-latest sonicgroom /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2
+agent-tmux codex-resume-latest example-session /path/to/repo
 ```
 
 If an existing tmux-managed Codex session already targets the repo, prefer
 inspecting it before launching anything:
 
 ```bash
-agent-tmux codex-existing /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2
+agent-tmux codex-existing /path/to/repo
 ```
 
 If multiple matching tmux sessions exist, stop and resolve identity instead of
@@ -156,19 +156,19 @@ For a Claude-owned repo, launch or select a Claude tmux lane explicitly and
 prove that exact session with `agent-contact` before sending ticket work:
 
 ```bash
-agent-tmux start owner-ComfyComannder-109-claude /home/tarkan/Dropbox/work/MyTools/ComfyComannder claude --permission-mode bypassPermissions --name owner-ComfyComannder-109-claude
+agent-tmux start owner-example-claude /path/to/claude-owned-repo claude --permission-mode bypassPermissions --name owner-example-claude
 
 agent-contact trust-roots \
-  --repo /home/tarkan/Dropbox/work/MyTools/ComfyComannder \
+  --repo /path/to/claude-owned-repo \
   --provider claude \
-  --session owner-ComfyComannder-109-claude \
+  --session owner-example-claude \
   --json
 
-AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS=/home/tarkan/.local/share/claude/versions/2.1.143 \
+AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS="$HOME/.local/share/claude/versions/X.Y.Z" \
   agent-contact send \
-    --repo /home/tarkan/Dropbox/work/MyTools/ComfyComannder \
+    --repo /path/to/claude-owned-repo \
     --provider claude \
-    --session owner-ComfyComannder-109-claude \
+    --session owner-example-claude \
     --message "Please triage the assigned ticket." \
     --dry-run
 ```
@@ -229,6 +229,15 @@ the delegated helper to create the requested session. The wrapper also
 recognizes the legacy supervise-style shape `agent-tmux codex-resume-latest
 <session> <repo> -s danger-full-access -a never [prompt]` and routes it through
 the same deterministic latest-thread path.
+
+Before wrapper-launched Codex workers (`codex`, `codex-full`, `codex-resume`,
+`codex-resume-full`, `codex-resume-latest`, and
+`codex-resume-latest-full`), the wrapper verifies an exact trusted
+`[projects."<absolute repo path>"]` entry in `${CODEX_HOME:-~/.codex}/config.toml`.
+If that trust entry is missing, it refuses before `tmux new-session` and prints
+the exact TOML block to add or asks the operator to run Codex once in that
+project and approve the trust prompt. A launch that would stop at Codex's
+project trust screen must not report `started`.
 
 ## Code-Map Sidecar Workers
 
@@ -387,7 +396,7 @@ Dry-run first when the target state matters:
 
 ```bash
 agent-contact send \
-  --repo /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2 \
+  --repo /path/to/repo \
   --provider codex \
   --message "Please brief me on the active issue." \
   --dry-run
@@ -398,7 +407,7 @@ ask `agent-contact` to inspect the live pane and print narrow roots:
 
 ```bash
 agent-contact trust-roots \
-  --repo /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2 \
+  --repo /path/to/repo \
   --provider codex \
   --json
 ```
@@ -406,10 +415,10 @@ agent-contact trust-roots \
 Then rerun with those explicit roots:
 
 ```bash
-AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS=/home/tarkan/.nvm/versions/node/v22.22.0/lib/node_modules/@openai/codex \
-AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS=/home/tarkan/.nvm/versions/node/v22.22.0/bin \
+AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS="$HOME/.nvm/versions/node/vX.Y.Z/lib/node_modules/@openai/codex" \
+AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS="$HOME/.nvm/versions/node/vX.Y.Z/bin" \
   agent-contact send \
-    --repo /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2 \
+    --repo /path/to/repo \
     --provider codex \
     --message "Please brief me on the active issue." \
     --dry-run
@@ -420,7 +429,7 @@ If the dry-run reports `status: would_send`, run the same command without
 
 ```bash
 agent-contact send \
-  --repo /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2 \
+  --repo /path/to/repo \
   --provider codex \
   --message "Please brief me on the active issue."
 ```
@@ -442,32 +451,32 @@ Expected refusal states:
 Start a Codex agent in tmux:
 
 ```bash
-agent-tmux codex sonicgroom /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2
+agent-tmux codex example-session /path/to/repo
 ```
 
 Start a full-permission Codex worker in tmux:
 
 ```bash
-agent-tmux codex-full sonicgroom /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2
+agent-tmux codex-full example-session /path/to/repo
 ```
 
 Resume the latest recorded Codex thread for a repo:
 
 ```bash
-agent-tmux codex-resume-latest sonicgroom /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2
+agent-tmux codex-resume-latest example-session /path/to/repo
 ```
 
 Resume the latest recorded Codex thread with the explicit full-permission worker
 profile:
 
 ```bash
-agent-tmux codex-resume-latest-full sonicgroom /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2
+agent-tmux codex-resume-latest-full example-session /path/to/repo
 ```
 
 Find an existing tmux-managed Codex session for a repo:
 
 ```bash
-agent-tmux codex-existing /home/tarkan/Dropbox/work/MyTools/CudaGroomTool2
+agent-tmux codex-existing /path/to/repo
 ```
 
 Capture and inspect:
