@@ -4,24 +4,36 @@ Start here by asking your coding agent to install and run this for you. This
 tool is meant to be driven by an agent from the beginning, not hand-wired one
 command at a time.
 
-Agent Terminal Contact helps one terminal-based agent safely send a message to
-another terminal-based agent.
+Agent Terminal Contact is a supervisor control layer for terminal-based coding
+agents. It lets a supervising agent launch, resume, inspect, and contact
+tmux-managed Codex and Claude workers without dropping raw text into the wrong
+terminal.
 
-It is built for tmux-managed Codex and Claude workers. It does not replace
-Codex, Claude, tmux, or the system `agent-tmux` helper. It adds guard rails
-around the risky part: putting text into another live agent prompt.
+It does not replace Codex, Claude, tmux, or the system `agent-tmux` helper. It
+wraps them with source-owned checks for the parts that are easy to get wrong:
+which repo a worker belongs to, which provider is actually running, whether a
+pane is safe to contact, whether a Codex worker will stop at a trust prompt, and
+whether an installed helper is owned by this repo or by some other tool.
 
 ## What It Does
 
-- Finds the right tmux pane for a Codex or Claude worker.
-- Checks that the pane really belongs to the requested provider.
+- Routes supervisor work to the right tmux-managed repo worker instead of
+  guessing from whatever agent is currently active.
+- Finds the right Codex or Claude pane and proves it belongs to the requested
+  repo and provider before contact.
 - Refuses to send if the target is busy, attached, ambiguous, at a trust prompt,
-  or has unsafe pending text.
+  at an approval prompt, or otherwise unsafe.
 - Sends a guarded one-line payload and checks that it was submitted.
 - Cleans up its own failed guarded payload when it can prove the text belongs to
   the failed send.
-- Installs a source-owned `agent-tmux` wrapper for safer Codex worker launch
-  shortcuts.
+- Installs a source-owned `agent-tmux` wrapper for safer launch, resume,
+  logging, latest-chat lookup, and full-permission Codex worker shortcuts.
+- Checks Codex project trust before launch so supervisors do not get a false
+  "started" worker that immediately dies at a trust screen.
+- Reports installed artifact ownership so agents know whether to patch this
+  repo or another tool.
+- Provides code-map sidecar workers for supervisor-driven source inspection
+  without letting the sidecar edit production files directly.
 
 ## Quick Use
 
