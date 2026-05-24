@@ -4,23 +4,22 @@ Start here by asking your coding agent to install and run this for you. This
 tool is meant to be driven by an agent from the beginning, not hand-wired one
 command at a time.
 
-Agent Terminal Contact is a supervisor control layer for terminal-based coding
-agents. It lets a supervising agent launch, resume, inspect, and contact
-tmux-managed Codex and Claude workers without dropping raw text into the wrong
-terminal.
+Agent Terminal Contact is a guarded contact tool for tmux-managed Codex and
+Claude workers. It gives a coding agent a safer way to find the right worker
+pane, prove which repo and provider it belongs to, dry-run a message, send a
+guarded payload, and report whether delivery was proven or refused.
 
-It does not replace Codex, Claude, tmux, or the system `agent-tmux` helper. It
-wraps them with source-owned checks for the parts that are easy to get wrong:
-which repo a worker belongs to, which provider is actually running, whether a
-pane is safe to contact, whether a Codex worker will stop at a trust prompt, and
-whether an installed helper is owned by this repo or by some other tool.
+It does not replace Codex, Claude, tmux, or the system `agent-tmux` helper. This
+repo owns `agent-contact` plus a user-level `agent-tmux` wrapper. The wrapper
+delegates normal commands to `/usr/local/bin/agent-tmux` and adds checked routes
+for Codex launches, latest-chat resume, log handling, artifact ownership lookup,
+and code-map sidecar sessions.
 
 ## What It Does
 
-- Routes supervisor work to the right tmux-managed repo worker instead of
-  guessing from whatever agent is currently active.
-- Finds the right Codex or Claude pane and proves it belongs to the requested
-  repo and provider before contact.
+- Finds exactly one tmux-managed Codex or Claude pane for the requested repo and
+  provider.
+- Locks contact to a specific tmux pane id and rechecks the pane before sending.
 - Refuses to send if the target is busy, attached, ambiguous, at a trust prompt,
   at an approval prompt, or otherwise unsafe.
 - Sends a guarded one-line payload and checks that it was submitted.
@@ -28,12 +27,12 @@ whether an installed helper is owned by this repo or by some other tool.
   the failed send.
 - Installs a source-owned `agent-tmux` wrapper for safer launch, resume,
   logging, latest-chat lookup, and full-permission Codex worker shortcuts.
-- Checks Codex project trust before launch so supervisors do not get a false
-  "started" worker that immediately dies at a trust screen.
-- Reports installed artifact ownership so agents know whether to patch this
-  repo or another tool.
-- Provides code-map sidecar workers for supervisor-driven source inspection
-  without letting the sidecar edit production files directly.
+- Checks Codex project trust before launch so the wrapper does not report a
+  worker as started when Codex would stop at a trust screen.
+- Reports installed artifact ownership so an agent can tell whether an installed
+  command or skill comes from this repo.
+- Provides code-map sidecar workers that write reviewable artifacts without
+  editing production files directly.
 
 ## Quick Use
 
