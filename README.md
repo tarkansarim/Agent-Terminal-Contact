@@ -1,132 +1,160 @@
-# AgentTerminalContact
+# Agent Terminal Contact
 
-AgentTerminalContact is a thin safety layer for contacting live terminal agents.
-It does not replace Codex, Claude, tmux, or `agent-tmux`. It guards the risky
-operation: sending text into another live agent chat.
+Start here by asking your coding agent to install and run this for you. This
+tool is meant to be driven by an agent from the beginning, not hand-wired one
+command at a time.
 
-V0 supports tmux-managed sessions only.
+Agent Terminal Contact helps one terminal-based agent safely send a message to
+another terminal-based agent.
+
+It is built for tmux-managed Codex and Claude workers. It does not replace
+Codex, Claude, tmux, or the system `agent-tmux` helper. It adds guard rails
+around the risky part: putting text into another live agent prompt.
+
+## What It Does
+
+- Finds the right tmux pane for a Codex or Claude worker.
+- Checks that the pane really belongs to the requested provider.
+- Refuses to send if the target is busy, attached, ambiguous, at a trust prompt,
+  or has unsafe pending text.
+- Sends a guarded one-line payload and checks that it was submitted.
+- Cleans up its own failed guarded payload when it can prove the text belongs to
+  the failed send.
+- Installs a source-owned `agent-tmux` wrapper for safer Codex worker launch
+  shortcuts.
+
+## Quick Use
+
+Dry-run first:
 
 ```bash
-bin/agent-contact send \
+agent-contact send \
   --repo /path/to/repo \
   --provider codex \
-  --message "Please report the current issue and verifier."
+  --message "Please report current status." \
+  --dry-run
 ```
 
-Use `--dry-run` to see whether the target would be accepted without sending:
+If the dry-run says it would send, run the same command without `--dry-run`:
 
 ```bash
-bin/agent-contact send --repo /path/to/repo --provider codex --message "..." --dry-run
+agent-contact send \
+  --repo /path/to/repo \
+  --provider codex \
+  --message "Please report current status."
 ```
 
-The tool refuses to send when the target session is ambiguous, attached to a
-client for a real send, the pane is not at an idle empty prompt, pending user
-text is visible in the composer, or the message contains terminal control
-bytes. Newlines and tabs are allowed in the requested message; the guarded
-contact payload is encoded onto one `MESSAGE_JSON` line and sent without tmux
-bracketed-paste wrapping. Codex starter-placeholder prompts use literal key
-input rather than `paste-buffer`, because those prompts can fail to materialize
-pasted text before submit. Bracketed-paste markers and other C0/C1 controls are
-refused before discovery.
+Use `--session <tmux-session>` when you already know the exact tmux session.
 
-Targeting is pane-locked. Discovery selects a tmux `%pane_id`, verifies provider
-evidence from the pane TTY's live foreground process, verifies the authoritative
-`/proc/<pid>/cmdline` and `/proc/<pid>/exe`, captures that pane, revalidates the
-same pane immediately before send, and then sends only to that pane. When
-`--session` is provided, discovery scans every pane in every window of that tmux
-session before deciding whether the target is unique.
+## Install On Linux Or WSL
 
-Provider roots fail closed unless the exact root is explicitly trusted for that
-command invocation. Codex/Node and Claude/Node package roots are supported, and
-native Claude installs use the exact versioned binary path as the provider root.
-Broad parent directories are rejected. Bare Node-style launchers also fail
-closed unless their launcher root is explicitly trusted. Use `trust-roots` and
-export narrow roots only:
+From this repo:
 
 ```bash
-bin/agent-contact trust-roots --repo /path/to/repo --provider codex --json
-
-AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS="$HOME/.nvm/versions/node/vX.Y.Z/lib/node_modules/@openai/codex" \
-AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS="$HOME/.nvm/versions/node/vX.Y.Z/bin" \
-  bin/agent-contact send --repo /path/to/repo --provider codex --message "..." --dry-run
+bash scripts/install.sh --force
+bash scripts/install.sh --check
 ```
 
-`trust-roots` reads the live pane process and prints the narrow provider and
-launcher roots to export only when the live package root or native provider
-binary is anchored by the same provider command found on the caller's `PATH`.
-Multiple roots are separated with `:` on Linux. Launcher roots are exact
-executable directories, not broad parent directories.
+This installs:
 
-Idle prompt detection uses both text and tmux cursor metadata. Text that merely
-prints a prompt marker and model footer in the pane output is not enough to prove
-the target composer is idle. The sender performs a final prompt-state recapture
-immediately before paste; if later post-send evidence cannot be collected, the
-result is reported as `sent_unproven`, not as a pre-send refusal. Post-send
-readback waits briefly for Codex redraws after submit; delivery is proven when
-the guarded contact is visible in either an idle prompt state or an active
-agent-working state. If the guarded contact has scrolled out of the post-send
-capture, active `agent_working` also proves delivery only when the same send
-already proved the guarded payload in the composer immediately before submit.
-Unproven results include `delivery_proof_reason`,
-`post_send_guarded_contact_visible`, and `pre_submit_contact_proven` so callers
-can distinguish missing contact evidence from unsafe post-send state.
+- `~/.local/bin/agent-contact`
+- `~/.local/bin/agent-tmux`
+- `${CODEX_HOME:-~/.codex}/skills/agent-tmux-control/SKILL.md`
 
-## Development
+The installed `agent-tmux` is a wrapper owned by this repo. Normal commands are
+passed through to `/usr/local/bin/agent-tmux`. The wrapper only takes over the
+commands this repo needs to harden.
 
-Run the tests from the repo root:
+## Install On Windows
 
-```bash
-PYTHONPATH=src python -m unittest discover -s tests
-python -m compileall -q src tests
-```
-
-For package-style local use, install into a project virtualenv:
-
-```bash
-python -m venv .venv
-.venv/bin/python -m pip install -e .
-.venv/bin/agent-contact --help
-```
-
-Install the user-level command and skill:
-
-```bash
-bash scripts/install.sh
-```
-
-On Windows PowerShell, install the `agent-contact` shims and Codex skill
-snapshot with:
+From PowerShell:
 
 ```powershell
 pwsh scripts/install.ps1 -Force
 pwsh scripts/install.ps1 -Check
 ```
 
-The source-owned `agent-tmux` wrapper is Bash/tmux-specific. Use
-`scripts/install.sh` on Linux or WSL for the wrapper; the Windows installer
-intentionally installs `agent-contact.ps1`, `agent-contact.cmd`, and the skill
-snapshot only.
+This installs:
 
-If an installed skill already exists and differs from this repo source, inspect
-the diff and use `--force` only when replacing it is intentional:
+- `agent-contact.ps1`
+- `agent-contact.cmd`
+- the Codex skill snapshot
+
+The Bash/tmux `agent-tmux` wrapper is for Linux or WSL. The Windows installer
+only installs the `agent-contact` shims and skill snapshot.
+
+## Trust Roots
+
+Provider checks are strict. If `agent-contact` cannot prove that a pane is
+running the requested provider, it refuses.
+
+Ask it to print the exact roots to trust:
 
 ```bash
-diff -u ~/.codex/skills/agent-tmux-control/SKILL.md skills/agent-tmux-control/SKILL.md
-bash scripts/install.sh --force
-bash scripts/install.sh --check
+agent-contact trust-roots --repo /path/to/repo --provider codex --json
 ```
 
-`--force` preserves replaced skill artifacts under
-`${CODEX_HOME:-~/.codex}/agent-terminal-contact/backups/agent-tmux-control`
-instead of inside the live Codex skill load root. `--check` verifies the
-installed skill matches this repo source, refuses backup/temp artifacts left
-under `${CODEX_HOME:-~/.codex}/skills`, and verifies that `agent-contact` and
-the source-owned `agent-tmux` wrapper resolve on `PATH`.
+Then export the printed roots and retry the send:
 
-## Installed Artifact Ownership
+```bash
+AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS="$HOME/.nvm/versions/node/vX.Y.Z/lib/node_modules/@openai/codex" \
+AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS="$HOME/.nvm/versions/node/vX.Y.Z/bin" \
+  agent-contact send \
+    --repo /path/to/repo \
+    --provider codex \
+    --message "Please report current status." \
+    --dry-run
+```
 
-Use `artifact-info` to identify whether an installed command, skill, hook, or
-wrapper is owned by this source repo before patching anything in place:
+Use the narrow paths printed by `trust-roots`. Do not trust a broad parent
+folder.
+
+## Codex Worker Shortcuts
+
+The installed `agent-tmux` wrapper adds these Codex launch helpers:
+
+```bash
+agent-tmux codex-full <session> <repo> [codex-args...]
+agent-tmux codex-resume-full <session> <repo> <thread-name-or-id> [prompt]
+agent-tmux codex-resume-latest-full <session> <repo> [prompt]
+```
+
+They launch Codex with:
+
+```bash
+-s danger-full-access -a never
+```
+
+Before launching, the wrapper checks two things:
+
+- the requested tmux session name is not already in use
+- Codex already trusts the exact repo path in
+  `${CODEX_HOME:-~/.codex}/config.toml`
+
+If the trust entry is missing, the wrapper refuses before starting tmux and
+prints the TOML block to add.
+
+## Code-Map Sidecars
+
+For short-lived code-map review work:
+
+```bash
+agent-tmux codex-code-map-sidecar /path/to/repo <anchor> "Focus prompt"
+agent-tmux codex-code-map-sidecar-fork /path/to/repo <anchor> <codex-session-id> "Focus prompt"
+```
+
+Sidecars write only to a generated artifact directory. They should not edit the
+source repo directly.
+
+Validate sidecar output before using it:
+
+```bash
+agent-tmux codex-code-map-validate-artifacts <artifact-dir>
+```
+
+## Artifact Ownership
+
+Use this before editing an installed command or skill:
 
 ```bash
 agent-contact artifact-info agent-contact --json
@@ -135,288 +163,42 @@ agent-contact artifact-info /usr/local/bin/agent-tmux --json
 agent-contact artifact-info --all --json
 ```
 
-The ownership manifest is `artifact_ownership.json`. Each entry declares the
-installed path, source path when owned, install/check commands, and whether this
-repo explicitly owns or does not own the artifact. Other repos can follow the
-same pattern: keep a source manifest at the repo root, make installed wrappers
-or CLIs report it as JSON, and distinguish `owned` from `not_owned` instead of
-guessing from filenames.
+This tells you whether the installed thing is owned by this repo or belongs
+somewhere else.
 
 This repo owns:
 
 - `~/.local/bin/agent-contact`
-- `~/.local/bin/agent-tmux`, a wrapper that owns selected safety-critical
-  commands and delegates normal commands to `/usr/local/bin/agent-tmux`
+- `~/.local/bin/agent-tmux`
 - `${CODEX_HOME:-~/.codex}/skills/agent-tmux-control/SKILL.md`
+- Windows `agent-contact.ps1` and `agent-contact.cmd` shims
 
-It explicitly does not own `/usr/local/bin/agent-tmux`.
+This repo does not own `/usr/local/bin/agent-tmux`.
 
-## Provider-Proven Owner Routing
+## Development
 
-Cross-repo owner routing must prove the target provider before launching or
-contacting an agent. If the user or ticket names Claude, pass `--provider
-claude` through the route and validate the exact Claude session with
-`agent-contact`; do not let a supervisor's default Codex path stand in for owner
-identity. If no provider can be proven from the user request, an existing
-owner-lane session, latest-chat metadata, or a clear handoff note, fail closed
-before launch/contact.
-
-For a Claude-owned repo, a safe explicit lane looks like:
+Create a local env:
 
 ```bash
-agent-tmux start owner-example-claude /path/to/claude-owned-repo claude --permission-mode bypassPermissions --name owner-example-claude
-
-agent-contact trust-roots \
-  --repo /path/to/claude-owned-repo \
-  --provider claude \
-  --session owner-example-claude \
-  --json
-
-AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS="$HOME/.local/share/claude/versions/X.Y.Z" \
-  agent-contact send \
-    --repo /path/to/claude-owned-repo \
-    --provider claude \
-    --session owner-example-claude \
-    --message "Please triage the assigned ticket." \
-    --dry-run
+python -m venv .venv
+.venv/bin/python -m pip install -e .
 ```
 
-If either guarded command refuses, fix the provider/contact path instead of
-switching to a Codex worker or raw tmux input.
-
-## Full-Permission Codex Workers
-
-The source-owned `agent-tmux` wrapper adds full-permission aliases without
-patching the delegated system helper:
+Run checks:
 
 ```bash
-agent-tmux codex-full <session> <repo> [codex-args...]
-agent-tmux codex-resume-full <session> <repo> <thread-name-or-id> [prompt]
-agent-tmux codex-resume-latest-full <session> <repo> [prompt]
+.venv/bin/python -m unittest discover -s tests
+.venv/bin/python -m compileall src tests
+bash -n bin/agent-tmux scripts/install.sh bin/agent-contact
+git diff --check
 ```
 
-These aliases expand to Codex CLI args `-s danger-full-access -a never` and
-refuse `--dangerously-bypass-approvals-and-sandbox`. After the requested tmux
-session preflight passes, the latest-resume alias resolves the latest thread
-through the source-owned `codex-latest` path and launches
-`codex ... resume <thread> [prompt]` so a prompt is not misread as the resume
-session id. `codex-latest` reads `${CODEX_HOME:-~/.codex}/session_index.jsonl`
-and the matching session file directly. A session qualifies only when the
-session file has exact resolved `cwd`/function-call `workdir` evidence for the
-repo, or when the index `thread_name` exactly equals the repo basename. Missing
-metadata, duplicate newest candidates, and ambiguous session-file matches fail
-closed.
+## Notes
 
-Codex launch/resume routes through this wrapper require the requested tmux
-session name to be unused. If that session already exists, the wrapper refuses
-before launching so a prompt cannot disappear into a stale pane. Older Codex
-sessions for the same repo do not steal these launches; the wrapper tells the
-delegated helper to create the requested session. The wrapper also recognizes
-the legacy supervise-style shape `agent-tmux codex-resume-latest <session>
-<repo> -s danger-full-access -a never [prompt]` and routes it through the same
-deterministic latest-thread path.
-
-Before launching a Codex worker route, the wrapper also verifies that
-`${CODEX_HOME:-~/.codex}/config.toml` contains an exact trusted project entry
-for the resolved workdir:
-
-```toml
-[projects."/absolute/repo/path"]
-trust_level = "trusted"
-```
-
-If the exact trust entry is missing, launch refuses before `tmux new-session`
-and prints the TOML block to add. This prevents a false `started` report when a
-new worker would otherwise stop at Codex's first-launch project trust screen and
-exit before `agent-contact` can reach it.
-
-The wrapper also normalizes `agent-tmux codex-existing <repo>` for supervised
-machine callers. A true no-existing-session result is `rc=1`, empty stdout, and
-one stderr line beginning `agent-tmux: no Codex tmux session found for workdir:`;
-ambiguous or broken helper results keep the delegated output and return code.
-When a preferred session is supplied, `agent-tmux codex-existing <repo>
-<session>` performs an exact source-owned tmux inspection for that session name.
-If the exact session is absent, wrong-repo, or not Codex-like, the wrapper
-reports that precise session evidence instead of delegating into unrelated
-multiple-session ambiguity.
-
-## Session Log Retention
-
-The source-owned wrapper owns launch-time logging for `start`, `codex`,
-`codex-resume`, `codex-resume-latest`, the full-permission aliases, code-map
-sidecars, and explicit `pipe-log`. It writes logs under
-`${AGENT_TMUX_LOG_DIR:-${XDG_STATE_HOME:-~/.local/state}/agent-tmux}` and pipes
-tmux output through a capped writer instead of unbounded `cat >>`.
-
-Defaults:
-
-- `AGENT_TMUX_LOG_MAX_BYTES=50M`
-- `AGENT_TMUX_LOG_KEEP_PARTS=3`
-
-Inspect footprint before it becomes disk pressure:
-
-```bash
-agent-tmux logs status
-```
-
-Prune old closed-session logs and cap existing oversized files:
-
-```bash
-agent-tmux logs prune --older-than 14d --max-size 50M
-```
-
-`logs prune` only targets `agent-tmux` log files (`*.log` and rotated
-`*.log.N`) in the agent-tmux log directory. It does not touch
-`~/.codex/sessions/` or `~/.codex/archived_sessions/`.
-
-Other non-wrapper commands are delegated unchanged.
-
-## Code-Map Sidecar Workers
-
-For code-map patch-artifact analysis, use the source-owned wrapper instead of
-pasting into an existing owner pane:
-
-```bash
-agent-tmux codex-code-map-sidecar /path/to/repo ticket58-pre-edit "Map the tmux/contact entry points."
-agent-tmux codex-code-map-sidecar-fork /path/to/repo ticket58-pre-edit <codex-session-id> "Map from the Rewind fork."
-```
-
-The wrapper derives a deterministic session name from the resolved repo root and
-anchor, for example `codex-map-agentterminalcontact-ticket58-pre-edit-...`.
-It refuses if that exact sidecar session already exists; change the anchor to
-launch a new sidecar. It does not discover, contact, or reuse old same-repo
-owner sessions.
-
-Both sidecar routes launch Codex from an isolated artifact directory with a
-visible workspace-write permission profile that disables network access for
-model-run shell commands:
-
-```bash
--c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=false -a never
-```
-
-The wrapper sets the sidecar working root to
-`${AGENT_TMUX_CODE_MAP_ARTIFACT_ROOT:-${XDG_STATE_HOME:-~/.local/state}/agent-tmux/code-map-sidecars}/<sidecar-session>`
-and passes the repository root as a read-only input path in the prompt. The
-sidecar may write patch artifacts only under that artifact directory. It must
-not edit production source, tests, config, install scripts, user-level files, or
-generated artifacts in place; it must not run `apply_patch`, commit, install,
-dispatch tickets, contact other agents, or mutate tmux sessions.
-The final deterministic artifact directory must not already exist or be a
-symlink; the wrapper creates it atomically and refuses paths that resolve inside
-the repository root.
-
-The sidecar Codex process also runs inside `bwrap`: there is no host `/` bind,
-host home is hidden except for trusted Codex/Node executable paths,
-`/usr/local/bin` is hidden, selected host inspection tools are bound by exact
-file plus their library dependencies instead of broad `/usr/bin` or `/usr/lib`
-binds, `/dev` is a private bwrap device filesystem, the artifact directory is
-the writable map-output bind, `/dev/shm` is overlaid read-only, and `/tmp` and
-`/run` are private so tmux sockets are not exposed.
-`HOME`/`CODEX_HOME` point under a separate wrapper-owned runtime directory next
-to the artifact directory. In fork mode, the requested Codex session file plus
-the matching `session_index.jsonl` entry when present are copied into that
-wrapper-owned Codex home before launch. Codex auth/session files are
-wrapper-managed runtime inputs; the wrapper adds a Codex
-`permissions.filesystem.deny_read` entry for wrapper-owned `CODEX_HOME` so
-model-run shell commands cannot read those credentials or session files. Auth
-and session material must not be copied into sidecar artifacts. The wrapper
-refuses artifact and runtime roots inside the repository so wrapper-created
-state cannot land in the read-only input tree.
-
-If map or project-memory files should change, the sidecar writes reviewable
-artifacts such as `MAP_REPORT.md`, `PROPOSED_CHANGES.patch`, or proposed file
-contents under `PROPOSED_FILES/` inside the artifact directory. Applyable
-artifacts are limited to these map/project-memory targets:
-
-- `.project-memory/code-map-state.json`, `.project-memory/project-memory-state.json`
-- `.project-memory/code-map/**`, `.project-memory/project-memory/**`,
-  `.project-memory/routing/**`, `.project-memory/indexes/**`,
-  `.project-memory/subsystems/**`
-- files under `.project-memory/` policy namespaces must use `.md`, `.json`, or
-  `.jsonl` extensions and must not use runtime/credential/key/token-looking path
-  components such as `codex-home`, `.codex`, `session_index.jsonl`,
-  `credential`, `secret`, `token`, `password`, `private-key`, `access-key`,
-  `ssh-key`, or `api-key`
-- `docs/CODEBASE_ARCHITECTURE_INDEX.md`
-- `docs/CODEBASE_SUBSYSTEM_MANIFEST.json`
-- direct Markdown files under `docs/SUBSYSTEMS/` (`docs/SUBSYSTEMS/*.md`)
-- `CODE_MAP.md`, `PROJECT_MEMORY.md`, `docs/CODE_MAP.md`,
-  `docs/PROJECT_MEMORY.md`
-
-The supervisor validates sidecar artifacts before applying them:
-
-```bash
-agent-tmux codex-code-map-validate-artifacts <artifact-dir>
-```
-
-The validator requires the wrapper-written sidecar registry stored as a sibling
-of the artifact directory, outside the sidecar-writable tree, and checks it
-against the artifact-local `SIDECAR_REQUEST.txt` audit copy. The registry binds
-the session, repo, anchor, allowed output directory, sandbox permission,
-filesystem-isolation description, and validator command. Those fields must
-match the wrapper schema exactly; unknown or partial audit manifests are
-rejected. The wrapper cleanup owner marker is also stored beside that registry,
-outside the sidecar-writable artifact and runtime directories. A `MAP_REPORT.md`
-without proposed changes is the report-only lane; otherwise the artifact must
-contain a proposed map update.
-The validator rejects an empty sidecar artifact with neither `MAP_REPORT.md` nor
-a proposed update, and rejects any
-proposed patch or mirrored proposed file outside the explicit map target policy,
-including source, tests, config, install scripts, user-level files, generated
-artifacts, or open-ended `.project-memory/` paths. It also rejects unsupported
-patch path header formats, symlink/non-regular entries
-anywhere in the sidecar artifact tree, patch modes that would create symlinks or
-other non-regular files, binary or terminal-control content in
-supervisor-consumed artifacts, and direct Codex auth material or obvious
-auth/session key structures or raw transcript-style JSONL records in
-supervisor-consumed artifacts. Ordinary Codex/auth/session map topics are
-allowed when they do not look like runtime files or credential material.
-Runtime-looking paths such as
-`.agent-tmux-runtime/` inside the artifact directory are rejected; wrapper-owned
-runtime state lives outside the artifact tree. The artifact directory passed to
-the validator must itself be a real directory, not a symlink, and must not
-resolve inside the registry repo. The supervisor applies accepted map edits
-later through the normal source workflow, with validation and commit evidence.
-
-The wrapper prints the deterministic session, artifact directory, wrapper-owned
-runtime directory, sidecar registry path, and transcript log path before launch
-so supervisors can audit with:
-
-```bash
-agent-tmux log <sidecar-session>
-agent-tmux transcript <sidecar-session> all
-ls <artifact-dir>
-```
-
-When Rewind prints a `codex fork <session-id>` command, pass the UUID session id to
-`codex-code-map-sidecar-fork`; do not paste the raw fork command into an
-existing live pane. The wrapper rejects flags, thread names, and raw commands in
-that position.
-
-If a follow-up message is needed after launch, target only the known sidecar
-session and run guarded contact first. For wrapper-launched sidecars,
-`agent-contact` accepts the original repository root when an exact session is
-provided and validates both the sidecar registry outside the writable artifact
-tree and the artifact-local `SIDECAR_REQUEST.txt` binding before selecting the
-pane:
-
-```bash
-agent-contact send --repo /path/to/repo --provider codex --session <sidecar-session> --message "..." --dry-run
-```
-
-If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed. When
-the failed send leaves the current guarded `CONTACT_ID` payload in the composer,
-`agent-contact` clears that owned residue and reports
-`recovery: cleared_own_guarded_payload`; otherwise rerun guarded contact instead
-of using raw tmux input. For detached tmux-managed worker sessions, any visible
-composer text is a control surface:
-`--dry-run` reports `would_clear_and_send` plus the `clear_command`, and a real
-send clears the composer with `agent-tmux clear-input <sidecar-session>` before
-sending a fresh guarded payload. This includes starter placeholder text, stale
-`CONTACT_ID`/`MESSAGE_JSON` residue, Codex pasted-content placeholders,
-wrapped/truncated residue, and arbitrary leftover worker composer text.
-Attached sessions, busy/working panes, trust prompts, approval prompts,
-dead/unknown panes, ambiguous identity, and wrong-provider matches still refuse.
-Do not fall back to raw `agent-tmux send` for sidecar contact unless the current
-operator explicitly authorizes that exact bypass.
+- Real sends to attached tmux sessions are refused.
+- Ambiguous matching sessions are refused.
+- Messages with terminal control bytes are refused.
+- If a send is reported as `sent_unproven`, treat it as uncertain and inspect
+  the returned reason.
+- If a send is reported as `mutated_unsubmitted`, delivery failed. Retry through
+  `agent-contact`; do not switch to raw tmux input.
