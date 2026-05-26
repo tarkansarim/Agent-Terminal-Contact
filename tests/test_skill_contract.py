@@ -4485,6 +4485,120 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual("agent-tmux: multiple detached Codex tmux sessions\n", result.stderr)
             self.assertNotIn("no Codex tmux session found", result.stderr)
 
+    def test_agent_tmux_gc_idle_owners_kills_only_old_detached_codex_starters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            killed = tmp_path / "killed.txt"
+            tmux = bin_dir / "tmux"
+            tmux.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = list-sessions ]; then\n"
+                "  printf 'owner-old\\t0\\t100\\t1\\n'\n"
+                "  printf 'owner-fresh\\t0\\t1999\\t1\\n'\n"
+                "  printf 'owner-busy\\t0\\t100\\t1\\n'\n"
+                "  printf 'manual-old\\t0\\t100\\t1\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "if [ \"$1\" = capture-pane ]; then\n"
+                "  case \"$4\" in\n"
+                "    '=owner-old:')\n"
+                "      printf '╭ OpenAI Codex ╮\\n\\n› Implement {feature}\\n  gpt-5.5 xhigh · /repo\\n'\n"
+                "      exit 0\n"
+                "      ;;\n"
+                "    '=owner-busy:')\n"
+                "      printf 'previous assistant output\\n\\n› CONTACT_ID: AC-TEST MESSAGE_JSON: \"hi\"\\n  gpt-5.5 xhigh · /repo\\n'\n"
+                "      exit 0\n"
+                "      ;;\n"
+                "  esac\n"
+                "fi\n"
+                "if [ \"$1\" = kill-session ]; then\n"
+                "  printf '%s\\n' \"$3\" >>\"${AGENT_TMUX_KILLED_CAPTURE}\"\n"
+                "  exit 0\n"
+                "fi\n"
+                "printf 'unexpected tmux command: %s\\n' \"$*\" >&2\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            tmux.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "gc-idle-owners", "--kill", "--older-than", "30m"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_KILLED_CAPTURE": str(killed),
+                    "PATH": f"{bin_dir}:{TEST_PATH}",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("killed owner-old", result.stdout)
+            self.assertIn("matched=1", result.stdout)
+            self.assertEqual(killed.read_text(encoding="utf-8").splitlines(), ["=owner-old"])
+            self.assertNotIn("owner-fresh", result.stdout)
+            self.assertNotIn("owner-busy", result.stdout)
+
+    def test_agent_tmux_codex_existing_auto_gc_runs_before_delegate_lookup(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            killed = tmp_path / "killed.txt"
+            delegate_seen = tmp_path / "delegate-seen.txt"
+            tmux = bin_dir / "tmux"
+            tmux.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = list-sessions ]; then\n"
+                "  printf 'owner-stale\\t0\\t100\\t1\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "if [ \"$1\" = capture-pane ]; then\n"
+                "  printf '╭ OpenAI Codex ╮\\n\\n› Implement {feature}\\n  gpt-5.5 xhigh · /repo\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "if [ \"$1\" = kill-session ]; then\n"
+                "  printf '%s\\n' \"$3\" >>\"${AGENT_TMUX_KILLED_CAPTURE}\"\n"
+                "  exit 0\n"
+                "fi\n"
+                "printf 'unexpected tmux command: %s\\n' \"$*\" >&2\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            tmux.chmod(0o755)
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = codex-existing ]; then\n"
+                "  printf 'called\\n' >\"${AGENT_TMUX_DELEGATE_CAPTURE}\"\n"
+                "  exit 1\n"
+                "fi\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-existing", repo],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_DELEGATE_CAPTURE": str(delegate_seen),
+                    "AGENT_TMUX_KILLED_CAPTURE": str(killed),
+                    "PATH": f"{bin_dir}:{TEST_PATH}",
+                },
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(killed.read_text(encoding="utf-8").splitlines(), ["=owner-stale"])
+            self.assertEqual(delegate_seen.read_text(encoding="utf-8").strip(), "called")
+            self.assertIn("gc-idle-owners: killed owner-stale", result.stderr)
+            self.assertIn("no Codex tmux session found for workdir:", result.stderr)
+
     def test_agent_tmux_codex_existing_exact_missing_session_does_not_delegate_to_ambiguity(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
             tmp_path = Path(tmp)

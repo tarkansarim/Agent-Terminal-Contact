@@ -128,6 +128,7 @@ The installed `agent-tmux` wrapper adds these Codex launch helpers:
 agent-tmux codex-full <session> <repo> [codex-args...]
 agent-tmux codex-resume-full <session> <repo> <thread-name-or-id> [prompt]
 agent-tmux codex-resume-latest-full <session> <repo> [prompt]
+agent-tmux gc-idle-owners [--dry-run|--kill] [--older-than 30m]
 ```
 
 They launch Codex with:
@@ -144,6 +145,11 @@ Before launching, the wrapper checks two things:
 
 If the trust entry is missing, the wrapper refuses before starting tmux and
 prints the TOML block to add.
+
+`gc-idle-owners` cleans up detached `owner-*` Codex sessions that are still at
+the Codex starter template prompt. It defaults to a dry run and a 30 minute age
+threshold. `codex-existing` runs the same conservative cleanup before checking
+for existing sessions so stale ticket workers do not create false ambiguity.
 
 ## Code-Map Sidecars
 

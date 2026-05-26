@@ -16,6 +16,7 @@ Usage:
   agent-tmux codex-code-map-validate-artifacts <artifact-dir>
   agent-tmux codex-existing <workdir> [preferred-session]
   agent-tmux codex-latest <workdir>
+  agent-tmux gc-idle-owners [--dry-run|--kill] [--older-than 30m]
   agent-tmux logs status
   agent-tmux logs prune [--older-than 14d] [--max-size 50M] [--keep 3]
   agent-tmux <regular-agent-tmux-command> [...]
@@ -50,6 +51,12 @@ pipe-log. The default cap is 50M per live log with 3 rotated parts. Override wit
 AGENT_TMUX_LOG_MAX_BYTES and AGENT_TMUX_LOG_KEEP_PARTS. Use `agent-tmux logs
 status` to inspect footprint and `agent-tmux logs prune --older-than 14d
 --max-size 50M` to reclaim old or oversized closed-session logs.
+
+gc-idle-owners lists or kills detached owner-* Codex sessions that are still on
+the Codex starter template prompt. It defaults to dry-run and only considers
+sessions older than AGENT_TMUX_IDLE_OWNER_GC_AGE, or 30m when unset. Set
+AGENT_TMUX_AUTO_GC_IDLE_OWNERS=0 to disable the automatic pre-codex-existing
+cleanup pass.
 EOF
 }
 
@@ -502,6 +509,142 @@ logs_command() {
             die "logs requires status or prune"
             ;;
     esac
+}
+
+owner_gc_default_age_seconds() {
+    parse_duration_seconds "${AGENT_TMUX_IDLE_OWNER_GC_AGE:-30m}"
+}
+
+owner_gc_capture_is_codex_starter() {
+    python3 -c '
+import re
+import sys
+
+raw = sys.stdin.read()
+text = re.sub(
+    r"\x1b\][^\a]*(?:\a|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()#][0-9A-Za-z]",
+    "",
+    raw,
+).replace("\r", "\n")
+starter_prompts = {
+    "Explain this codebase",
+    "Summarize recent commits",
+    "Implement {feature}",
+    "Find and fix a bug in @filename",
+    "Write tests for @filename",
+    "Improve documentation in @filename",
+    "Run /review on my current changes",
+    "Use /skills to list available skills",
+    "Check recently modified functions for compatibility",
+    "How many files have been modified?",
+    "Will this algorithm scale well?",
+}
+if "OpenAI Codex" not in text:
+    raise SystemExit(1)
+if not any(prompt in text for prompt in starter_prompts):
+    raise SystemExit(1)
+if not any(line.lstrip().startswith("›") for line in text.splitlines()):
+    raise SystemExit(1)
+raise SystemExit(0)
+'
+}
+
+gc_idle_owner_sessions() {
+    local mode="dry-run"
+    local older_than=""
+    local quiet_summary=0
+    while (($# > 0)); do
+        case "$1" in
+            --dry-run|--list)
+                mode="dry-run"
+                shift
+                ;;
+            --kill)
+                mode="kill"
+                shift
+                ;;
+            --older-than)
+                (($# >= 2)) || die "--older-than requires a duration"
+                older_than="$(parse_duration_seconds "$2")"
+                shift 2
+                ;;
+            --quiet-summary)
+                quiet_summary=1
+                shift
+                ;;
+            *)
+                die "unknown gc-idle-owners argument: $1"
+                ;;
+        esac
+    done
+    [[ -n "${older_than}" ]] || older_than="$(owner_gc_default_age_seconds)"
+
+    require_tmux
+    local now
+    now="$(date +%s)"
+    local inspected=0
+    local matched=0
+    local killed=0
+    local line
+    local session
+    local attached
+    local created
+    local windows
+    local sessions_output
+    local sessions_rc=0
+    set +e
+    sessions_output="$(tmux list-sessions -F "#{session_name}\t#{session_attached}\t#{session_created}\t#{session_windows}" 2>&1)"
+    sessions_rc=$?
+    set -e
+    if ((sessions_rc != 0)); then
+        if [[ "${sessions_output}" == *"no server running"* ]]; then
+            if ((quiet_summary == 0)); then
+                echo "agent-tmux gc-idle-owners: mode=${mode} inspected=0 matched=0 killed=0 older_than=${older_than}s"
+            fi
+            return 0
+        fi
+        echo "agent-tmux gc-idle-owners: failed to list tmux sessions: ${sessions_output:-tmux list-sessions failed}" >&2
+        return 3
+    fi
+    while IFS=$'\t' read -r session attached created windows; do
+        [[ -n "${session}" ]] || continue
+        inspected=$((inspected + 1))
+        [[ "${session}" == owner-* ]] || continue
+        [[ "${session}" =~ ^[A-Za-z0-9_.-]+$ ]] || continue
+        [[ "${attached}" == "0" ]] || continue
+        [[ "${created}" =~ ^[0-9]+$ ]] || continue
+        [[ "${windows}" =~ ^[0-9]+$ ]] || continue
+        ((windows == 1)) || continue
+        ((now - 10#${created} >= older_than)) || continue
+        if ! tmux capture-pane -ep -t "=${session}:" -S -80 | owner_gc_capture_is_codex_starter; then
+            continue
+        fi
+        matched=$((matched + 1))
+        if [[ "${mode}" == "kill" ]]; then
+            if tmux kill-session -t "=${session}" >/dev/null 2>&1; then
+                killed=$((killed + 1))
+                echo "agent-tmux gc-idle-owners: killed ${session}"
+            else
+                echo "agent-tmux gc-idle-owners: failed to kill ${session}" >&2
+                return 3
+            fi
+        else
+            echo "agent-tmux gc-idle-owners: idle ${session}"
+        fi
+    done <<<"${sessions_output}"
+    if ((quiet_summary == 0)); then
+        echo "agent-tmux gc-idle-owners: mode=${mode} inspected=${inspected} matched=${matched} killed=${killed} older_than=${older_than}s"
+    fi
+}
+
+auto_gc_idle_owner_sessions() {
+    case "${AGENT_TMUX_AUTO_GC_IDLE_OWNERS:-1}" in
+        0|false|FALSE|no|NO|off|OFF)
+            return 0
+            ;;
+    esac
+    command -v tmux >/dev/null 2>&1 || return 0
+    gc_idle_owner_sessions --kill --older-than "${AGENT_TMUX_IDLE_OWNER_GC_AGE:-30m}" --quiet-summary >&2
 }
 
 reject_bypass_arg() {
@@ -2686,6 +2829,7 @@ delegate_codex_existing() {
         return
     fi
     require_delegate
+    auto_gc_idle_owner_sessions
     local stdout_file
     local stderr_file
     stdout_file="$(mktemp)"
@@ -3226,6 +3370,9 @@ main() {
             ;;
         codex-latest)
             source_owned_codex_latest "$@"
+            ;;
+        gc-idle-owners)
+            gc_idle_owner_sessions "$@"
             ;;
         pipe-log)
             (($# == 1)) || die "pipe-log requires <session>"

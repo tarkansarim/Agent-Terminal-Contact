@@ -146,6 +146,18 @@ exists.
 The source-owned wrapper normalizes `agent-tmux codex-existing <repo>` for
 machine callers: a true no-existing-session result is `rc=1`, empty stdout, and
 one stderr line beginning `agent-tmux: no Codex tmux session found for workdir:`.
+Before that lookup, the wrapper runs a conservative stale-owner cleanup pass:
+detached `owner-*` Codex sessions older than
+`${AGENT_TMUX_IDLE_OWNER_GC_AGE:-30m}` are killed only when their pane still
+shows the Codex starter template prompt. Set
+`AGENT_TMUX_AUTO_GC_IDLE_OWNERS=0` to disable this automatic pass, or inspect it
+manually with:
+
+```bash
+agent-tmux gc-idle-owners --dry-run --older-than 30m
+agent-tmux gc-idle-owners --kill --older-than 30m
+```
+
 When an exact preferred session is supplied with
 `agent-tmux codex-existing <repo> <session>`, the wrapper source-inspects that
 exact tmux session name; exact absence, wrong-repo, or not-Codex-like evidence
@@ -477,6 +489,12 @@ Find an existing tmux-managed Codex session for a repo:
 
 ```bash
 agent-tmux codex-existing /path/to/repo
+```
+
+List stale detached owner Codex starter sessions without killing them:
+
+```bash
+agent-tmux gc-idle-owners --dry-run --older-than 30m
 ```
 
 Capture and inspect:
