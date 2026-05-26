@@ -449,7 +449,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
             return EXIT_REFUSED
         send_starter_placeholder_via_literal = (
             selection.provider == "codex"
-            and (starter_placeholder_seen or is_codex_starter_placeholder_idle(final_classification))
+            and is_codex_starter_placeholder_idle(final_classification)
         )
     except DiscoveryError as exc:
         _emit(
