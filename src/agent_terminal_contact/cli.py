@@ -367,8 +367,6 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         )
         return EXIT_OK
 
-    starter_placeholder_seen = selection.provider == "codex" and is_codex_starter_placeholder_idle(classification)
-    send_starter_placeholder_via_literal = False
     composer_cleared = False
     try:
         if initial_clear_required:
@@ -447,10 +445,6 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                 },
             )
             return EXIT_REFUSED
-        send_starter_placeholder_via_literal = (
-            selection.provider == "codex"
-            and is_codex_starter_placeholder_idle(final_classification)
-        )
     except DiscoveryError as exc:
         _emit(
             args,
@@ -492,11 +486,6 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         pre_submit_contact_proven = True
 
     try:
-        literal_key_chunk_size = None
-        literal_key_chunk_delay_seconds = 0.0
-        if selection.provider == "codex" and send_starter_placeholder_via_literal:
-            literal_key_chunk_size = CODEX_LITERAL_INPUT_CHUNK_SIZE
-            literal_key_chunk_delay_seconds = CODEX_LITERAL_INPUT_DELAY_SECONDS
         transport.send(
             send_target.pane_id,
             guarded_message,
@@ -508,8 +497,6 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                 contact_marker,
             ),
             pre_submit_check=_prove_pre_submit_contact,
-            literal_key_chunk_size=literal_key_chunk_size,
-            literal_key_chunk_delay_seconds=literal_key_chunk_delay_seconds,
         )
     except UnsubmittedMessageError as exc:
         recovery, contaminated_state, contaminated_reason = _recover_own_guarded_payload_residue(

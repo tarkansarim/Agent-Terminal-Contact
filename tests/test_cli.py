@@ -633,6 +633,48 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertTrue(any(call[0][:4] == ("tmux", "paste-buffer", "-d", "-r") for call in runner.calls))
             self.assertFalse(any(call[0][:5] == ("tmux", "send-keys", "-t", "%1", "-l") for call in runner.calls))
 
+    def test_real_send_uses_paste_when_codex_starter_placeholder_survives_clear(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_STARTER,
+                    CODEX_STARTER,
+                    CODEX_STARTER,
+                    CODEX_STARTER,
+                    CODEX_STARTER,
+                    CODEX_STARTER,
+                    CODEX_STARTER,
+                    codex_collapsed_pasted_contact("hello"),
+                    f"{guarded_line()}\n{CODEX_IDLE}",
+                ],
+                cursor_x=2,
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(payload["delivery_proven"])
+            self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
+            self.assertTrue(any(call[0][:4] == ("tmux", "paste-buffer", "-d", "-r") for call in runner.calls))
+            self.assertFalse(any(call[0][:5] == ("tmux", "send-keys", "-t", "%1", "-l") for call in runner.calls))
+
     def test_trust_roots_reports_narrow_provider_and_launcher_roots(self):
         with tempfile.TemporaryDirectory() as repo:
             runner = FakeRunner(repo, CODEX_IDLE)
