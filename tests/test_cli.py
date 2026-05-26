@@ -1899,7 +1899,7 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["status"], "sent")
             self.assertTrue(any(call[0][:3] == ("tmux", "send-keys", "-t") for call in runner.calls))
 
-    def test_codex_oversized_payload_uses_literal_chunks_before_enter(self):
+    def test_codex_oversized_payload_uses_paste_before_enter(self):
         long_message = "chunked-" * 190
         with tempfile.TemporaryDirectory() as repo:
             runner = FakeRunner(
@@ -1909,7 +1909,7 @@ class AgentContactCliTests(unittest.TestCase):
                     CODEX_IDLE,
                     CODEX_IDLE,
                     CODEX_IDLE,
-                    codex_wrapped_pending_contact(long_message, width=96),
+                    codex_collapsed_pasted_contact(long_message),
                     wrapped_guarded_echo(long_message, width=96) + "\n" + CODEX_IDLE,
                 ],
             )
@@ -1936,13 +1936,11 @@ class AgentContactCliTests(unittest.TestCase):
             ]
             self.assertEqual(code, EXIT_OK)
             self.assertEqual(payload["status"], "sent")
-            self.assertGreater(len(literal_calls), 1)
-            self.assertTrue(all(call[0][5] == "--" for call in literal_calls))
-            self.assertTrue(all(len(call[0][6]) <= 200 for call in literal_calls))
-            self.assertFalse(any(call[0][:2] == ("tmux", "paste-buffer") for call in runner.calls))
+            self.assertEqual(literal_calls, [])
+            self.assertTrue(any(call[0][:4] == ("tmux", "paste-buffer", "-d", "-r") for call in runner.calls))
             self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
-    def test_codex_literal_chunks_use_option_terminator_for_dash_prefixed_chunks(self):
+    def test_codex_dash_prefixed_long_payload_uses_paste_not_literal_chunks(self):
         prefix = 'CONTACT_ID: AC-TEST MESSAGE_JSON: "'
         message = ("x" * (200 - len(prefix))) + "-r should stay literal " + ("z" * 900)
         self.assertEqual(guarded_line(message)[200:202], "-r")
@@ -1954,7 +1952,7 @@ class AgentContactCliTests(unittest.TestCase):
                     CODEX_IDLE,
                     CODEX_IDLE,
                     CODEX_IDLE,
-                    codex_wrapped_pending_contact(message, width=96),
+                    codex_collapsed_pasted_contact(message),
                     wrapped_guarded_echo(message, width=96) + "\n" + CODEX_IDLE,
                 ],
                 fail_dash_literal_without_option_terminator=True,
@@ -1982,9 +1980,10 @@ class AgentContactCliTests(unittest.TestCase):
             ]
             self.assertEqual(code, EXIT_OK)
             self.assertEqual(payload["status"], "sent")
-            self.assertTrue(all(call[0][5] == "--" for call in literal_calls))
+            self.assertEqual(literal_calls, [])
+            self.assertTrue(any(call[0][:4] == ("tmux", "paste-buffer", "-d", "-r") for call in runner.calls))
 
-    def test_codex_plan_mode_hint_does_not_block_long_literal_submit(self):
+    def test_codex_plan_mode_hint_does_not_block_long_paste_submit(self):
         long_message = "plan-mode-" * 190
         with tempfile.TemporaryDirectory() as repo:
             runner = FakeRunner(
@@ -2021,7 +2020,8 @@ class AgentContactCliTests(unittest.TestCase):
             ]
             self.assertEqual(code, EXIT_OK)
             self.assertEqual(payload["status"], "sent")
-            self.assertGreater(len(literal_calls), 1)
+            self.assertEqual(literal_calls, [])
+            self.assertTrue(any(call[0][:4] == ("tmux", "paste-buffer", "-d", "-r") for call in runner.calls))
             self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
     def test_pre_submit_waits_for_live_codex_long_plan_mode_render_before_enter(self):
@@ -2103,7 +2103,8 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(code, EXIT_OK)
             self.assertEqual(payload["status"], "sent")
             self.assertTrue(payload["delivery_proven"])
-            self.assertGreater(len(literal_calls), 1)
+            self.assertEqual(literal_calls, [])
+            self.assertTrue(any(call[0][:4] == ("tmux", "paste-buffer", "-d", "-r") for call in runner.calls))
             self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
     def test_post_send_waits_for_delayed_codex_working_echo_after_long_submit(self):
@@ -2163,14 +2164,15 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["status"], "sent")
             self.assertTrue(payload["delivery_proven"])
             self.assertEqual(payload["post_send_state"], "agent_working")
-            self.assertGreater(len(literal_calls), 1)
+            self.assertEqual(literal_calls, [])
+            self.assertTrue(any(call[0][:4] == ("tmux", "paste-buffer", "-d", "-r") for call in runner.calls))
             self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
     def test_post_send_proves_agent_working_after_pre_submit_guard_without_visible_echo(self):
         long_message = (
             "Ticket #151 reopened exact path. Long guarded supervisor payload for a Codex worker: use source only, "
             "validate the exact requested behavior, comment evidence before closing, keep Rewind coverage, and do "
-            "not use raw tmux fallback. This text is intentionally long enough to use literal chunked input and to "
+            "not use raw tmux fallback. This text is intentionally long enough to use the long-payload path and to "
             "make the submitted prompt likely to scroll out of the post-send readback once the worker starts."
         ) * 4
         working_without_visible_contact = "• Working (1s • esc to interrupt)\n"
@@ -2218,13 +2220,14 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertFalse(payload["post_send_guarded_contact_visible"])
             self.assertTrue(payload["pre_submit_contact_proven"])
             self.assertIn("pre-submit", payload["delivery_proof_reason"])
-            self.assertGreater(len(literal_calls), 1)
+            self.assertEqual(literal_calls, [])
+            self.assertTrue(any(call[0][:4] == ("tmux", "paste-buffer", "-d", "-r") for call in runner.calls))
             self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
-    def test_pre_submit_failure_clears_own_literal_guarded_residue(self):
+    def test_pre_submit_failure_clears_own_guarded_residue(self):
         long_message = (
             "Ticket #150 long Codex send repro. "
-            "This payload is intentionally long enough to use literal chunk input and then render only a split "
+            "This payload is intentionally long enough to use the long-payload path and then render only a split "
             "fragment before submit, matching the guarded-contact failure mode where Codex leaves the composer "
             "contaminated with an unsubmitted CONTACT_ID/MESSAGE_JSON payload. "
         ) * 8
@@ -2280,10 +2283,10 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
             self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
-    def test_pre_submit_failure_waits_for_delayed_own_literal_guarded_residue(self):
+    def test_pre_submit_failure_waits_for_delayed_own_guarded_residue(self):
         long_message = (
             "Ticket #162 long Codex send repro. "
-            "The pre-submit proof can fail before Codex has fully repainted the long literal guarded payload, "
+            "The pre-submit proof can fail before Codex has fully repainted the long guarded payload, "
             "leaving CONTACT_ID/MESSAGE_JSON residue visible immediately after the first recovery capture. "
         ) * 8
         guarded = guarded_line(long_message)
@@ -2342,7 +2345,7 @@ class AgentContactCliTests(unittest.TestCase):
     def test_pre_submit_failure_waits_past_stable_idle_for_delayed_own_residue(self):
         long_message = (
             "Ticket #174 long Codex guarded send repro. "
-            "A long literal input can fail pre-submit, briefly repaint as an idle prompt, then leave duplicated "
+            "A long guarded input can fail pre-submit, briefly repaint as an idle prompt, then leave duplicated "
             "unsubmitted CONTACT_ID/MESSAGE_JSON residue in the composer. "
         ) * 8
         guarded = guarded_line(long_message)

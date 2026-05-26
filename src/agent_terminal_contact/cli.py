@@ -494,9 +494,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
     try:
         literal_key_chunk_size = None
         literal_key_chunk_delay_seconds = 0.0
-        if selection.provider == "codex" and (
-            send_starter_placeholder_via_literal or len(guarded_message) >= CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS
-        ):
+        if selection.provider == "codex" and send_starter_placeholder_via_literal:
             literal_key_chunk_size = CODEX_LITERAL_INPUT_CHUNK_SIZE
             literal_key_chunk_delay_seconds = CODEX_LITERAL_INPUT_DELAY_SECONDS
         transport.send(
@@ -812,7 +810,7 @@ def _revalidate_pasted_contact(selection, runner: Runner, transport: AgentTmuxTr
         else:
             stable_mismatch_key = mismatch_key
             stable_mismatch_count = 1
-        # Codex can repaint long literal input over several captures; fail early only
+        # Codex can repaint long guarded input over several captures; fail early only
         # once the visible non-matching state has stopped changing.
         if stable_mismatch_count >= POST_PASTE_READBACK_STABLE_MISMATCH_ATTEMPTS:
             break
