@@ -666,6 +666,50 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(suggestion["launcher_root"], "/usr/bin")
             self.assertFalse(any(call[0][:2] == ("tmux", "capture-pane") for call in runner.calls))
 
+    def test_trust_roots_prints_exports_for_multiple_panes_with_identical_roots(self):
+        with tempfile.TemporaryDirectory() as repo:
+            resolved = Path(repo).resolve()
+            runner = FakeRunner(repo, CODEX_IDLE)
+            script = resolved / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+            args = f"node {script}"
+            runner.responses[("tmux", "list-panes", "-a", "-F", PANE_FORMAT)] = CommandResult(
+                (),
+                0,
+                pane_line("owner-demo-a", "%1", resolved, pid=111)
+                + pane_line("owner-demo-b", "%2", resolved, pid=222).replace("/dev/pts/7", "/dev/pts/8"),
+                "",
+            )
+            runner.responses[("ps", "-t", "/dev/pts/7", "-o", "pid=,ppid=,pgid=,stat=,args=")] = CommandResult(
+                (), 0, f"111 1 111 Sl+ {args}\n", ""
+            )
+            runner.responses[("ps", "-t", "/dev/pts/8", "-o", "pid=,ppid=,pgid=,stat=,args=")] = CommandResult(
+                (), 0, f"222 1 222 Sl+ {args}\n", ""
+            )
+            runner.responses[("cat", "/proc/111/cmdline")] = CommandResult((), 0, f"node\0{script}\0", "")
+            runner.responses[("readlink", "-f", "/proc/111/exe")] = CommandResult((), 0, "/usr/bin/node\n", "")
+            runner.responses[("cat", "/proc/111/environ")] = CommandResult((), 0, "PATH=/usr/bin\0", "")
+            runner.responses[("cat", "/proc/222/cmdline")] = CommandResult((), 0, f"node\0{script}\0", "")
+            runner.responses[("readlink", "-f", "/proc/222/exe")] = CommandResult((), 0, "/usr/bin/node\n", "")
+            runner.responses[("cat", "/proc/222/environ")] = CommandResult((), 0, "PATH=/usr/bin\0", "")
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "trust-roots",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            text = stdout.getvalue()
+            self.assertEqual(code, EXIT_OK)
+            self.assertIn("multiple matching provider panes share identical trusted roots", text)
+            self.assertIn(f"export AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS={resolved}/node_modules/@openai/codex", text)
+            self.assertIn("export AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS=/usr/bin", text)
+            self.assertNotIn("rerun with --session before exporting roots", text)
+
     def test_trust_roots_refuses_node_preload_instead_of_returning_false_root(self):
         with tempfile.TemporaryDirectory() as repo:
             resolved = Path(repo).resolve()

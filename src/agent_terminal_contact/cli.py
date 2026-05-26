@@ -199,15 +199,21 @@ def _trust_roots(args: argparse.Namespace, runner: Runner, stdout: TextIO) -> in
         return EXIT_OK
 
     stdout.write("agent-contact: ok\n")
-    if len(suggestions) != 1:
+    root_pairs = {(suggestion.provider_root, suggestion.launcher_root) for suggestion in suggestions}
+    if len(root_pairs) != 1:
         stdout.write("reason: multiple matching provider panes; rerun with --session before exporting roots\n")
         for suggestion in suggestions:
             stdout.write(f"- {suggestion.session_name}:{suggestion.pane_id} provider_root={suggestion.provider_root}\n")
         return EXIT_OK
 
     suggestion = suggestions[0]
-    stdout.write(f"session: {suggestion.session_name}\n")
-    stdout.write(f"pane_id: {suggestion.pane_id}\n")
+    if len(suggestions) == 1:
+        stdout.write(f"session: {suggestion.session_name}\n")
+        stdout.write(f"pane_id: {suggestion.pane_id}\n")
+    else:
+        panes = ", ".join(f"{item.session_name}:{item.pane_id}" for item in suggestions)
+        stdout.write("reason: multiple matching provider panes share identical trusted roots\n")
+        stdout.write(f"panes: {panes}\n")
     stdout.write(f"export AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS={shlex.quote(suggestion.provider_root)}\n")
     if suggestion.launcher_root is not None:
         stdout.write(f"export AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS={shlex.quote(suggestion.launcher_root)}\n")
