@@ -340,7 +340,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("a true no-existing-session result is `rc=1`, empty stdout", text)
         self.assertIn("the wrapper source-inspects that\nexact tmux session name", text)
         self.assertIn("must not collapse into a delegated multiple-session refusal", text)
-        self.assertIn("Latest-thread parsing for these aliases is fail-closed", text)
+        self.assertIn("Latest-session parsing for these aliases is fail-closed", text)
         self.assertIn("source-owned user-level wrapper", text)
         self.assertIn("/usr/local/bin/agent-tmux", text)
 
@@ -3874,7 +3874,10 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             lines = capture.read_text(encoding="utf-8").splitlines()
             self.assertEqual(lines[:6], ["new-session", "-d", "-s", "sess", "-c", repo])
-            self.assertEqual(lines[6], "codex -s danger-full-access -a never resume Thread\\ Name Please\\ do\\ work")
+            self.assertEqual(
+                lines[6],
+                "codex -s danger-full-access -a never resume aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa Please\\ do\\ work",
+            )
 
     def test_agent_tmux_codex_latest_uses_source_index_instead_of_delegate_stale_thread(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
@@ -4016,7 +4019,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(result.stdout, "")
             self.assertIn("multiple latest Codex sessions found", result.stderr)
 
-    def test_agent_tmux_resume_latest_full_uses_source_owned_latest_thread(self):
+    def test_agent_tmux_resume_latest_full_uses_source_owned_latest_session_id(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
             tmp_path = Path(tmp)
             repo_path = Path(repo)
@@ -4083,7 +4086,10 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             lines = capture.read_text(encoding="utf-8").splitlines()
             self.assertEqual(lines[:6], ["new-session", "-d", "-s", "sess", "-c", str(repo_path)])
-            self.assertEqual(lines[6], "codex -s danger-full-access -a never resume Source\\ Owned\\ Thread Please\\ work")
+            self.assertEqual(
+                lines[6],
+                "codex -s danger-full-access -a never resume 55555555-5555-4555-8555-555555555555 Please\\ work",
+            )
 
     def test_agent_tmux_resume_latest_full_refuses_existing_session_before_thread_lookup(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
@@ -4171,7 +4177,10 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             lines = capture.read_text(encoding="utf-8").splitlines()
             self.assertEqual(lines[:6], ["new-session", "-d", "-s", "sess", "-c", repo])
-            self.assertEqual(lines[6], "codex -s danger-full-access -a never resume Thread\\ Name Please\\ do\\ work")
+            self.assertEqual(
+                lines[6],
+                "codex -s danger-full-access -a never resume aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa Please\\ do\\ work",
+            )
 
     def test_agent_tmux_legacy_full_profile_resume_latest_refuses_existing_session_before_thread_lookup(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
@@ -4286,7 +4295,7 @@ class SkillContractTests(unittest.TestCase):
             ),
             (
                 ["codex-resume-latest", "sess", "{repo}", "Please", "do", "work"],
-                "codex resume Thread\\ Name Please\\ do\\ work",
+                "codex resume aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa Please\\ do\\ work",
             ),
         ]
         for argv_template, expected_command in cases:

@@ -211,10 +211,10 @@ Resume a known Codex thread with the same visible profile:
 agent-tmux codex-resume-full <session> <repo> <thread-name-or-id>
 ```
 
-Resume the latest recorded Codex thread for a repo with the same visible
+Resume the latest recorded Codex session for a repo with the same visible
 profile. After the requested tmux session preflight passes, this helper resolves
-the latest thread through the source-owned `codex-latest` path and starts
-`codex ... resume <thread> [prompt]`; it does not pass a prompt to ambiguous
+the latest session id through the source-owned `codex-latest` path and starts
+`codex ... resume <session-id> [prompt]`; it does not pass a prompt to ambiguous
 `resume --last` positional parsing:
 
 ```bash
@@ -225,7 +225,7 @@ The wrapper expands these aliases to Codex CLI flags `-s danger-full-access -a
 never` in the delegated command line so later captures and process inspection
 show the worker was started with `danger-full-access` and `never` approval. Do not use
 `--dangerously-bypass-approvals-and-sandbox` for this workflow.
-Latest-thread parsing for these aliases is fail-closed. `codex-latest` reads
+Latest-session parsing for these aliases is fail-closed. `codex-latest` reads
 `${CODEX_HOME:-~/.codex}/session_index.jsonl` and the matching session file
 directly. A session qualifies only when the session file has exact resolved
 `cwd`/function-call `workdir` evidence for the repo, or when the index
@@ -240,7 +240,7 @@ same-repo Codex sessions do not steal these explicit launches; the wrapper tells
 the delegated helper to create the requested session. The wrapper also
 recognizes the legacy supervise-style shape `agent-tmux codex-resume-latest
 <session> <repo> -s danger-full-access -a never [prompt]` and routes it through
-the same deterministic latest-thread path.
+the same deterministic latest-session-id path.
 
 Before wrapper-launched Codex workers (`codex`, `codex-full`, `codex-resume`,
 `codex-resume-full`, `codex-resume-latest`, and
@@ -472,13 +472,13 @@ Start a full-permission Codex worker in tmux:
 agent-tmux codex-full example-session /path/to/repo
 ```
 
-Resume the latest recorded Codex thread for a repo:
+Resume the latest recorded Codex session for a repo:
 
 ```bash
 agent-tmux codex-resume-latest example-session /path/to/repo
 ```
 
-Resume the latest recorded Codex thread with the explicit full-permission worker
+Resume the latest recorded Codex session with the explicit full-permission worker
 profile:
 
 ```bash

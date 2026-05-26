@@ -2905,7 +2905,7 @@ inspect_exact_codex_existing() {
     printf "%s\n" "${preferred}"
 }
 
-latest_thread_for_workdir() {
+latest_session_id_for_workdir() {
     local workdir="$1"
     source_owned_codex_latest "${workdir}" | {
         local latest_line
@@ -2922,7 +2922,7 @@ latest_thread_for_workdir() {
         local extra
         IFS=$'\t' read -r thread_name session_id timestamp path extra <<<"${latest_line}"
         [[ -z "${extra:-}" && -n "${thread_name}" && -n "${session_id}" && -n "${timestamp}" && -n "${path}" ]] || die "codex-latest returned malformed output: ${latest_line}"
-        printf "%s\n" "${thread_name}"
+        printf "%s\n" "${session_id}"
     }
 }
 
@@ -3117,7 +3117,7 @@ print(f"{best['thread_name']}\t{best['id']}\t{best['updated_at']}\t{path}")
 PY
 }
 
-delegated_latest_thread_for_workdir() {
+delegated_latest_session_id_for_workdir() {
     local workdir="$1"
     require_delegate
     local stdout_file
@@ -3157,7 +3157,7 @@ delegated_latest_thread_for_workdir() {
     local extra
     IFS=$'\t' read -r thread_name session_id timestamp path extra <<<"${latest_line}"
     [[ -z "${extra:-}" && -n "${thread_name}" && -n "${session_id}" && -n "${timestamp}" && -n "${path}" ]] || die "delegated codex-latest returned malformed output: ${latest_line}"
-    printf "%s\n" "${thread_name}"
+    printf "%s\n" "${session_id}"
 }
 
 launch_code_map_sidecar() {
@@ -3281,14 +3281,14 @@ main() {
             shift 2
             require_delegate
             require_new_requested_session "${session}"
-            local thread_name
-            thread_name="$(latest_thread_for_workdir "${workdir}")"
+            local session_id
+            session_id="$(latest_session_id_for_workdir "${workdir}")"
             local prompt_args=()
             if (($# > 0)); then
                 prompt_args=("$*")
             fi
             require_codex_project_trust "${workdir}"
-            start_session "${session}" "${workdir}" codex "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
+            start_session "${session}" "${workdir}" codex "${FULL_PERMISSION_ARGS[@]}" resume "${session_id}" "${prompt_args[@]}"
             ;;
         codex-code-map-sidecar)
             launch_code_map_sidecar launch "$@"
@@ -3341,26 +3341,26 @@ main() {
                 shift 4
                 require_delegate
                 require_new_requested_session "${session}"
-                local thread_name
-                thread_name="$(latest_thread_for_workdir "${workdir}")"
+                local session_id
+                session_id="$(latest_session_id_for_workdir "${workdir}")"
                 local prompt_args=()
                 if (($# > 0)); then
                     prompt_args=("$*")
                 fi
                 require_codex_project_trust "${workdir}"
-                start_session "${session}" "${workdir}" codex "${FULL_PERMISSION_ARGS[@]}" resume "${thread_name}" "${prompt_args[@]}"
+                start_session "${session}" "${workdir}" codex "${FULL_PERMISSION_ARGS[@]}" resume "${session_id}" "${prompt_args[@]}"
                 return
             fi
             require_delegate
             require_new_requested_session "${session}"
-            local thread_name
-            thread_name="$(latest_thread_for_workdir "${workdir}")"
+            local session_id
+            session_id="$(latest_session_id_for_workdir "${workdir}")"
             local prompt_args=()
             if (($# > 0)); then
                 prompt_args=("$*")
             fi
             require_codex_project_trust "${workdir}"
-            start_session "${session}" "${workdir}" codex resume "${thread_name}" "${prompt_args[@]}"
+            start_session "${session}" "${workdir}" codex resume "${session_id}" "${prompt_args[@]}"
             ;;
         -h|--help|help)
             usage
