@@ -164,7 +164,9 @@ agent-tmux codex-code-map-sidecar-fork /path/to/repo <anchor> <codex-session-id>
 ```
 
 Sidecars write only to a generated artifact directory. They should not edit the
-source repo directly.
+source repo directly. The wrapper seeds a private sidecar `CODEX_HOME` with an
+exact trusted-project entry for that generated artifact directory before launch,
+so Codex should not stop at the directory trust prompt.
 
 Validate sidecar output before using it:
 

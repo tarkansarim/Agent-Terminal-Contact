@@ -1349,6 +1349,40 @@ copy_code_map_fork_session() {
     return 0
 }
 
+write_code_map_codex_config() {
+    local codex_home="$1"
+    local artifact_dir="$2"
+    local config_path="${codex_home}/config.toml"
+    local python_bin
+    python_bin=""
+    if [[ -x /usr/bin/python3 ]]; then
+        python_bin="/usr/bin/python3"
+    elif [[ -x /bin/python3 ]]; then
+        python_bin="/bin/python3"
+    else
+        python_bin="$(command -v python3 2>/dev/null || true)"
+    fi
+    [[ -n "${python_bin}" && -x "${python_bin}" ]] || die "python3 is required to write code-map sidecar Codex config"
+    "${python_bin}" - "${config_path}" "${artifact_dir}" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+artifact_dir = sys.argv[2]
+escaped = artifact_dir.replace("\\", "\\\\").replace('"', '\\"')
+config_path.parent.mkdir(parents=True, exist_ok=True)
+config_path.write_text(
+    f'[projects."{escaped}"]\ntrust_level = "trusted"\n',
+    encoding="utf-8",
+)
+PY
+    if ! secure_code_map_chmod 600 "${config_path}" || ! require_code_map_mode "${config_path}" 600 "code-map sidecar Codex config"; then
+        die "failed to harden code-map sidecar Codex config permissions: ${config_path}"
+    fi
+}
+
 is_safe_relative_path() {
     local path="$1"
     [[ -n "${path}" ]] || return 1
@@ -3215,6 +3249,7 @@ launch_code_map_sidecar() {
     local runtime_dir="${CODE_MAP_PREPARED_RUNTIME_DIR}"
     local artifact_owner_token="${CODE_MAP_ARTIFACT_OWNER_TOKEN}"
     enable_code_map_launch_cleanup "${artifact_dir}" "${artifact_owner_token}"
+    write_code_map_codex_config "${runtime_dir}/codex-home" "${artifact_dir}"
     if [[ "${mode}" == "fork" ]]; then
         if ! copy_code_map_fork_session "${source_codex_home}" "${runtime_dir}/codex-home" "${fork_session_id}" "${fork_source_file}"; then
             cleanup_code_map_artifact_dir "${artifact_dir}" "${artifact_owner_token}"

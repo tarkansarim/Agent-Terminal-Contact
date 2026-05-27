@@ -45,16 +45,17 @@ a worker/control surface, not as the user's foreground Codex UI. If a foreground
 Codex chat is outside tmux, this skill cannot safely inject into it; resume the
 intended existing thread into a tmux worker only when worker contact is needed.
 
-`agent-contact` verifies provider identity against explicitly trusted narrow
-roots only: Codex/Node package roots, Claude/Node package roots, or the exact
-native Claude version binary printed by `agent-contact trust-roots`. Set
-`AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS` to the narrow provider root, and set
-`AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS` to the launcher root for bare Node-style
-launches, before contacting local Codex/Claude processes. Do not guess broad
-roots. Launcher roots are exact executable directories, not broad parent
-directories. `trust-roots` only prints roots when the live pane package or
-native provider executable is anchored by the provider command found on your
-current `PATH`.
+`agent-contact` verifies provider identity against narrow roots: Codex/Node
+package roots, Claude/Node package roots, or the exact native Claude version
+binary. Normal sends automatically trust a live provider pane only when that
+provider root is anchored by the provider command found on the current `PATH`
+or by the matching npm global package root. Manual
+`AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS` and
+`AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS` remain supported as an override for
+unusual installs, but do not ask the user to export them for normal side shells.
+Do not guess broad roots. Launcher roots are exact executable directories, not
+broad parent directories. `trust-roots` prints the discovered roots for
+debugging.
 
 ## Hard Safety Rules
 
@@ -278,8 +279,11 @@ existing pane, and does not bypass `agent-contact` for follow-up messages.
 The wrapper launches Codex from an isolated artifact directory with a visible
 workspace-write permission profile, disabled network access for model-run shell
 commands, and wrapper-owned `CODEX_HOME` deny-read for model-run shell
-commands. It injects a map-only prompt. The prompt gives the repo root as a
-read-only input path and the artifact directory as the only writable map-output
+commands. Before launch, it writes an exact trusted-project entry for that
+generated artifact directory into the wrapper-owned sidecar `CODEX_HOME`, so the
+sidecar does not stop at Codex's directory trust prompt and no user-level
+Codex config is mutated. It injects a map-only prompt. The prompt gives the repo
+root as a read-only input path and the artifact directory as the only writable map-output
 path.
 The sidecar may write
 artifacts such as `MAP_REPORT.md`, `PROPOSED_CHANGES.patch`, or proposed
@@ -414,8 +418,8 @@ agent-contact send \
   --dry-run
 ```
 
-If discovery reports no matching provider pane because no roots are trusted,
-ask `agent-contact` to inspect the live pane and print narrow roots:
+If discovery reports no matching provider pane, ask `agent-contact` to inspect
+the live pane and print narrow roots:
 
 ```bash
 agent-contact trust-roots \
@@ -424,7 +428,7 @@ agent-contact trust-roots \
   --json
 ```
 
-Then rerun with those explicit roots:
+For unusual installs only, rerun with explicit override roots:
 
 ```bash
 AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS="$HOME/.nvm/versions/node/vX.Y.Z/lib/node_modules/@openai/codex" \

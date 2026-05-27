@@ -285,7 +285,8 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("Before spawning any tmux worker, identify whether the repo's active lane is\nCodex or Claude", text)
         self.assertIn("Do not choose the provider from the supervising agent", text)
         self.assertIn("If the signals disagree, if both providers have plausible active chats", text)
-        self.assertIn("native Claude version binary printed by `agent-contact trust-roots`", text)
+        self.assertIn("Normal sends automatically trust a live provider pane", text)
+        self.assertIn("do not ask the user to export them for normal side shells", text)
         self.assertIn("fail closed before launch/contact", text)
         self.assertIn("--provider claude", text)
         self.assertIn("owner-example-claude", text)
@@ -1120,6 +1121,12 @@ class SkillContractTests(unittest.TestCase):
             self.assertFalse((runtime_dir / "owner-token").exists())
             self.assertFalse((artifact_dir / ".agent-tmux-runtime").exists())
             self.assertTrue((runtime_dir / "codex-home").is_dir())
+            runtime_config = runtime_dir / "codex-home" / "config.toml"
+            self.assertEqual(oct(runtime_config.stat().st_mode & 0o777), "0o600")
+            self.assertEqual(
+                runtime_config.read_text(encoding="utf-8"),
+                f'[projects."{artifact_dir}"]\ntrust_level = "trusted"\n',
+            )
             self.assertIn(f"code-map sidecar session: {session}", result.stderr)
             self.assertIn(f"code-map sidecar artifact-dir: {artifact_dir}", result.stderr)
             self.assertIn(f"code-map sidecar runtime-dir: {runtime_dir}", result.stderr)
@@ -3698,6 +3705,12 @@ class SkillContractTests(unittest.TestCase):
             copied_sessions = list((runtime_dir / "codex-home" / "sessions").rglob("*.jsonl"))
             self.assertEqual(len(copied_sessions), 1)
             self.assertEqual(copied_sessions[0].read_text(encoding="utf-8"), "{\"session\":\"fixture\"}\n")
+            runtime_config = runtime_dir / "codex-home" / "config.toml"
+            self.assertEqual(oct(runtime_config.stat().st_mode & 0o777), "0o600")
+            self.assertEqual(
+                runtime_config.read_text(encoding="utf-8"),
+                f'[projects."{artifact_dir}"]\ntrust_level = "trusted"\n',
+            )
             self.assertIn(
                 session_id,
                 (runtime_dir / "codex-home" / "session_index.jsonl").read_text(encoding="utf-8"),
