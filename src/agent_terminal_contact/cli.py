@@ -904,6 +904,7 @@ def _prompt_body_contains_own_guarded_residue(
     normalized = _normalized_prompt_body(prompt_body)
     return (
         _normalized_prompt_body_matches_pasted_contact(prompt_body, guarded_message, provider=provider)
+        or _is_codex_collapsed_paste_placeholder(normalized, provider=provider)
         or contact_id in prompt_body
         or contact_id in normalized
     )
@@ -942,6 +943,12 @@ def _normalized_prompt_body_matches_pasted_contact(prompt_body: str, guarded_mes
     if match is None:
         return False
     return int(match.group("count")) == len(guarded_message)
+
+
+def _is_codex_collapsed_paste_placeholder(normalized_prompt_body: str, *, provider: str) -> bool:
+    if provider != "codex":
+        return False
+    return CODEX_COLLAPSED_PASTE_RE.match(normalized_prompt_body) is not None
 
 
 def _codex_visual_wrapped_prompt_body_matches_guarded_message(prompt_body: str, guarded_message: str) -> bool:

@@ -24,7 +24,8 @@ and code-map sidecar sessions.
   at an approval prompt, or otherwise unsafe.
 - Sends a guarded one-line payload and checks that it was submitted.
 - Cleans up its own failed guarded payload when it can prove the text belongs to
-  the failed send.
+  the failed send, including Codex collapsed pasted-content placeholders left by
+  the just-failed guarded paste.
 - Installs a source-owned `agent-tmux` wrapper for safer launch, resume,
   logging, latest-chat lookup, and full-permission Codex worker shortcuts.
 - Checks Codex project trust before launch so the wrapper does not report a

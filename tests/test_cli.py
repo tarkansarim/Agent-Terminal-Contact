@@ -2451,6 +2451,57 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
             self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
+    def test_pre_submit_failure_clears_own_collapsed_paste_residue_with_mismatched_count(self):
+        long_message = (
+            "Ticket #242 collapsed pasted-content residue repro. "
+            "The Codex composer can show only a [Pasted Content N chars] placeholder after a failed guarded paste, "
+            "and N can differ from the full guarded payload length while still being the tool-owned residue. "
+        ) * 8
+        collapsed_residue = codex_collapsed_pasted_contact(long_message, count_delta=1)
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    collapsed_residue,
+                    collapsed_residue,
+                    collapsed_residue,
+                    collapsed_residue,
+                    collapsed_residue,
+                    collapsed_residue,
+                    CODEX_IDLE,
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_TRANSPORT)
+            self.assertEqual(payload["status"], "mutated_unsubmitted")
+            self.assertEqual(payload["stage"], "submit")
+            self.assertEqual(payload["recovery"], "cleared_own_guarded_payload")
+            self.assertEqual(payload["pane_state"], "idle_empty_prompt")
+            self.assertFalse(payload["delivery_proven"])
+            self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
+            self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+
     def test_pre_submit_accepts_current_live_plan_mode_residue_without_footer_before_enter(self):
         message = (
             "Continue from the current clean local HEAD. Do not push and do not add a remote. Determine the "

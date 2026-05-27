@@ -64,10 +64,10 @@ debugging.
 - Before sending to another Codex/Claude chat, run `agent-contact send --dry-run` or use `agent-contact send` directly.
 - If `agent-contact` refuses, stop. Do not fall back to raw `agent-tmux send`.
 - If `agent-contact` returns `mutated_unsubmitted`, delivery failed. When the
-  failed send leaves its current guarded `CONTACT_ID` payload in the composer,
-  it clears that owned residue and reports
-  `recovery: cleared_own_guarded_payload`; otherwise rerun guarded contact
-  instead of using raw tmux input.
+  failed send leaves its current guarded `CONTACT_ID` payload or Codex
+  collapsed pasted-content placeholder in the composer, it clears that owned
+  residue and reports `recovery: cleared_own_guarded_payload`; otherwise rerun
+  guarded contact instead of using raw tmux input.
 - If `agent-contact` returns `sent_unproven`, inspect
   `delivery_proof_reason`, `post_send_guarded_contact_visible`, and
   `pre_submit_contact_proven`, and `post_send_state`; do not treat it as
@@ -382,10 +382,10 @@ agent-contact send --repo <repo> --provider codex --session <sidecar-session> --
 ```
 
 If `agent-contact` returns `mutated_unsubmitted`, treat delivery as failed. When
-the failed send leaves its current guarded `CONTACT_ID` payload in the composer,
-it clears that owned residue and reports
-`recovery: cleared_own_guarded_payload`; otherwise rerun guarded contact instead
-of switching to raw tmux input. For a validated, detached tmux-managed worker
+the failed send leaves its current guarded `CONTACT_ID` payload or Codex
+collapsed pasted-content placeholder in the composer, it clears that owned
+residue and reports `recovery: cleared_own_guarded_payload`; otherwise rerun
+guarded contact instead of switching to raw tmux input. For a validated, detached tmux-managed worker
 session, visible composer text is a control
 surface: `--dry-run` reports `would_clear_and_send` plus
 `agent-tmux clear-input <sidecar-session>`, and a real send clears the composer
