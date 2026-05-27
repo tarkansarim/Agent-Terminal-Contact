@@ -23,7 +23,10 @@ V0 must prove:
   pasted-content count, or Codex's threshold `[Pasted Content 1024 chars]`
   placeholder when the guarded line is at least 1024 characters; smaller
   wrong-count placeholders still fail closed
-- Codex starter-placeholder prompts that dry-run accepts report `would_clear_and_send` and are sent with literal key input after clearing instead of `paste-buffer`, so live send can materialize the guarded contact before submit
+- long Codex guarded payloads use tmux bracketed paste (`paste-buffer -p`) so
+  Codex can submit the pasted-content payload normally instead of retaining an
+  unsubmitted collapsed placeholder after Enter
+- Codex starter-placeholder prompts that dry-run accepts report `would_clear_and_send`
 - pending composer text, including stale `CONTACT_ID`/`MESSAGE_JSON` residue, Codex pasted-content placeholders, wrapped/truncated residue, and arbitrary leftover worker text, dry-runs as `would_clear_and_send` and live send clears before pasting
 - pre-submit failures after guarded input that leave the current `CONTACT_ID`
   payload in the composer clear that owned residue before returning
@@ -40,6 +43,11 @@ V0 must prove:
 - if post-send readback finds the same guarded payload still pending in the
   composer, the send is not reported as `sent_unproven`; owned residue is
   cleared and the result is `mutated_unsubmitted` with `delivery_proven: false`
+- if pre-submit proof already succeeded, the post-send pending composer still
+  contains the same guarded payload, and no Codex plan-mode confirmation prompt
+  is visible, `agent-contact` may press Enter one additional time against that
+  tool-owned payload; proven delivery after this path reports `sent` with
+  `post_send_resubmit: true`
 - for post-send pending-residue failures, `pane_state` and `pane_reason`
   describe the contaminated pending-composer state that caused the failure;
   `recovered_pane_state` and `recovered_pane_reason` describe the state after

@@ -230,6 +230,9 @@ git diff --check
   When the guarded line is at least 1024 characters, that threshold placeholder
   is accepted as the just-pasted guarded payload; smaller wrong-count
   placeholders still fail closed.
+  Long Codex guarded payloads are pasted with tmux bracketed-paste markers so
+  Codex can submit them normally instead of leaving an unsubmitted collapsed
+  pasted-content composer entry.
 - If a send is reported as `sent_unproven`, treat it as uncertain and inspect
   the returned reason.
 - If a send first hits `mutated_unsubmitted` but proves and clears its own
@@ -239,6 +242,10 @@ git diff --check
 - If post-send readback finds the same guarded payload still pending in the
   composer, `agent-contact` clears that owned residue and reports
   `mutated_unsubmitted`, not `sent_unproven`.
+  When pre-submit proof already succeeded and no Codex plan-mode confirmation
+  prompt is visible, it first tries one additional guarded Enter against that
+  tool-owned pending payload; if delivery is then proven, the result is `sent`
+  with `post_send_resubmit: true`.
   In that result, `pane_state` reports the contaminated pending-composer state
   that caused the failure, and `recovered_pane_state` reports the state after
   the non-submitting clear attempt.

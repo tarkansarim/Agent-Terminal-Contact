@@ -95,6 +95,7 @@ class AgentTmuxTransport:
         pre_submit_check: Callable[[], None] | None = None,
         literal_key_chunk_size: int | None = None,
         literal_key_chunk_delay_seconds: float = 0.0,
+        bracketed_paste: bool = False,
     ) -> None:
         validate_pane_id(pane_id)
         if not message:
@@ -131,7 +132,11 @@ class AgentTmuxTransport:
         try:
             if pre_paste_check is not None:
                 pre_paste_check()
-            paste = self.runner.run(["tmux", "paste-buffer", "-d", "-r", "-b", buffer_name, "-t", pane_id])
+            paste_args = ["tmux", "paste-buffer", "-d", "-r"]
+            if bracketed_paste:
+                paste_args.append("-p")
+            paste_args.extend(["-b", buffer_name, "-t", pane_id])
+            paste = self.runner.run(paste_args)
             if paste.returncode != 0:
                 raise TransportError(_detail("paste-buffer failed", paste.stderr, paste.stdout))
             if pre_submit_check is not None:
@@ -146,9 +151,9 @@ class AgentTmuxTransport:
         finally:
             self._delete_buffer(buffer_name)
 
-    def submit_pending(self, pane_id: str) -> None:
+    def submit_pending(self, pane_id: str, key: str = "C-m") -> None:
         validate_pane_id(pane_id)
-        self._submit(pane_id)
+        self._submit(pane_id, key=key)
 
     def _delete_buffer(self, buffer_name: str):
         return self.runner.run(["tmux", "delete-buffer", "-b", buffer_name])
@@ -176,8 +181,8 @@ class AgentTmuxTransport:
             if chunk_delay_seconds and offset + chunk_size < len(message):
                 time.sleep(chunk_delay_seconds)
 
-    def _submit(self, pane_id: str) -> None:
-        enter = self.runner.run(["tmux", "send-keys", "-t", pane_id, "C-m"])
+    def _submit(self, pane_id: str, *, key: str = "C-m") -> None:
+        enter = self.runner.run(["tmux", "send-keys", "-t", pane_id, key])
         if enter.returncode != 0:
             raise UnsubmittedMessageError(
                 _detail(

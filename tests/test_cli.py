@@ -2023,6 +2023,7 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["status"], "sent")
             self.assertEqual(literal_calls, [])
             self.assertTrue(any(call[0][:4] == ("tmux", "paste-buffer", "-d", "-r") for call in runner.calls))
+            self.assertTrue(any(call[0][:5] == ("tmux", "paste-buffer", "-d", "-r", "-p") for call in runner.calls))
             self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
     def test_codex_dash_prefixed_long_payload_uses_paste_not_literal_chunks(self):
@@ -2276,6 +2277,12 @@ class AgentContactCliTests(unittest.TestCase):
                     pending_placeholder,
                     pending_placeholder,
                     pending_placeholder,
+                    pending_placeholder,
+                    pending_placeholder,
+                    pending_placeholder,
+                    pending_placeholder,
+                    pending_placeholder,
+                    pending_placeholder,
                     CODEX_IDLE,
                 ],
             )
@@ -2306,6 +2313,65 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertTrue(payload["pre_submit_contact_proven"])
             self.assertFalse(payload["delivery_proven"])
             self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
+
+    def test_post_send_pending_own_threshold_paste_gets_one_guarded_resubmit(self):
+        long_message = (
+            "Ticket #251 long guarded send repro. Proceed with the next slice from the CppStudio supervision "
+            "packet and report status only. This message must exceed the Codex collapsed pasted-content threshold "
+            "so the first submit can leave the owned [Pasted Content 1024 chars] composer placeholder pending even though "
+            "pre-submit proof succeeded. "
+        ) * 5
+        self.assertGreaterEqual(len(guarded_line(long_message)), 1024)
+        pending_placeholder = codex_collapsed_pasted_contact_with_count(1024)
+        submitted_working = f"{guarded_line(long_message)}\n\n• Working (1s • esc to interrupt)\n"
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    pending_placeholder,
+                    pending_placeholder,
+                    pending_placeholder,
+                    pending_placeholder,
+                    pending_placeholder,
+                    pending_placeholder,
+                    pending_placeholder,
+                    submitted_working,
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertEqual(payload["post_send_state"], "agent_working")
+            self.assertTrue(payload["post_send_resubmit"])
+            self.assertTrue(payload["pre_submit_contact_proven"])
+            self.assertTrue(payload["delivery_proven"])
+            self.assertEqual(
+                sum(1 for call in runner.calls if call[0] == ("tmux", "send-keys", "-t", "%1", "C-m")),
+                1,
+            )
+            self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-j") for call in runner.calls))
+            self.assertFalse(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
 
     def test_post_send_pending_own_threshold_paste_with_visible_suffix_is_cleared(self):
         long_message = (

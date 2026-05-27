@@ -526,6 +526,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                         contact_marker,
                     ),
                     pre_submit_check=_prove_pre_submit_contact,
+                    bracketed_paste=_bracketed_paste_required(selection.provider, guarded_message),
                 )
                 break
             except UnsubmittedMessageError as exc:
@@ -638,6 +639,36 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
     delivery_proven = bool(post_send_result["delivery_proven"])
     if not delivery_proven and post_send_result["post_send_state"] == PaneState.PENDING_USER_TEXT.value:
         codex_plan_mode_prompt_visible = bool(post_send_result.get("codex_plan_mode_prompt_visible"))
+        if not codex_plan_mode_prompt_visible and pre_submit_contact_proven:
+            resubmit_result = _resubmit_pending_own_guarded_payload(
+                selection,
+                runner,
+                transport,
+                args.capture_lines,
+                contact_id,
+                guarded_message,
+                pre_submit_contact_proven=pre_submit_contact_proven,
+            )
+            if bool(resubmit_result.get("delivery_proven")):
+                result_payload = {
+                    **base,
+                    "status": "sent",
+                    "contact_id": contact_id,
+                    "cleared_composer": composer_cleared,
+                    "post_send_state": resubmit_result["post_send_state"],
+                    "post_send_reason": resubmit_result["post_send_reason"],
+                    "delivery_proof_reason": resubmit_result["delivery_proof_reason"],
+                    "post_send_guarded_contact_visible": resubmit_result["guarded_contact_visible"],
+                    "pre_submit_contact_proven": resubmit_result["pre_submit_contact_proven"],
+                    "post_send_resubmit": bool(resubmit_result.get("resubmit_attempted")),
+                    "send_attempts": send_attempts,
+                    "delivery_proven": True,
+                }
+                if recovery is not None:
+                    result_payload["recovery"] = recovery
+                _emit(args, stdout, result_payload)
+                return EXIT_OK
+            post_send_result = resubmit_result or post_send_result
         recovery_result = _recover_own_guarded_payload_residue(
             selection,
             runner,
@@ -699,6 +730,84 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         result_payload,
     )
     return EXIT_OK if delivery_proven else EXIT_UNPROVEN
+
+
+def _resubmit_pending_own_guarded_payload(
+    selection,
+    runner: Runner,
+    transport: AgentTmuxTransport,
+    lines: int,
+    contact_id: str,
+    guarded_message: str,
+    *,
+    pre_submit_contact_proven: bool,
+) -> dict[str, object]:
+    target = revalidate_target(selection, runner)
+    capture = transport.capture_state(target.pane_id, lines)
+    classification = classify_pane(
+        capture.text,
+        provider=selection.provider,
+        cursor_line_index=capture.cursor_line_index,
+        cursor_column_index=capture.cursor_x,
+    )
+    if classification.state != PaneState.PENDING_USER_TEXT:
+        guarded_contact_visible = _capture_contains_guarded_message(capture.text, guarded_message)
+        delivery_proven = _post_send_delivery_proven(
+            classification,
+            guarded_contact_visible=guarded_contact_visible,
+            pre_submit_contact_proven=pre_submit_contact_proven,
+        )
+        return {
+            "post_send_state": classification.state.value,
+            "post_send_reason": classification.reason,
+            "guarded_contact_visible": guarded_contact_visible,
+            "delivery_proof_reason": _delivery_proof_reason(
+                classification,
+                guarded_contact_visible=guarded_contact_visible,
+                pre_submit_contact_proven=pre_submit_contact_proven,
+            )
+            if delivery_proven
+            else "post-send pending residue was gone before resubmit",
+            "pre_submit_contact_proven": pre_submit_contact_proven,
+            "codex_plan_mode_prompt_visible": False,
+            "resubmit_attempted": False,
+            "delivery_proven": delivery_proven,
+        }
+    prompt_body = current_prompt_body(
+        capture.text,
+        provider=selection.provider,
+        cursor_line_index=capture.cursor_line_index,
+        cursor_column_index=capture.cursor_x,
+        allow_cursor_backed_prompt_without_footer=True,
+    )
+    if prompt_body is None or not _prompt_body_contains_own_guarded_residue(
+        prompt_body,
+        guarded_message,
+        contact_id,
+        provider=selection.provider,
+    ):
+        return {
+            "post_send_state": classification.state.value,
+            "post_send_reason": classification.reason,
+            "guarded_contact_visible": _capture_contains_guarded_message(capture.text, guarded_message),
+            "delivery_proof_reason": "post-send pending residue was not proven to be the current guarded payload",
+            "pre_submit_contact_proven": pre_submit_contact_proven,
+            "codex_plan_mode_prompt_visible": False,
+            "resubmit_attempted": False,
+            "delivery_proven": False,
+        }
+
+    transport.submit_pending(target.pane_id, key="C-j")
+    result = _read_post_send_delivery_result(
+        selection,
+        runner,
+        transport,
+        lines,
+        guarded_message,
+        pre_submit_contact_proven=pre_submit_contact_proven,
+    )
+    result["resubmit_attempted"] = True
+    return result
 
 
 def _read_post_send_delivery_result(
@@ -856,7 +965,13 @@ def _composer_clear_required(classification) -> bool:
     )
 
 
-def _revalidate_pasted_contact(selection, runner: Runner, transport: AgentTmuxTransport, lines: int, guarded_message: str) -> None:
+def _revalidate_pasted_contact(
+    selection,
+    runner: Runner,
+    transport: AgentTmuxTransport,
+    lines: int,
+    guarded_message: str,
+) -> None:
     last_reason = "pasted contact was not visible before submit"
     stable_mismatch_key: tuple[str, str] | None = None
     stable_mismatch_count = 0
@@ -878,11 +993,15 @@ def _revalidate_pasted_contact(selection, runner: Runner, transport: AgentTmuxTr
         )
         if (
             classification.state == PaneState.PENDING_USER_TEXT
-            and prompt_body is not None
-            and _normalized_prompt_body_matches_pasted_contact(
-                prompt_body,
-                guarded_message,
-                provider=selection.provider,
+            and (
+                (
+                    prompt_body is not None
+                    and _normalized_prompt_body_matches_pasted_contact(
+                        prompt_body,
+                        guarded_message,
+                        provider=selection.provider,
+                    )
+                )
             )
         ):
             return
@@ -1044,6 +1163,10 @@ def _codex_threshold_placeholder() -> str:
     return f"[Pasted Content {CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS} chars]"
 
 
+def _bracketed_paste_required(provider: str, guarded_message: str) -> bool:
+    return provider == "codex" and len(guarded_message) >= CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS
+
+
 def _message_payload_error(message: str) -> str | None:
     for sequence in BRACKETED_PASTE_SEQUENCES:
         if sequence in message:
@@ -1151,13 +1274,27 @@ def _visible_text_contains_wrapped_guarded_message(text: str, guarded_message: s
         pieces = [line[marker_index:]]
         if _codex_visual_wrapped_prompt_body_matches_guarded_message("\n".join(pieces), guarded_message):
             return True
-        for line in lines[start_index + 1 : min(len(lines), start_index + 12)]:
-            if not line.strip():
-                break
-            pieces.append(line)
+        for line in lines[start_index + 1 : min(len(lines), start_index + 96)]:
+            piece = _guarded_capture_continuation_piece(line)
+            if piece is None:
+                continue
+            pieces.append(piece)
             if _codex_visual_wrapped_prompt_body_matches_guarded_message("\n".join(pieces), guarded_message):
                 return True
     return False
+
+
+def _guarded_capture_continuation_piece(line: str) -> str | None:
+    stripped = line.strip()
+    if not stripped:
+        return None
+    if stripped.startswith("─"):
+        return None
+    if stripped.startswith("gpt-") and "·" in stripped:
+        return None
+    if stripped.startswith("›"):
+        return stripped[1:].strip()
+    return stripped
 
 
 def _emit(args: argparse.Namespace, stdout: TextIO, payload: dict[str, object]) -> None:

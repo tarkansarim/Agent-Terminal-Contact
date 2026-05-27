@@ -73,6 +73,10 @@ debugging.
 - If post-send readback finds the same guarded payload still pending in the
   composer, `agent-contact` clears that owned residue and reports
   `mutated_unsubmitted`, not `sent_unproven`.
+  When pre-submit proof already succeeded and no Codex plan-mode confirmation
+  prompt is visible, it first tries one additional guarded Enter against that
+  tool-owned pending payload; if delivery is then proven, the result is `sent`
+  with `post_send_resubmit: true`.
   In that result, `pane_state`/`pane_reason` describe the contaminated
   pending-composer state that caused the failure; `recovered_pane_state` and
   `recovered_pane_reason` describe the state after the non-submitting clear
@@ -104,6 +108,9 @@ debugging.
   submit. When the guarded line is at least 1024 characters, that threshold
   placeholder is accepted as the just-pasted guarded payload; smaller
   wrong-count placeholders still fail closed.
+  Long Codex guarded payloads use tmux bracketed paste so Codex can submit the
+  pasted-content payload normally instead of retaining an unsubmitted collapsed
+  placeholder after Enter.
 - After an unproven long Codex send, `[Pasted Content 1024 chars]` followed by
   visible leftover payload text is treated as owned residue from that
   just-attempted send and is cleared before returning `mutated_unsubmitted`;
@@ -421,10 +428,16 @@ Long Codex guarded sends can show `[Pasted Content 1024 chars]` before submit.
 When the guarded line is at least 1024 characters, that threshold placeholder is
 accepted as the just-pasted guarded payload; smaller wrong-count placeholders
 still fail closed.
-
+Long Codex guarded payloads use tmux bracketed paste so Codex can submit the
+pasted-content payload normally instead of retaining an unsubmitted collapsed
+placeholder after Enter.
 If post-send readback finds the same guarded payload still pending in the
 composer, `agent-contact` clears that owned residue and reports
 `mutated_unsubmitted`, not `sent_unproven`.
+When pre-submit proof already succeeded and no Codex plan-mode confirmation
+prompt is visible, it first tries one additional guarded Enter against that
+tool-owned pending payload; if delivery is then proven, the result is `sent`
+with `post_send_resubmit: true`.
 In that result, `pane_state`/`pane_reason` describe the contaminated
 pending-composer state that caused the failure; `recovered_pane_state` and
 `recovered_pane_reason` describe the state after the non-submitting clear
