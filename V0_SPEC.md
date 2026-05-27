@@ -40,6 +40,9 @@ V0 must prove:
 - if post-send readback finds the same guarded payload still pending in the
   composer, the send is not reported as `sent_unproven`; owned residue is
   cleared and the result is `mutated_unsubmitted` with `delivery_proven: false`
+- if that post-send pending residue is held behind Codex's plan-mode
+  confirmation prompt, the failed result includes
+  `unsupported_prompt: codex_plan_mode_confirmation` and safe recovery guidance
 - for long Codex payloads, post-send cleanup treats
   `[Pasted Content 1024 chars]` followed by visible leftover payload text as
   owned residue only after a just-attempted guarded send becomes unproven; this
@@ -176,6 +179,9 @@ If guarded contact returns `mutated_unsubmitted`, delivery is failed. When it
 reports `recovery: cleared_own_guarded_payload`, the failed current
 `CONTACT_ID` residue was cleared before return; otherwise rerun guarded
 `agent-contact send --dry-run` rather than switching to raw tmux input.
+If the result includes `unsupported_prompt: codex_plan_mode_confirmation`,
+Codex held the long guarded payload behind its plan-mode confirmation prompt;
+the owned residue was cleared, but delivery failed.
 For detached tmux-managed workers, dry-run reports `would_clear_and_send` when
 the composer contains visible text, and live send clears the composer before
 sending a fresh guarded payload. Attached sessions, busy/working panes, trust

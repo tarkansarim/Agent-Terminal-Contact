@@ -242,3 +242,7 @@ git diff --check
   For long Codex payloads, this cleanup also recognizes the threshold
   `[Pasted Content 1024 chars]` placeholder followed by visible leftover
   payload text as owned residue from the just-attempted send.
+- If that post-send residue is held behind Codex's plan-mode confirmation
+  prompt, the result also includes
+  `unsupported_prompt: codex_plan_mode_confirmation` and recovery guidance.
+  The owned residue is cleared, but delivery failed; do not use raw tmux input.

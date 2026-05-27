@@ -73,6 +73,11 @@ debugging.
 - If post-send readback finds the same guarded payload still pending in the
   composer, `agent-contact` clears that owned residue and reports
   `mutated_unsubmitted`, not `sent_unproven`.
+- If that failed result includes
+  `unsupported_prompt: codex_plan_mode_confirmation`, Codex held the long
+  guarded payload behind its plan-mode confirmation prompt. The owned residue
+  was cleared, but delivery failed; use the returned recovery guidance and do
+  not use raw tmux input.
 - If `agent-contact` returns `sent_unproven`, inspect
   `delivery_proof_reason`, `post_send_guarded_contact_visible`, and
   `pre_submit_contact_proven`, and `post_send_state`; do not treat it as
@@ -416,6 +421,11 @@ still fail closed.
 If post-send readback finds the same guarded payload still pending in the
 composer, `agent-contact` clears that owned residue and reports
 `mutated_unsubmitted`, not `sent_unproven`.
+If that failed result includes
+`unsupported_prompt: codex_plan_mode_confirmation`, Codex held the long guarded
+payload behind its plan-mode confirmation prompt. The owned residue was cleared,
+but delivery failed; use the returned recovery guidance and do not use raw tmux
+input.
 For long Codex payloads, this cleanup also covers `[Pasted Content 1024 chars]`
 followed by visible leftover payload text from the same just-attempted send; the
 suffix form is cleanup evidence, not pre-submit proof.

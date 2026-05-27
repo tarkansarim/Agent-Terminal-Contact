@@ -35,6 +35,17 @@ CONTACT_ID_RE = re.compile(r"^AC-[A-Za-z0-9_.:-]+$")
 CODEX_COLLAPSED_PASTE_RE = re.compile(r"^\[Pasted Content (?P<count>[0-9]+) chars\]$")
 BRACKETED_PASTE_SEQUENCES = ("\x1b[200~", "\x1b[201~")
 MESSAGE_ALLOWED_CONTROLS = {"\n", "\t"}
+CODEX_PLAN_MODE_PROMPT_MARKERS = (
+    "create a plan?",
+    "shift + tab use plan mode",
+    "esc dismiss",
+)
+CODEX_PLAN_MODE_UNSUPPORTED_PROMPT = "codex_plan_mode_confirmation"
+CODEX_PLAN_MODE_RECOVERY_GUIDANCE = (
+    "Codex held the long guarded payload behind its plan-mode confirmation prompt; "
+    "the owned guarded residue was cleared. Retry with a shorter or non-plan-triggering "
+    "nudge, or have the worker operator explicitly handle plan mode. Do not use raw tmux input."
+)
 POST_PASTE_READBACK_ATTEMPTS = 40
 POST_PASTE_READBACK_STABLE_MISMATCH_ATTEMPTS = 5
 POST_PASTE_READBACK_DELAY_SECONDS = 0.05
@@ -612,6 +623,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
 
     delivery_proven = bool(post_send_result["delivery_proven"])
     if not delivery_proven and post_send_result["post_send_state"] == PaneState.PENDING_USER_TEXT.value:
+        codex_plan_mode_prompt_visible = bool(post_send_result.get("codex_plan_mode_prompt_visible"))
         recovery, contaminated_state, contaminated_reason = _recover_own_guarded_payload_residue(
             selection,
             runner,
@@ -621,6 +633,14 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
             guarded_message,
         )
         if recovery is not None:
+            reason = "post-submit readback found the guarded payload still pending in the composer"
+            extra_fields = {}
+            if codex_plan_mode_prompt_visible:
+                reason = "Codex held the long guarded payload behind its plan-mode confirmation prompt"
+                extra_fields = {
+                    "unsupported_prompt": CODEX_PLAN_MODE_UNSUPPORTED_PROMPT,
+                    "recovery_guidance": CODEX_PLAN_MODE_RECOVERY_GUIDANCE,
+                }
             _emit(
                 args,
                 stdout,
@@ -629,13 +649,14 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                     "status": "mutated_unsubmitted",
                     "stage": "post_send_pending_residue",
                     "contact_id": contact_id,
-                    "reason": "post-submit readback found the guarded payload still pending in the composer",
+                    "reason": reason,
                     "pane_state": contaminated_state,
                     "pane_reason": contaminated_reason,
                     "pre_submit_contact_proven": pre_submit_contact_proven,
                     "recovery": recovery,
                     "send_attempts": send_attempts,
                     "delivery_proven": False,
+                    **extra_fields,
                 },
             )
             return EXIT_TRANSPORT
@@ -685,6 +706,12 @@ def _read_post_send_delivery_result(
             cursor_line_index=capture.cursor_line_index,
             cursor_column_index=capture.cursor_x,
         )
+        codex_plan_mode_prompt_detected = _codex_plan_mode_prompt_detected(
+            capture.text,
+            guarded_message,
+            classification,
+            provider=selection.provider,
+        )
         guarded_contact_visible = _capture_contains_guarded_message(capture.text, guarded_message)
         delivery_proven = _post_send_delivery_proven(
             classification,
@@ -700,6 +727,7 @@ def _read_post_send_delivery_result(
                 guarded_contact_visible=guarded_contact_visible,
                 pre_submit_contact_proven=pre_submit_contact_proven,
             ),
+            "codex_plan_mode_prompt_visible": codex_plan_mode_prompt_detected,
             "pre_submit_contact_proven": pre_submit_contact_proven,
             "delivery_proven": delivery_proven,
         }
@@ -722,6 +750,7 @@ def _read_post_send_delivery_result(
             "post_send_reason": "post-send readback produced no capture",
             "guarded_contact_visible": False,
             "delivery_proof_reason": "post-send readback produced no capture",
+            "codex_plan_mode_prompt_visible": False,
             "pre_submit_contact_proven": pre_submit_contact_proven,
             "delivery_proven": False,
         }
@@ -966,6 +995,23 @@ def _prompt_body_contains_own_guarded_residue(
     )
 
 
+def _codex_plan_mode_prompt_detected(text: str, guarded_message: str, classification, *, provider: str) -> bool:
+    if provider != "codex":
+        return False
+    normalized = " ".join(strip_terminal_control(text or "").lower().split())
+    if all(marker in normalized for marker in CODEX_PLAN_MODE_PROMPT_MARKERS):
+        return True
+    return (
+        classification.state == PaneState.PENDING_USER_TEXT
+        and "first write a narrow optimization plan" in guarded_message.lower()
+        and f"[pasted content {CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS} chars]" in normalized
+    )
+
+
+def _codex_threshold_placeholder() -> str:
+    return f"[Pasted Content {CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS} chars]"
+
+
 def _message_payload_error(message: str) -> str | None:
     for sequence in BRACKETED_PASTE_SEQUENCES:
         if sequence in message:
@@ -1020,10 +1066,10 @@ def _codex_threshold_placeholder_prefix_matches_own_long_payload(
         return False
     if len(guarded_message) < CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS:
         return False
-    threshold_placeholder = f"[Pasted Content {CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS} chars]"
+    threshold_placeholder = _codex_threshold_placeholder()
     if normalized_prompt_body == threshold_placeholder:
         return True
-    return normalized_prompt_body.startswith(f"{threshold_placeholder} ")
+    return normalized_prompt_body.startswith(threshold_placeholder)
 
 
 def _codex_visual_wrapped_prompt_body_matches_guarded_message(prompt_body: str, guarded_message: str) -> bool:

@@ -2373,6 +2373,144 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertFalse(payload["delivery_proven"])
             self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
 
+    def test_post_send_codex_plan_mode_prompt_residue_reports_specific_unsupported_prompt(self):
+        long_message = (
+            "Ticket #247 exact long optimization nudge path. First write a narrow optimization plan for the "
+            "CudaGroomTool2 profiling slice, then implement only the smallest mechanically safe optimization if "
+            "the evidence directly supports it. Continue the GPU1/OSTM profiling investigation with stable "
+            "thresholds or baseline comparison, run build/tests plus before/after OSTM/Nsight with supported "
+            "nsys stats column reports, fresh BEAUTY byte-stability, and the regression monitor. If it regresses "
+            "quality, timing, or cmp, roll back that attempt before trying another. Stop after one verified "
+            "optimization slice or a blocker; report commit hash only if committed, artifact paths, timing "
+            "deltas, monitor behavior, and review cadence state. "
+        ) * 3
+        self.assertIn("First write a narrow optimization plan", long_message)
+        self.assertGreaterEqual(len(guarded_line(long_message)), 1024)
+        pre_submit_placeholder = codex_collapsed_pasted_contact_with_count(1024)
+        post_send_plan_residue = codex_plan_mode_wrapped_lines_without_footer(
+            [
+                "[Pasted Content 1024 chars] First write a narrow optimization plan for",
+                "  the CudaGroomTool2 profiling slice, then implement only the smallest",
+                "  mechanically safe optimization if the evidence directly supports it.",
+                "  Continue the GPU1/OSTM profiling investigation with stable thresholds or",
+                "  baseline comparison, run build/tests plus before/after OSTM/Nsight with",
+                "  supported nsys stats column reports, fresh BEAUTY byte-stability, and the",
+                "  regression monitor. If it regresses quality, timing, or cmp, roll back",
+                "  that attempt before trying another. Stop after one verified optimization",
+                '  slice or a blocker; report commit hash only if committed."',
+            ]
+        )
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    pre_submit_placeholder,
+                    post_send_plan_residue,
+                    post_send_plan_residue,
+                    post_send_plan_residue,
+                    post_send_plan_residue,
+                    post_send_plan_residue,
+                    post_send_plan_residue,
+                    CODEX_IDLE,
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_TRANSPORT)
+            self.assertEqual(payload["status"], "mutated_unsubmitted")
+            self.assertEqual(payload["stage"], "post_send_pending_residue")
+            self.assertEqual(payload["recovery"], "cleared_own_guarded_payload")
+            self.assertEqual(payload["unsupported_prompt"], "codex_plan_mode_confirmation")
+            self.assertIn("Codex held the long guarded payload behind its plan-mode confirmation prompt", payload["reason"])
+            self.assertIn("owned guarded residue was cleared", payload["recovery_guidance"])
+            self.assertIn("Do not use raw tmux input", payload["recovery_guidance"])
+            self.assertTrue(payload["pre_submit_contact_proven"])
+            self.assertFalse(payload["delivery_proven"])
+            self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
+
+    def test_post_send_codex_plan_mode_double_placeholder_residue_is_cleared(self):
+        long_message = (
+            "Ticket #247 live observed long optimization nudge path. First write a narrow optimization plan for "
+            "the CudaGroomTool2 profiling slice, then implement only the smallest mechanically safe optimization "
+            "if the evidence directly supports it. Continue the GPU1/OSTM profiling investigation with stable "
+            "thresholds or baseline comparison, run build/tests plus before/after OSTM/Nsight with supported "
+            "nsys stats column reports, fresh BEAUTY byte-stability, and the regression monitor. If it regresses "
+            "quality, timing, or cmp, roll back that attempt before trying another. Stop after one verified "
+            "optimization slice or a blocker; report commit hash only if committed, artifact paths, timing "
+            "deltas, monitor behavior, and review cadence state. "
+        ) * 3
+        self.assertGreaterEqual(len(guarded_line(long_message)), 1024)
+        pre_submit_placeholder = codex_collapsed_pasted_contact_with_count(1024)
+        post_send_double_placeholder = (
+            "previous assistant output\n\n"
+            "\u203a [Pasted Content 1024 chars][Pasted Content 1024 chars] #2\n\n"
+            "  gpt-5.5 xhigh · /tmp/project\n"
+        )
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    pre_submit_placeholder,
+                    post_send_double_placeholder,
+                    post_send_double_placeholder,
+                    post_send_double_placeholder,
+                    post_send_double_placeholder,
+                    post_send_double_placeholder,
+                    post_send_double_placeholder,
+                    CODEX_IDLE,
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_TRANSPORT)
+            self.assertEqual(payload["status"], "mutated_unsubmitted")
+            self.assertEqual(payload["stage"], "post_send_pending_residue")
+            self.assertEqual(payload["recovery"], "cleared_own_guarded_payload")
+            self.assertEqual(payload["unsupported_prompt"], "codex_plan_mode_confirmation")
+            self.assertTrue(payload["pre_submit_contact_proven"])
+            self.assertFalse(payload["delivery_proven"])
+            self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
+
     def test_post_send_proves_agent_working_after_pre_submit_guard_without_visible_echo(self):
         long_message = (
             "Ticket #151 reopened exact path. Long guarded supervisor payload for a Codex worker: use source only, "
