@@ -234,3 +234,6 @@ git diff --check
 - If post-send readback finds the same guarded payload still pending in the
   composer, `agent-contact` clears that owned residue and reports
   `mutated_unsubmitted`, not `sent_unproven`.
+  For long Codex payloads, this cleanup also recognizes the threshold
+  `[Pasted Content 1024 chars]` placeholder followed by visible leftover
+  payload text as owned residue from the just-attempted send.

@@ -95,6 +95,10 @@ debugging.
   submit. When the guarded line is at least 1024 characters, that threshold
   placeholder is accepted as the just-pasted guarded payload; smaller
   wrong-count placeholders still fail closed.
+- After an unproven long Codex send, `[Pasted Content 1024 chars]` followed by
+  visible leftover payload text is treated as owned residue from that
+  just-attempted send and is cleared before returning `mutated_unsubmitted`;
+  do not treat that suffix form as pre-submit proof.
 - This does not weaken refusal boundaries: attached sessions, busy/working
   panes, trust prompts, approval prompts, dead/unknown panes, ambiguous identity,
   wrong-provider matches, and non-tmux targets still refuse.
@@ -412,6 +416,9 @@ still fail closed.
 If post-send readback finds the same guarded payload still pending in the
 composer, `agent-contact` clears that owned residue and reports
 `mutated_unsubmitted`, not `sent_unproven`.
+For long Codex payloads, this cleanup also covers `[Pasted Content 1024 chars]`
+followed by visible leftover payload text from the same just-attempted send; the
+suffix form is cleanup evidence, not pre-submit proof.
 
 Attached sessions, busy/working panes, trust prompts, approval prompts, dead/unknown
 panes, ambiguous identity, and wrong-provider matches still refuse. Do not fall

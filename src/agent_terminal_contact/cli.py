@@ -959,6 +959,7 @@ def _prompt_body_contains_own_guarded_residue(
     normalized = _normalized_prompt_body(prompt_body)
     return (
         _normalized_prompt_body_matches_pasted_contact(prompt_body, guarded_message, provider=provider)
+        or _codex_threshold_placeholder_prefix_matches_own_long_payload(normalized, guarded_message, provider=provider)
         or _is_codex_collapsed_paste_placeholder(normalized, provider=provider)
         or contact_id in prompt_body
         or contact_id in normalized
@@ -1007,6 +1008,22 @@ def _is_codex_collapsed_paste_placeholder(normalized_prompt_body: str, *, provid
     if provider != "codex":
         return False
     return CODEX_COLLAPSED_PASTE_RE.match(normalized_prompt_body) is not None
+
+
+def _codex_threshold_placeholder_prefix_matches_own_long_payload(
+    normalized_prompt_body: str,
+    guarded_message: str,
+    *,
+    provider: str,
+) -> bool:
+    if provider != "codex":
+        return False
+    if len(guarded_message) < CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS:
+        return False
+    threshold_placeholder = f"[Pasted Content {CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS} chars]"
+    if normalized_prompt_body == threshold_placeholder:
+        return True
+    return normalized_prompt_body.startswith(f"{threshold_placeholder} ")
 
 
 def _codex_visual_wrapped_prompt_body_matches_guarded_message(prompt_body: str, guarded_message: str) -> bool:
