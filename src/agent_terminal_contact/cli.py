@@ -46,6 +46,7 @@ POST_FAILURE_RECOVERY_DELAY_SECONDS = 0.05
 CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS = 1024
 CODEX_LITERAL_INPUT_CHUNK_SIZE = 200
 CODEX_LITERAL_INPUT_DELAY_SECONDS = 0.03
+MAX_RECOVERED_SEND_ATTEMPTS = 2
 
 
 def main(
@@ -473,54 +474,75 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         return EXIT_TRANSPORT
 
     pre_submit_contact_proven = False
-
-    def _prove_pre_submit_contact() -> None:
-        nonlocal pre_submit_contact_proven
-        _revalidate_pasted_contact(
-            selection,
-            runner,
-            transport,
-            args.capture_lines,
-            guarded_message,
-        )
-        pre_submit_contact_proven = True
+    recovery: str | None = None
+    send_attempts = 0
 
     try:
-        transport.send(
-            send_target.pane_id,
-            guarded_message,
-            pre_paste_check=lambda: _revalidate_idle_prompt(
-                selection,
-                runner,
-                transport,
-                args.capture_lines,
-                contact_marker,
-            ),
-            pre_submit_check=_prove_pre_submit_contact,
-        )
-    except UnsubmittedMessageError as exc:
-        recovery, contaminated_state, contaminated_reason = _recover_own_guarded_payload_residue(
-            selection,
-            runner,
-            transport,
-            args.capture_lines,
-            contact_id,
-            guarded_message,
-        )
-        payload = {
-            **base,
-            "status": "mutated_unsubmitted",
-            "stage": "submit",
-            "contact_id": contact_id,
-            "reason": str(exc),
-            "pane_state": contaminated_state,
-            "pane_reason": contaminated_reason,
-            "delivery_proven": False,
-        }
-        if recovery is not None:
-            payload["recovery"] = recovery
-        _emit(args, stdout, payload)
-        return EXIT_TRANSPORT
+        while True:
+            send_attempts += 1
+            pre_submit_contact_proven = False
+
+            def _prove_pre_submit_contact() -> None:
+                nonlocal pre_submit_contact_proven
+                _revalidate_pasted_contact(
+                    selection,
+                    runner,
+                    transport,
+                    args.capture_lines,
+                    guarded_message,
+                )
+                pre_submit_contact_proven = True
+
+            try:
+                transport.send(
+                    send_target.pane_id,
+                    guarded_message,
+                    pre_paste_check=lambda: _revalidate_idle_prompt(
+                        selection,
+                        runner,
+                        transport,
+                        args.capture_lines,
+                        contact_marker,
+                    ),
+                    pre_submit_check=_prove_pre_submit_contact,
+                )
+                break
+            except UnsubmittedMessageError as exc:
+                recovery, contaminated_state, contaminated_reason = _recover_own_guarded_payload_residue(
+                    selection,
+                    runner,
+                    transport,
+                    args.capture_lines,
+                    contact_id,
+                    guarded_message,
+                )
+                can_retry_after_recovery = (
+                    recovery == "cleared_own_guarded_payload"
+                    and contaminated_state == PaneState.IDLE_EMPTY_PROMPT.value
+                    and send_attempts < MAX_RECOVERED_SEND_ATTEMPTS
+                )
+                if can_retry_after_recovery:
+                    composer_cleared = True
+                    if args.contact_id is None:
+                        contact_id = _new_contact_id()
+                        contact_marker = f"CONTACT_ID: {contact_id}"
+                        guarded_message = _guarded_message(contact_id, args.message)
+                    continue
+                payload = {
+                    **base,
+                    "status": "mutated_unsubmitted",
+                    "stage": "submit",
+                    "contact_id": contact_id,
+                    "reason": str(exc),
+                    "pane_state": contaminated_state,
+                    "pane_reason": contaminated_reason,
+                    "send_attempts": send_attempts,
+                    "delivery_proven": False,
+                }
+                if recovery is not None:
+                    payload["recovery"] = recovery
+                _emit(args, stdout, payload)
+                return EXIT_TRANSPORT
     except DiscoveryError as exc:
         _emit(
             args,
@@ -590,21 +612,25 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
 
     delivery_proven = bool(post_send_result["delivery_proven"])
     status = "sent" if delivery_proven else "sent_unproven"
+    result_payload = {
+        **base,
+        "status": status,
+        "contact_id": contact_id,
+        "cleared_composer": composer_cleared,
+        "post_send_state": post_send_result["post_send_state"],
+        "post_send_reason": post_send_result["post_send_reason"],
+        "delivery_proof_reason": post_send_result["delivery_proof_reason"],
+        "post_send_guarded_contact_visible": post_send_result["guarded_contact_visible"],
+        "pre_submit_contact_proven": post_send_result["pre_submit_contact_proven"],
+        "send_attempts": send_attempts,
+        "delivery_proven": delivery_proven,
+    }
+    if recovery is not None:
+        result_payload["recovery"] = recovery
     _emit(
         args,
         stdout,
-        {
-            **base,
-            "status": status,
-            "contact_id": contact_id,
-            "cleared_composer": composer_cleared,
-            "post_send_state": post_send_result["post_send_state"],
-            "post_send_reason": post_send_result["post_send_reason"],
-            "delivery_proof_reason": post_send_result["delivery_proof_reason"],
-            "post_send_guarded_contact_visible": post_send_result["guarded_contact_visible"],
-            "pre_submit_contact_proven": post_send_result["pre_submit_contact_proven"],
-            "delivery_proven": delivery_proven,
-        },
+        result_payload,
     )
     return EXIT_OK if delivery_proven else EXIT_UNPROVEN
 

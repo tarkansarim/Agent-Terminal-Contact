@@ -223,5 +223,7 @@ git diff --check
 - Messages with terminal control bytes are refused.
 - If a send is reported as `sent_unproven`, treat it as uncertain and inspect
   the returned reason.
-- If a send is reported as `mutated_unsubmitted`, delivery failed. Retry through
-  `agent-contact`; do not switch to raw tmux input.
+- If a send first hits `mutated_unsubmitted` but proves and clears its own
+  guarded residue, `agent-contact` retries once through the same guarded gates.
+  If it still reports `mutated_unsubmitted`, delivery failed; rerun
+  `agent-contact` instead of switching to raw tmux input.

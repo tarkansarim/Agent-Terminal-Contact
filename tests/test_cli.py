@@ -2296,6 +2296,9 @@ class AgentContactCliTests(unittest.TestCase):
                     split_residue,
                     split_residue,
                     CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact(long_message),
+                    f"{guarded_line(long_message)}\n{CODEX_IDLE}",
                 ],
             )
             stdout = io.StringIO()
@@ -2316,14 +2319,16 @@ class AgentContactCliTests(unittest.TestCase):
                 stdout=stdout,
             )
             payload = json.loads(stdout.getvalue())
-            self.assertEqual(code, EXIT_TRANSPORT)
-            self.assertEqual(payload["status"], "mutated_unsubmitted")
-            self.assertEqual(payload["stage"], "submit")
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
             self.assertEqual(payload["recovery"], "cleared_own_guarded_payload")
-            self.assertEqual(payload["pane_state"], "idle_empty_prompt")
-            self.assertFalse(payload["delivery_proven"])
+            self.assertEqual(payload["send_attempts"], 2)
+            self.assertTrue(payload["delivery_proven"])
             self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
-            self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+            self.assertEqual(
+                sum(1 for call in runner.calls if call[0] == ("tmux", "send-keys", "-t", "%1", "C-m")),
+                1,
+            )
 
     def test_pre_submit_failure_waits_for_delayed_own_guarded_residue(self):
         long_message = (
@@ -2355,6 +2360,9 @@ class AgentContactCliTests(unittest.TestCase):
                     CODEX_IDLE,
                     delayed_residue,
                     CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact(long_message),
+                    f"{guarded_line(long_message)}\n{CODEX_IDLE}",
                 ],
             )
             stdout = io.StringIO()
@@ -2375,14 +2383,16 @@ class AgentContactCliTests(unittest.TestCase):
                 stdout=stdout,
             )
             payload = json.loads(stdout.getvalue())
-            self.assertEqual(code, EXIT_TRANSPORT)
-            self.assertEqual(payload["status"], "mutated_unsubmitted")
-            self.assertEqual(payload["stage"], "submit")
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
             self.assertEqual(payload["recovery"], "cleared_own_guarded_payload")
-            self.assertEqual(payload["pane_state"], "idle_empty_prompt")
-            self.assertFalse(payload["delivery_proven"])
+            self.assertEqual(payload["send_attempts"], 2)
+            self.assertTrue(payload["delivery_proven"])
             self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
-            self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+            self.assertEqual(
+                sum(1 for call in runner.calls if call[0] == ("tmux", "send-keys", "-t", "%1", "C-m")),
+                1,
+            )
 
     def test_pre_submit_failure_waits_past_stable_idle_for_delayed_own_residue(self):
         long_message = (
@@ -2421,6 +2431,9 @@ class AgentContactCliTests(unittest.TestCase):
                     CODEX_IDLE,
                     duplicated_residue,
                     CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact(long_message),
+                    f"{guarded_line(long_message)}\n{CODEX_IDLE}",
                 ],
                 cursor_line_indexes=[2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, plan_hint_index, 2],
             )
@@ -2442,14 +2455,16 @@ class AgentContactCliTests(unittest.TestCase):
                 stdout=stdout,
             )
             payload = json.loads(stdout.getvalue())
-            self.assertEqual(code, EXIT_TRANSPORT)
-            self.assertEqual(payload["status"], "mutated_unsubmitted")
-            self.assertEqual(payload["stage"], "submit")
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
             self.assertEqual(payload["recovery"], "cleared_own_guarded_payload")
-            self.assertEqual(payload["pane_state"], "idle_empty_prompt")
-            self.assertFalse(payload["delivery_proven"])
+            self.assertEqual(payload["send_attempts"], 2)
+            self.assertTrue(payload["delivery_proven"])
             self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
-            self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+            self.assertEqual(
+                sum(1 for call in runner.calls if call[0] == ("tmux", "send-keys", "-t", "%1", "C-m")),
+                1,
+            )
 
     def test_pre_submit_failure_clears_own_collapsed_paste_residue_with_mismatched_count(self):
         long_message = (
@@ -2473,6 +2488,9 @@ class AgentContactCliTests(unittest.TestCase):
                     collapsed_residue,
                     collapsed_residue,
                     CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact(long_message),
+                    f"{guarded_line(long_message)}\n{CODEX_IDLE}",
                 ],
             )
             stdout = io.StringIO()
@@ -2493,14 +2511,16 @@ class AgentContactCliTests(unittest.TestCase):
                 stdout=stdout,
             )
             payload = json.loads(stdout.getvalue())
-            self.assertEqual(code, EXIT_TRANSPORT)
-            self.assertEqual(payload["status"], "mutated_unsubmitted")
-            self.assertEqual(payload["stage"], "submit")
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
             self.assertEqual(payload["recovery"], "cleared_own_guarded_payload")
-            self.assertEqual(payload["pane_state"], "idle_empty_prompt")
-            self.assertFalse(payload["delivery_proven"])
+            self.assertEqual(payload["send_attempts"], 2)
+            self.assertTrue(payload["delivery_proven"])
             self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
-            self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+            self.assertEqual(
+                sum(1 for call in runner.calls if call[0] == ("tmux", "send-keys", "-t", "%1", "C-m")),
+                1,
+            )
 
     def test_pre_submit_accepts_current_live_plan_mode_residue_without_footer_before_enter(self):
         message = (
