@@ -221,6 +221,10 @@ git diff --check
 - Real sends to attached tmux sessions are refused.
 - Ambiguous matching sessions are refused.
 - Messages with terminal control bytes are refused.
+- Long Codex sends may render as `[Pasted Content 1024 chars]` before submit.
+  When the guarded line is at least 1024 characters, that threshold placeholder
+  is accepted as the just-pasted guarded payload; smaller wrong-count
+  placeholders still fail closed.
 - If a send is reported as `sent_unproven`, treat it as uncertain and inspect
   the returned reason.
 - If a send first hits `mutated_unsubmitted` but proves and clears its own

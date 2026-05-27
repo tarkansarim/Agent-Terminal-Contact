@@ -19,6 +19,10 @@ V0 must prove:
 - visible composer text in a detached tmux-managed worker is cleared before sending a fresh guarded payload; attached sessions, busy/working panes, trust prompts, approval prompts, dead/unknown panes, ambiguous identity, and wrong-provider matches refuse
 - the message payload contains no bracketed-paste markers or terminal control characters except newline and tab
 - the guarded contact payload is a single line containing a generated `CONTACT_ID` and `MESSAGE_JSON`, without tmux bracketed-paste wrapping
+- Codex pre-submit proof accepts the exact guarded line, an exact collapsed
+  pasted-content count, or Codex's threshold `[Pasted Content 1024 chars]`
+  placeholder when the guarded line is at least 1024 characters; smaller
+  wrong-count placeholders still fail closed
 - Codex starter-placeholder prompts that dry-run accepts report `would_clear_and_send` and are sent with literal key input after clearing instead of `paste-buffer`, so live send can materialize the guarded contact before submit
 - pending composer text, including stale `CONTACT_ID`/`MESSAGE_JSON` residue, Codex pasted-content placeholders, wrapped/truncated residue, and arbitrary leftover worker text, dry-runs as `would_clear_and_send` and live send clears before pasting
 - pre-submit failures after guarded input that leave the current `CONTACT_ID`

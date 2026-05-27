@@ -88,6 +88,10 @@ debugging.
 - The clear-before-send path covers Codex starter placeholder text, stale
   `CONTACT_ID`/`MESSAGE_JSON` residue, Codex pasted-content placeholders,
   wrapped/truncated residue, and arbitrary leftover worker composer text.
+- Long Codex guarded sends can show `[Pasted Content 1024 chars]` before
+  submit. When the guarded line is at least 1024 characters, that threshold
+  placeholder is accepted as the just-pasted guarded payload; smaller
+  wrong-count placeholders still fail closed.
 - This does not weaken refusal boundaries: attached sessions, busy/working
   panes, trust prompts, approval prompts, dead/unknown panes, ambiguous identity,
   wrong-provider matches, and non-tmux targets still refuse.
@@ -395,8 +399,14 @@ surface: `--dry-run` reports `would_clear_and_send` plus
 `agent-tmux clear-input <sidecar-session>`, and a real send clears the composer
 before sending a fresh guarded payload. This includes starter placeholder text,
 stale `CONTACT_ID`/`MESSAGE_JSON` residue, Codex pasted-content placeholders,
-wrapped/truncated residue, and arbitrary leftover worker composer text. Attached
-sessions, busy/working panes, trust prompts, approval prompts, dead/unknown
+wrapped/truncated residue, and arbitrary leftover worker composer text.
+
+Long Codex guarded sends can show `[Pasted Content 1024 chars]` before submit.
+When the guarded line is at least 1024 characters, that threshold placeholder is
+accepted as the just-pasted guarded payload; smaller wrong-count placeholders
+still fail closed.
+
+Attached sessions, busy/working panes, trust prompts, approval prompts, dead/unknown
 panes, ambiguous identity, and wrong-provider matches still refuse. Do not fall
 back to raw `agent-tmux send` unless the current operator explicitly authorizes
 that exact bypass.

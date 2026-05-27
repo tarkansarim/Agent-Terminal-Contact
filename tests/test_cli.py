@@ -61,9 +61,13 @@ def codex_wrapped_pending_contact(message='hello', width=24):
 
 def codex_collapsed_pasted_contact(message='hello', *, count_delta=0):
     line = guarded_line(message)
+    return codex_collapsed_pasted_contact_with_count(len(line) + count_delta)
+
+
+def codex_collapsed_pasted_contact_with_count(count):
     return (
         "previous assistant output\n\n"
-        f"\u203a [Pasted Content {len(line) + count_delta} chars]\n"
+        f"\u203a [Pasted Content {count} chars]\n"
         "  gpt-5.5 xhigh · /tmp/project\n"
     )
 
@@ -1940,6 +1944,45 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(code, EXIT_OK)
             self.assertEqual(payload["status"], "sent")
             self.assertTrue(any(call[0][:3] == ("tmux", "send-keys", "-t") for call in runner.calls))
+
+    def test_pre_submit_accepts_codex_threshold_collapsed_paste_for_oversized_guarded_contact(self):
+        long_message = "threshold-collapsed-" * 90
+        self.assertGreaterEqual(len(guarded_line(long_message)), 1024)
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_collapsed_pasted_contact_with_count(1024),
+                    f"{guarded_line(long_message)}\n{CODEX_IDLE}",
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertEqual(payload["send_attempts"], 1)
+            self.assertTrue(payload["delivery_proven"])
+            self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
     def test_codex_oversized_payload_uses_paste_before_enter(self):
         long_message = "chunked-" * 190

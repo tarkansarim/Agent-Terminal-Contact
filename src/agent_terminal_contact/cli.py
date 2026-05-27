@@ -968,7 +968,10 @@ def _normalized_prompt_body_matches_pasted_contact(prompt_body: str, guarded_mes
     match = CODEX_COLLAPSED_PASTE_RE.match(normalized)
     if match is None:
         return False
-    return int(match.group("count")) == len(guarded_message)
+    count = int(match.group("count"))
+    if count == len(guarded_message):
+        return True
+    return count == CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS and len(guarded_message) >= CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS
 
 
 def _is_codex_collapsed_paste_placeholder(normalized_prompt_body: str, *, provider: str) -> bool:
