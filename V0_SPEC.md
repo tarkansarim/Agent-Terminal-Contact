@@ -40,6 +40,10 @@ V0 must prove:
 - if post-send readback finds the same guarded payload still pending in the
   composer, the send is not reported as `sent_unproven`; owned residue is
   cleared and the result is `mutated_unsubmitted` with `delivery_proven: false`
+- for post-send pending-residue failures, `pane_state` and `pane_reason`
+  describe the contaminated pending-composer state that caused the failure;
+  `recovered_pane_state` and `recovered_pane_reason` describe the state after
+  the non-submitting clear attempt
 - if that post-send pending residue is held behind Codex's plan-mode
   confirmation prompt, the failed result includes
   `unsupported_prompt: codex_plan_mode_confirmation` and safe recovery guidance

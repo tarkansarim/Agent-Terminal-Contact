@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import re
@@ -58,6 +59,15 @@ CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS = 1024
 CODEX_LITERAL_INPUT_CHUNK_SIZE = 200
 CODEX_LITERAL_INPUT_DELAY_SECONDS = 0.03
 MAX_RECOVERED_SEND_ATTEMPTS = 2
+
+
+@dataclass(frozen=True)
+class GuardedPayloadRecovery:
+    recovery: str | None
+    contaminated_state: str
+    contaminated_reason: str
+    recovered_state: str | None = None
+    recovered_reason: str | None = None
 
 
 def main(
@@ -519,7 +529,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                 )
                 break
             except UnsubmittedMessageError as exc:
-                recovery, contaminated_state, contaminated_reason = _recover_own_guarded_payload_residue(
+                recovery_result = _recover_own_guarded_payload_residue(
                     selection,
                     runner,
                     transport,
@@ -528,12 +538,13 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                     guarded_message,
                 )
                 can_retry_after_recovery = (
-                    recovery == "cleared_own_guarded_payload"
-                    and contaminated_state == PaneState.IDLE_EMPTY_PROMPT.value
+                    recovery_result.recovery == "cleared_own_guarded_payload"
+                    and recovery_result.recovered_state == PaneState.IDLE_EMPTY_PROMPT.value
                     and send_attempts < MAX_RECOVERED_SEND_ATTEMPTS
                 )
                 if can_retry_after_recovery:
                     composer_cleared = True
+                    recovery = recovery_result.recovery
                     if args.contact_id is None:
                         contact_id = _new_contact_id()
                         contact_marker = f"CONTACT_ID: {contact_id}"
@@ -545,13 +556,16 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                     "stage": "submit",
                     "contact_id": contact_id,
                     "reason": str(exc),
-                    "pane_state": contaminated_state,
-                    "pane_reason": contaminated_reason,
+                    "pane_state": recovery_result.contaminated_state,
+                    "pane_reason": recovery_result.contaminated_reason,
                     "send_attempts": send_attempts,
                     "delivery_proven": False,
                 }
-                if recovery is not None:
-                    payload["recovery"] = recovery
+                if recovery_result.recovery is not None:
+                    payload["recovery"] = recovery_result.recovery
+                if recovery_result.recovered_state is not None:
+                    payload["recovered_pane_state"] = recovery_result.recovered_state
+                    payload["recovered_pane_reason"] = recovery_result.recovered_reason
                 _emit(args, stdout, payload)
                 return EXIT_TRANSPORT
     except DiscoveryError as exc:
@@ -624,7 +638,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
     delivery_proven = bool(post_send_result["delivery_proven"])
     if not delivery_proven and post_send_result["post_send_state"] == PaneState.PENDING_USER_TEXT.value:
         codex_plan_mode_prompt_visible = bool(post_send_result.get("codex_plan_mode_prompt_visible"))
-        recovery, contaminated_state, contaminated_reason = _recover_own_guarded_payload_residue(
+        recovery_result = _recover_own_guarded_payload_residue(
             selection,
             runner,
             transport,
@@ -632,7 +646,7 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
             contact_id,
             guarded_message,
         )
-        if recovery is not None:
+        if recovery_result.recovery is not None:
             reason = "post-submit readback found the guarded payload still pending in the composer"
             extra_fields = {}
             if codex_plan_mode_prompt_visible:
@@ -650,10 +664,12 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                     "stage": "post_send_pending_residue",
                     "contact_id": contact_id,
                     "reason": reason,
-                    "pane_state": contaminated_state,
-                    "pane_reason": contaminated_reason,
+                    "pane_state": recovery_result.contaminated_state,
+                    "pane_reason": recovery_result.contaminated_reason,
                     "pre_submit_contact_proven": pre_submit_contact_proven,
-                    "recovery": recovery,
+                    "recovery": recovery_result.recovery,
+                    "recovered_pane_state": recovery_result.recovered_state,
+                    "recovered_pane_reason": recovery_result.recovered_reason,
                     "send_attempts": send_attempts,
                     "delivery_proven": False,
                     **extra_fields,
@@ -897,7 +913,7 @@ def _recover_own_guarded_payload_residue(
     lines: int,
     contact_id: str,
     guarded_message: str,
-) -> tuple[str | None, str, str]:
+) -> GuardedPayloadRecovery:
     # DELICATE_FIX: Carefully debugged. Modify only with failing repro + targeted tests.
     last_state = PaneState.DEAD_OR_UNKNOWN.value
     last_reason = "post-failure recovery produced no capture"
@@ -906,7 +922,11 @@ def _recover_own_guarded_payload_residue(
             target = revalidate_target(selection, runner)
             capture = transport.capture_state(target.pane_id, lines)
         except (DiscoveryError, TransportError) as exc:
-            return None, PaneState.DEAD_OR_UNKNOWN.value, f"post-failure capture failed: {exc}"
+            return GuardedPayloadRecovery(
+                None,
+                PaneState.DEAD_OR_UNKNOWN.value,
+                f"post-failure capture failed: {exc}",
+            )
 
         classification = classify_pane(
             capture.text,
@@ -925,14 +945,14 @@ def _recover_own_guarded_payload_residue(
         last_reason = classification.reason
         if classification.state == PaneState.PENDING_USER_TEXT:
             if prompt_body is None:
-                return None, classification.state.value, classification.reason
+                return GuardedPayloadRecovery(None, classification.state.value, classification.reason)
             if not _prompt_body_contains_own_guarded_residue(
                 prompt_body,
                 guarded_message,
                 contact_id,
                 provider=selection.provider,
             ):
-                return None, classification.state.value, classification.reason
+                return GuardedPayloadRecovery(None, classification.state.value, classification.reason)
             return _clear_recovered_own_guarded_payload(
                 selection,
                 runner,
@@ -943,11 +963,11 @@ def _recover_own_guarded_payload_residue(
             )
 
         if classification.state not in (PaneState.IDLE_EMPTY_PROMPT, PaneState.DEAD_OR_UNKNOWN):
-            return None, classification.state.value, classification.reason
+            return GuardedPayloadRecovery(None, classification.state.value, classification.reason)
 
         if attempt + 1 < POST_FAILURE_RECOVERY_READBACK_ATTEMPTS:
             time.sleep(POST_FAILURE_RECOVERY_DELAY_SECONDS)
-    return None, last_state, last_reason
+    return GuardedPayloadRecovery(None, last_state, last_reason)
 
 
 def _clear_recovered_own_guarded_payload(
@@ -957,13 +977,19 @@ def _clear_recovered_own_guarded_payload(
     session_name: str,
     lines: int,
     contaminated_classification,
-) -> tuple[str, str, str]:
+) -> GuardedPayloadRecovery:
     try:
         transport.clear_input(session_name)
         target = revalidate_target(selection, runner)
         recovered_capture = transport.capture_state(target.pane_id, lines)
     except (DiscoveryError, TransportError) as exc:
-        return "clear_failed_own_guarded_payload", contaminated_classification.state.value, str(exc)
+        return GuardedPayloadRecovery(
+            "clear_failed_own_guarded_payload",
+            contaminated_classification.state.value,
+            contaminated_classification.reason,
+            None,
+            str(exc),
+        )
 
     recovered_classification = classify_pane(
         recovered_capture.text,
@@ -975,7 +1001,13 @@ def _clear_recovered_own_guarded_payload(
         recovery = "cleared_own_guarded_payload"
     else:
         recovery = "clear_attempted_own_guarded_payload"
-    return recovery, recovered_classification.state.value, recovered_classification.reason
+    return GuardedPayloadRecovery(
+        recovery,
+        contaminated_classification.state.value,
+        contaminated_classification.reason,
+        recovered_classification.state.value,
+        recovered_classification.reason,
+    )
 
 
 def _prompt_body_contains_own_guarded_residue(

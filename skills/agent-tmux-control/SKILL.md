@@ -73,6 +73,10 @@ debugging.
 - If post-send readback finds the same guarded payload still pending in the
   composer, `agent-contact` clears that owned residue and reports
   `mutated_unsubmitted`, not `sent_unproven`.
+  In that result, `pane_state`/`pane_reason` describe the contaminated
+  pending-composer state that caused the failure; `recovered_pane_state` and
+  `recovered_pane_reason` describe the state after the non-submitting clear
+  attempt.
 - If that failed result includes
   `unsupported_prompt: codex_plan_mode_confirmation`, Codex held the long
   guarded payload behind its plan-mode confirmation prompt. The owned residue
@@ -421,6 +425,10 @@ still fail closed.
 If post-send readback finds the same guarded payload still pending in the
 composer, `agent-contact` clears that owned residue and reports
 `mutated_unsubmitted`, not `sent_unproven`.
+In that result, `pane_state`/`pane_reason` describe the contaminated
+pending-composer state that caused the failure; `recovered_pane_state` and
+`recovered_pane_reason` describe the state after the non-submitting clear
+attempt.
 If that failed result includes
 `unsupported_prompt: codex_plan_mode_confirmation`, Codex held the long guarded
 payload behind its plan-mode confirmation prompt. The owned residue was cleared,

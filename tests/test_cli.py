@@ -2300,6 +2300,8 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(code, EXIT_TRANSPORT)
             self.assertEqual(payload["status"], "mutated_unsubmitted")
             self.assertEqual(payload["stage"], "post_send_pending_residue")
+            self.assertEqual(payload["pane_state"], "pending_user_text")
+            self.assertEqual(payload["recovered_pane_state"], "idle_empty_prompt")
             self.assertEqual(payload["recovery"], "cleared_own_guarded_payload")
             self.assertTrue(payload["pre_submit_contact_proven"])
             self.assertFalse(payload["delivery_proven"])

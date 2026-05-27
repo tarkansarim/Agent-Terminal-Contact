@@ -239,6 +239,9 @@ git diff --check
 - If post-send readback finds the same guarded payload still pending in the
   composer, `agent-contact` clears that owned residue and reports
   `mutated_unsubmitted`, not `sent_unproven`.
+  In that result, `pane_state` reports the contaminated pending-composer state
+  that caused the failure, and `recovered_pane_state` reports the state after
+  the non-submitting clear attempt.
   For long Codex payloads, this cleanup also recognizes the threshold
   `[Pasted Content 1024 chars]` placeholder followed by visible leftover
   payload text as owned residue from the just-attempted send.
