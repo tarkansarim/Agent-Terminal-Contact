@@ -17,6 +17,9 @@ Installs AgentTerminalContact for the current user on Windows:
   - writes agent-contact.ps1 and agent-contact.cmd shims under `$BIN_DIR or ~/.local/bin
   - copies skills/agent-tmux-control/SKILL.md into `$CODEX_HOME/skills/agent-tmux-control/SKILL.md
 
+Forced skill replacement backs up prior skill files under this repo's ignored
+backups/install/ tree, not under `$CODEX_HOME.
+
 The source-owned agent-tmux wrapper is Bash/tmux-specific and is installed by
 scripts/install.sh on Linux/WSL. This Windows installer intentionally installs
 agent-contact and the Codex skill snapshot only.
@@ -117,13 +120,54 @@ function Assert-CommandResolvesTo {
     throw "install.ps1: $Name resolves to a different command on PATH: $source"
 }
 
+function Move-LegacyProviderRootBackups {
+    param(
+        [string]$LegacyBackupDir,
+        [string]$BackupDir
+    )
+    if (-not (Test-Path -LiteralPath $LegacyBackupDir)) {
+        return
+    }
+    Invoke-InstallAction {
+        $children = Get-ChildItem -LiteralPath $LegacyBackupDir -Force
+        if ($children.Count -gt 0) {
+            New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
+        }
+        foreach ($child in $children) {
+            $destination = Join-Path $BackupDir $child.Name
+            if (Test-Path -LiteralPath $destination) {
+                $stamp = Get-Date -Format "yyyyMMddTHHmmss"
+                $destination = Join-Path $BackupDir "$($child.Name).$stamp"
+            }
+            Move-Item -LiteralPath $child.FullName -Destination $destination
+        }
+        $legacyCleanupDirs = @(
+            $LegacyBackupDir,
+            (Split-Path -Parent $LegacyBackupDir),
+            (Split-Path -Parent (Split-Path -Parent $LegacyBackupDir))
+        )
+        foreach ($cleanupDir in $legacyCleanupDirs) {
+            if (-not (Test-Path -LiteralPath $cleanupDir)) {
+                continue
+            }
+            $remaining = Get-ChildItem -LiteralPath $cleanupDir -Force -ErrorAction SilentlyContinue
+            if ($remaining -and $remaining.Count -gt 0) {
+                break
+            }
+            Remove-Item -LiteralPath $cleanupDir -Force
+        }
+    } "relocate legacy provider-root backups from $LegacyBackupDir to $BackupDir"
+}
+
 $Root = Resolve-RepoRoot
 $HomeDir = Get-HomeDir
 $CodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HomeDir ".codex" }
 $BinDir = if ($env:BIN_DIR) { $env:BIN_DIR } else { Join-Path (Join-Path $HomeDir ".local") "bin" }
+$BackupRoot = if ($env:AGENT_TERMINAL_CONTACT_BACKUP_ROOT) { $env:AGENT_TERMINAL_CONTACT_BACKUP_ROOT } else { Join-Path $Root "backups/install" }
 $SkillSource = Join-Path $Root "skills/agent-tmux-control/SKILL.md"
 $SkillTarget = Join-Path $CodexHome "skills/agent-tmux-control/SKILL.md"
-$SkillBackupDir = Join-Path $CodexHome "agent-terminal-contact/backups/agent-tmux-control"
+$SkillBackupDir = Join-Path $BackupRoot "codex/agent-tmux-control"
+$LegacySkillBackupDir = Join-Path $CodexHome "agent-terminal-contact/backups/agent-tmux-control"
 $ShimPs1Source = Join-Path $Root "bin/agent-contact.ps1"
 $ShimCmdSource = Join-Path $Root "bin/agent-contact.cmd"
 $ShimPs1 = Join-Path $BinDir "agent-contact.ps1"
@@ -153,6 +197,7 @@ if ($Check) {
 Copy-WithBackup $ShimPs1Source $ShimPs1 $BinDir "agent-contact.ps1"
 Copy-WithBackup $ShimCmdSource $ShimCmd $BinDir "agent-contact.cmd"
 Copy-WithBackup $SkillSource $SkillTarget $SkillBackupDir "SKILL.md"
+Move-LegacyProviderRootBackups $LegacySkillBackupDir $SkillBackupDir
 Invoke-InstallAction {
     New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
     Set-Content -LiteralPath $RootMarker -Value $Root -Encoding UTF8NoBOM

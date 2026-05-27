@@ -73,6 +73,9 @@ This installs:
 - `~/.local/bin/agent-tmux`
 - `${CODEX_HOME:-~/.codex}/skills/agent-tmux-control/SKILL.md`
 
+When `--force` has to preserve a prior installed skill, backups go under this
+repo's ignored `backups/install/` tree, not under `~/.codex` or `~/.claude`.
+
 The installed `agent-tmux` is a wrapper owned by this repo. Normal commands are
 passed through to `/usr/local/bin/agent-tmux`. The wrapper only takes over the
 commands this repo needs to harden.
@@ -94,6 +97,8 @@ This installs:
 
 The Bash/tmux `agent-tmux` wrapper is for Linux or WSL. The Windows installer
 only installs the `agent-contact` shims and skill snapshot.
+Forced skill backups use the same repo-local `backups/install/` tree instead
+of writing backup folders under the provider home.
 
 ## Trust Roots
 

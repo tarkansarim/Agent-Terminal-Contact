@@ -368,6 +368,8 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("agent-contact.cmd", text)
         self.assertIn("agent-contact.root", text)
         self.assertIn("agent-tmux-control/SKILL.md", text)
+        self.assertIn("backups/install", text)
+        self.assertIn("Move-LegacyProviderRootBackups", text)
         self.assertIn("Linux/WSL only", text)
         self.assertIn("-Check", text)
         self.assertIn("Get-Command $Name", text)
@@ -508,6 +510,7 @@ class SkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             codex_home = Path(home) / ".codex"
             bin_dir = Path(home) / ".local" / "bin"
+            backup_root = Path(home) / "MyTools" / "backups"
             first_install = subprocess.run(
                 ["bash", "scripts/install.sh", "--force"],
                 cwd=ROOT,
@@ -515,7 +518,12 @@ class SkillContractTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                env={"HOME": home, "CODEX_HOME": str(codex_home), "PATH": "/usr/bin:/bin"},
+                env={
+                    "HOME": home,
+                    "CODEX_HOME": str(codex_home),
+                    "AGENT_TERMINAL_CONTACT_BACKUP_ROOT": str(backup_root),
+                    "PATH": "/usr/bin:/bin",
+                },
             )
             self.assertEqual(first_install.returncode, 0, first_install.stderr)
             skills_root = codex_home / "skills"
@@ -533,12 +541,18 @@ class SkillContractTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                env={"HOME": home, "CODEX_HOME": str(codex_home), "PATH": "/usr/bin:/bin"},
+                env={
+                    "HOME": home,
+                    "CODEX_HOME": str(codex_home),
+                    "AGENT_TERMINAL_CONTACT_BACKUP_ROOT": str(backup_root),
+                    "PATH": "/usr/bin:/bin",
+                },
             )
             self.assertEqual(reinstall.returncode, 0, reinstall.stderr)
-            backup_dir = codex_home / "agent-terminal-contact" / "backups" / "agent-tmux-control"
+            backup_dir = backup_root / "codex" / "agent-tmux-control"
             self.assertFalse(stale_skill_backup.exists())
             self.assertFalse(stale_dir_backup.exists())
+            self.assertFalse((codex_home / "agent-terminal-contact").exists())
             self.assertEqual(
                 (backup_dir / "SKILL.md.bak-20260517T122141").read_text(encoding="utf-8"),
                 "stale skill backup\n",
@@ -566,6 +580,56 @@ class SkillContractTests(unittest.TestCase):
             )
             self.assertEqual(check.returncode, 0, check.stderr)
 
+    def test_install_relocates_legacy_provider_root_backups_on_install(self):
+        with tempfile.TemporaryDirectory() as home:
+            codex_home = Path(home) / ".codex"
+            backup_root = Path(home) / "MyTools" / "backups"
+            legacy_backup_dir = codex_home / "agent-terminal-contact" / "backups" / "agent-tmux-control"
+            legacy_backup_dir.mkdir(parents=True)
+            legacy_backup = legacy_backup_dir / "SKILL.md.bak-20260526T215716"
+            legacy_backup.write_text("legacy provider-root backup\n", encoding="utf-8")
+
+            result = subprocess.run(
+                ["bash", "scripts/install.sh", "--force"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "HOME": home,
+                    "CODEX_HOME": str(codex_home),
+                    "AGENT_TERMINAL_CONTACT_BACKUP_ROOT": str(backup_root),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            backup_dir = backup_root / "codex" / "agent-tmux-control"
+            self.assertFalse((codex_home / "agent-terminal-contact").exists())
+            self.assertEqual(
+                (backup_dir / "SKILL.md.bak-20260526T215716").read_text(encoding="utf-8"),
+                "legacy provider-root backup\n",
+            )
+            self.assertIn("relocated legacy provider-root backup", result.stdout)
+
+    def test_install_removes_empty_legacy_provider_root_backup_directories(self):
+        with tempfile.TemporaryDirectory() as home:
+            codex_home = Path(home) / ".codex"
+            legacy_backup_dir = codex_home / "agent-terminal-contact" / "backups" / "agent-tmux-control"
+            legacy_backup_dir.mkdir(parents=True)
+
+            result = subprocess.run(
+                ["bash", "scripts/install.sh", "--force"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={"HOME": home, "CODEX_HOME": str(codex_home), "PATH": "/usr/bin:/bin"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((codex_home / "agent-terminal-contact").exists())
+
     def test_install_refuses_divergent_existing_skill_without_force(self):
         with tempfile.TemporaryDirectory() as home:
             codex_home = Path(home) / ".codex"
@@ -588,6 +652,7 @@ class SkillContractTests(unittest.TestCase):
     def test_install_force_backs_up_divergent_existing_skill_outside_skill_load_root(self):
         with tempfile.TemporaryDirectory() as home:
             codex_home = Path(home) / ".codex"
+            backup_root = Path(home) / "MyTools" / "backups"
             skill_dir = codex_home / "skills" / "agent-tmux-control"
             skill_dir.mkdir(parents=True)
             installed_skill = skill_dir / "SKILL.md"
@@ -600,13 +665,19 @@ class SkillContractTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                env={"HOME": home, "CODEX_HOME": str(codex_home), "PATH": "/usr/bin:/bin"},
+                env={
+                    "HOME": home,
+                    "CODEX_HOME": str(codex_home),
+                    "AGENT_TERMINAL_CONTACT_BACKUP_ROOT": str(backup_root),
+                    "PATH": "/usr/bin:/bin",
+                },
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            backup_dir = codex_home / "agent-terminal-contact" / "backups" / "agent-tmux-control"
+            backup_dir = backup_root / "codex" / "agent-tmux-control"
             backups = list(backup_dir.glob("SKILL.md.bak-*"))
             self.assertEqual(len(backups), 1)
             self.assertEqual(backups[0].read_text(encoding="utf-8"), "local hardened skill\n")
+            self.assertFalse((codex_home / "agent-terminal-contact").exists())
             self.assertEqual(list(skill_dir.glob("*.bak*")), [])
             self.assertEqual(installed_skill.read_text(encoding="utf-8"), source_skill.read_text(encoding="utf-8"))
 
@@ -656,6 +727,7 @@ class SkillContractTests(unittest.TestCase):
     def test_install_force_replaces_symlinked_skill_directory_without_writing_through(self):
         with tempfile.TemporaryDirectory() as home:
             codex_home = Path(home) / ".codex"
+            backup_root = Path(home) / "MyTools" / "backups"
             skills_root = codex_home / "skills"
             skills_root.mkdir(parents=True)
             external_dir = Path(home) / "external-skill-dir"
@@ -670,14 +742,20 @@ class SkillContractTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                env={"HOME": home, "CODEX_HOME": str(codex_home), "PATH": "/usr/bin:/bin"},
+                env={
+                    "HOME": home,
+                    "CODEX_HOME": str(codex_home),
+                    "AGENT_TERMINAL_CONTACT_BACKUP_ROOT": str(backup_root),
+                    "PATH": "/usr/bin:/bin",
+                },
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            backup_dir = codex_home / "agent-terminal-contact" / "backups" / "agent-tmux-control"
+            backup_dir = backup_root / "codex" / "agent-tmux-control"
             backups = list(backup_dir.glob("agent-tmux-control.bak-*"))
             self.assertEqual(len(backups), 1)
             self.assertTrue(backups[0].is_symlink())
             self.assertEqual(backups[0].resolve(), external_dir)
+            self.assertFalse((codex_home / "agent-terminal-contact").exists())
             self.assertEqual(list(skills_root.glob("agent-tmux-control.bak-*")), [])
             self.assertFalse(skill_dir.is_symlink())
             self.assertEqual((skill_dir / "SKILL.md").read_text(encoding="utf-8"), source_skill.read_text(encoding="utf-8"))
@@ -686,6 +764,7 @@ class SkillContractTests(unittest.TestCase):
     def test_install_force_replaces_populated_symlinked_skill_directory_without_state_leak(self):
         with tempfile.TemporaryDirectory() as home:
             codex_home = Path(home) / ".codex"
+            backup_root = Path(home) / "MyTools" / "backups"
             skills_root = codex_home / "skills"
             skills_root.mkdir(parents=True)
             external_dir = Path(home) / "external-skill-dir"
@@ -701,7 +780,12 @@ class SkillContractTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                env={"HOME": home, "CODEX_HOME": str(codex_home), "PATH": "/usr/bin:/bin"},
+                env={
+                    "HOME": home,
+                    "CODEX_HOME": str(codex_home),
+                    "AGENT_TERMINAL_CONTACT_BACKUP_ROOT": str(backup_root),
+                    "PATH": "/usr/bin:/bin",
+                },
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(skill_dir.is_symlink())
@@ -711,6 +795,7 @@ class SkillContractTests(unittest.TestCase):
     def test_install_force_replaces_symlinked_skill_without_overwriting_referent(self):
         with tempfile.TemporaryDirectory() as home:
             codex_home = Path(home) / ".codex"
+            backup_root = Path(home) / "MyTools" / "backups"
             skill_dir = codex_home / "skills" / "agent-tmux-control"
             skill_dir.mkdir(parents=True)
             external_skill = Path(home) / "external-skill.md"
@@ -725,7 +810,12 @@ class SkillContractTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                env={"HOME": home, "CODEX_HOME": str(codex_home), "PATH": "/usr/bin:/bin"},
+                env={
+                    "HOME": home,
+                    "CODEX_HOME": str(codex_home),
+                    "AGENT_TERMINAL_CONTACT_BACKUP_ROOT": str(backup_root),
+                    "PATH": "/usr/bin:/bin",
+                },
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(installed_skill.is_symlink())

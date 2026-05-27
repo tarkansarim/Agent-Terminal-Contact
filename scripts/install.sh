@@ -15,8 +15,8 @@ Installs AgentTerminalContact without modifying Codex, Claude, tmux, or
 
 If an existing installed SKILL.md differs from the repo source, or is a symlink,
 installation refuses unless --force is supplied. Forced replacement writes a
-timestamped backup outside the live Codex skill load root first and replaces the
-install path without following symlinks.
+timestamped backup under this repo's ignored backups/install/ tree first and
+replaces the install path without following symlinks.
 
 --check verifies that the current user-level command and skill already match
 this repo source without writing anything, and refuses backup/temp artifacts
@@ -57,7 +57,11 @@ SKILL_SOURCE="${ROOT}/skills/agent-tmux-control/SKILL.md"
 SKILLS_ROOT="${CODEX_HOME}/skills"
 SKILL_DIR="${SKILLS_ROOT}/agent-tmux-control"
 SKILL_TARGET="${SKILL_DIR}/SKILL.md"
-SKILL_BACKUP_DIR="${CODEX_HOME}/agent-terminal-contact/backups/agent-tmux-control"
+BACKUP_ROOT="${AGENT_TERMINAL_CONTACT_BACKUP_ROOT:-${ROOT}/backups/install}"
+SKILL_BACKUP_DIR="${BACKUP_ROOT}/codex/agent-tmux-control"
+LEGACY_SKILL_BACKUP_DIR="${CODEX_HOME}/agent-terminal-contact/backups/agent-tmux-control"
+LEGACY_BACKUP_ROOT="${CODEX_HOME}/agent-terminal-contact/backups"
+LEGACY_STATE_ROOT="${CODEX_HOME}/agent-terminal-contact"
 AGENT_CONTACT_TARGET="${BIN_DIR}/agent-contact"
 AGENT_TMUX_TARGET="${BIN_DIR}/agent-tmux"
 
@@ -160,6 +164,48 @@ relocate_skill_load_artifacts() {
     done
 }
 
+legacy_provider_root_backups() {
+    if [[ -d "${LEGACY_SKILL_BACKUP_DIR}" && ! -L "${LEGACY_SKILL_BACKUP_DIR}" ]]; then
+        find "${LEGACY_SKILL_BACKUP_DIR}" -mindepth 1 -maxdepth 1 -print
+    elif [[ -e "${LEGACY_SKILL_BACKUP_DIR}" || -L "${LEGACY_SKILL_BACKUP_DIR}" ]]; then
+        printf "%s\n" "${LEGACY_SKILL_BACKUP_DIR}"
+    fi
+}
+
+emit_legacy_provider_root_backup_errors() {
+    local artifacts=()
+    local artifact
+
+    mapfile -t artifacts < <(legacy_provider_root_backups)
+    if ((${#artifacts[@]} == 0)); then
+        return 0
+    fi
+
+    for artifact in "${artifacts[@]}"; do
+        echo "install.sh: legacy backup artifact under Codex provider root: ${artifact}" >&2
+    done
+    return 1
+}
+
+relocate_legacy_provider_root_backups() {
+    local artifacts=()
+    local artifact
+    local backup
+
+    mapfile -t artifacts < <(legacy_provider_root_backups)
+    if ((${#artifacts[@]} > 0)); then
+        run mkdir -p "${SKILL_BACKUP_DIR}"
+        for artifact in "${artifacts[@]}"; do
+            backup="$(unique_skill_backup_path "$(basename "${artifact}")")"
+            run mv "${artifact}" "${backup}"
+            echo "relocated legacy provider-root backup: ${artifact} -> ${backup}"
+        done
+    fi
+    run rmdir "${LEGACY_SKILL_BACKUP_DIR}" 2>/dev/null || true
+    run rmdir "${LEGACY_BACKUP_ROOT}" 2>/dev/null || true
+    run rmdir "${LEGACY_STATE_ROOT}" 2>/dev/null || true
+}
+
 require_file "${ROOT}/bin/agent-contact"
 require_file "${ROOT}/bin/agent-tmux"
 require_file "${SKILL_SOURCE}"
@@ -218,6 +264,9 @@ if ((check)); then
         exit 3
     fi
     if ! emit_skill_load_artifact_errors; then
+        exit 3
+    fi
+    if ! emit_legacy_provider_root_backup_errors; then
         exit 3
     fi
     echo "agent-contact install check: ok"
@@ -333,6 +382,7 @@ if ((skill_target_occupied && skill_target_divergent && force)); then
     run rm -f "${SKILL_TARGET}"
 fi
 relocate_skill_load_artifacts
+relocate_legacy_provider_root_backups
 run cp "${SKILL_SOURCE}" "${SKILL_TARGET}"
 
 echo "agent-contact: ${AGENT_CONTACT_TARGET}"

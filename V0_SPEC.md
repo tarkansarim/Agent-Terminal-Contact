@@ -108,6 +108,9 @@ V0 must prove:
   names, and raw `codex fork ...` command text are refused before launch
 - sidecar sessions are created with `tmux new-session`, so an exact session-name
   race fails instead of reusing an existing pane
+- installer backups for replaced skill snapshots are written to this repo's
+  ignored `backups/install/` tree; install never creates backup folders under
+  user-level provider homes such as `~/.codex` or `~/.claude`
 
 ## Refusals
 
