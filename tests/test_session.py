@@ -1103,7 +1103,7 @@ class SessionDiscoveryTests(unittest.TestCase):
             self.assertEqual(selected.pane.provider_pid, 200)
             self.assertIn("codex-linux-x64", selected.pane.process_args)
 
-    def test_exact_node_pane_without_trusted_roots_reports_candidate_identity(self):
+    def test_exact_node_pane_without_env_roots_uses_path_anchored_provider_identity(self):
         with tempfile.TemporaryDirectory() as root:
             repo = Path(root) / "repo"
             repo.mkdir()
@@ -1122,9 +1122,39 @@ class SessionDiscoveryTests(unittest.TestCase):
                 }
             )
             with without_trusted_roots():
+                selected = select_target(
+                    repo=str(repo),
+                    provider="codex",
+                    runner=runner,
+                    explicit_session="owner-ticket63",
+                )
+            self.assertEqual(selected.pane.provider_pid, 200)
+            self.assertIn("codex-linux-x64", selected.pane.process_args)
+
+    def test_exact_node_pane_without_env_roots_still_refuses_unanchored_provider_identity(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as other_root:
+            repo = Path(root) / "repo"
+            repo.mkdir()
+            _script, native = write_codex_native_binary(root)
+            other_script = write_provider_package(other_root)
+            native_args = f"{native} --no-alt-screen"
+            runner = FakeRunner(
+                {
+                    ("tmux", "list-panes", "-s", "-t", "owner-ticket63", "-F", PANE_FORMAT): CommandResult(
+                        (), 0, pane_line("owner-ticket63", "%1", repo, command="node", pid=100), ""
+                    ),
+                    ("ps", "-t", "/dev/pts/7", "-o", "pid=,ppid=,pgid=,stat=,args="): CommandResult(
+                        (), 0, f"200 100 100 Sl+ {native_args}\n", ""
+                    ),
+                    **proc_response(pid=200, args=native_args, exe=str(native)),
+                    ("bash", "-lc", "command -v -- codex"): CommandResult((), 0, f"{other_script}\n", ""),
+                    ("bash", "-lc", "command -v -- npm"): CommandResult((), 1, "", ""),
+                }
+            )
+            with without_trusted_roots():
                 with self.assertRaisesRegex(
                     DiscoveryError,
-                    "candidate codex pane found.*provider_pid=200.*AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS",
+                    "no tmux-managed codex pane found",
                 ):
                     select_target(
                         repo=str(repo),

@@ -97,15 +97,18 @@ only installs the `agent-contact` shims and skill snapshot.
 ## Trust Roots
 
 Provider checks are strict. If `agent-contact` cannot prove that a pane is
-running the requested provider, it refuses.
+running the requested provider, it refuses. By default it trusts a live provider
+only when the provider package root is anchored by the user-level provider
+command path, such as `command -v codex`, or the matching npm global package
+root. That works from side shells without hand-exporting trust variables.
 
-Ask it to print the exact roots to trust:
+Ask it to print the discovered roots when debugging a refusal:
 
 ```bash
 agent-contact trust-roots --repo /path/to/repo --provider codex --json
 ```
 
-Then export the printed roots and retry the send:
+Manual env roots remain supported as an override for unusual installs:
 
 ```bash
 AGENT_CONTACT_TRUSTED_PROVIDER_ROOTS="$HOME/.nvm/versions/node/vX.Y.Z/lib/node_modules/@openai/codex" \
@@ -117,7 +120,7 @@ AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS="$HOME/.nvm/versions/node/vX.Y.Z/bin" \
     --dry-run
 ```
 
-Use the narrow paths printed by `trust-roots`. Do not trust a broad parent
+Use narrow roots when setting override variables. Do not trust a broad parent
 folder.
 
 ## Codex Worker Shortcuts

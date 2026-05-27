@@ -506,6 +506,8 @@ def _provider_process(pane: TmuxPane, provider: str, runner: Runner) -> tuple[in
             if identity is None:
                 continue
             priority = _process_identity_provider_priority(identity, provider)
+            if priority is None:
+                priority = _auto_trusted_process_identity_provider_priority(identity, provider, runner)
             if priority is not None:
                 matches.append((priority, process.pid, identity.display_args))
         if matches:
@@ -514,6 +516,23 @@ def _provider_process(pane: TmuxPane, provider: str, runner: Runner) -> tuple[in
         return 0, ""
 
     return 0, ""
+
+
+def _auto_trusted_process_identity_provider_priority(
+    identity: ProcessIdentity,
+    provider: str,
+    runner: Runner,
+) -> int | None:
+    priority = _process_identity_provider_priority_without_root_trust(identity, provider)
+    if priority is None:
+        return None
+    roots = _process_identity_provider_roots(identity, provider)
+    if roots is None:
+        return None
+    provider_root, launcher_root = roots
+    if not _provider_root_has_path_anchor(provider_root, provider, launcher_root, runner):
+        return None
+    return priority
 
 
 def _trusted_root_suggestion_for_pane(
@@ -626,6 +645,21 @@ def _process_identity_matches_provider(identity: ProcessIdentity, provider: str)
 
 
 def _process_identity_provider_priority(identity: ProcessIdentity, provider: str) -> int | None:
+    priority = _process_identity_provider_priority_without_root_trust(identity, provider)
+    if priority is None:
+        return None
+    roots = _process_identity_provider_roots(identity, provider)
+    if roots is None:
+        return None
+    provider_root, launcher_root = roots
+    if not _is_trusted_provider_root(provider_root):
+        return None
+    if launcher_root is not None and not _is_trusted_launcher_path(identity.exe):
+        return None
+    return priority
+
+
+def _process_identity_provider_priority_without_root_trust(identity: ProcessIdentity, provider: str) -> int | None:
     tokens = identity.argv
     if not tokens:
         return None
@@ -642,9 +676,9 @@ def _process_identity_provider_priority(identity: ProcessIdentity, provider: str
         direct_token = _direct_provider_token(identity, provider, tokens[0], exe_command)
         if direct_token is None:
             return None
-        if _direct_command_matches_provider(direct_token, provider):
+        if _script_token_provider_package_root(direct_token, provider, require_trust=False) is not None:
             return 0
-        if _native_command_matches_provider(direct_token, provider):
+        if _native_token_provider_package_root(direct_token, provider, require_trust=False) is not None:
             return 0
         return None
 
@@ -653,11 +687,9 @@ def _process_identity_provider_priority(identity: ProcessIdentity, provider: str
             return None
         if _node_environment_loads_code(identity.environ):
             return None
-        if not _is_trusted_launcher_path(identity.exe):
-            return None
         if "/" in tokens[0] and not _path_equals(identity.exe, tokens[0]):
             return None
-        if _node_launch_matches_provider(tokens[1:], provider):
+        if _node_launch_provider_package_root(tokens[1:], provider, require_trust=False) is not None:
             return 1
         return None
 
