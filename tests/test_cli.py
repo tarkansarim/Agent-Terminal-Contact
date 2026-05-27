@@ -2253,6 +2253,58 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertTrue(any(call[0][:4] == ("tmux", "paste-buffer", "-d", "-r") for call in runner.calls))
             self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
 
+    def test_post_send_pending_own_threshold_paste_is_cleared_and_reported_unsubmitted(self):
+        long_message = (
+            "Ticket #242 post-submit pending residue repro. "
+            "This message must exceed the Codex collapsed pasted-content threshold so the post-submit composer "
+            "can remain as a [Pasted Content 1024 chars] placeholder after Enter. "
+        ) * 8
+        self.assertGreaterEqual(len(guarded_line(long_message)), 1024)
+        pending_placeholder = codex_collapsed_pasted_contact_with_count(1024)
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    pending_placeholder,
+                    pending_placeholder,
+                    pending_placeholder,
+                    pending_placeholder,
+                    pending_placeholder,
+                    pending_placeholder,
+                    pending_placeholder,
+                    CODEX_IDLE,
+                ],
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_TRANSPORT)
+            self.assertEqual(payload["status"], "mutated_unsubmitted")
+            self.assertEqual(payload["stage"], "post_send_pending_residue")
+            self.assertEqual(payload["recovery"], "cleared_own_guarded_payload")
+            self.assertTrue(payload["pre_submit_contact_proven"])
+            self.assertFalse(payload["delivery_proven"])
+            self.assertTrue(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
+
     def test_post_send_proves_agent_working_after_pre_submit_guard_without_visible_echo(self):
         long_message = (
             "Ticket #151 reopened exact path. Long guarded supervisor payload for a Codex worker: use source only, "

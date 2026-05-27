@@ -37,6 +37,9 @@ V0 must prove:
 - if post-send readback cannot prove delivery, the result is reported as
   `sent_unproven` after mutation and includes `delivery_proof_reason` plus
   `post_send_guarded_contact_visible` and `pre_submit_contact_proven`
+- if post-send readback finds the same guarded payload still pending in the
+  composer, the send is not reported as `sent_unproven`; owned residue is
+  cleared and the result is `mutated_unsubmitted` with `delivery_proven: false`
 - installed AgentTerminalContact artifacts can be resolved through a source
   manifest that reports installed path, source path, install/check commands,
   ownership, and source-match status in JSON

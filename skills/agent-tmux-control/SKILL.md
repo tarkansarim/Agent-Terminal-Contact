@@ -70,6 +70,9 @@ debugging.
   `recovery: cleared_own_guarded_payload` plus `send_attempts: 2` on success.
   If guarded recovery cannot prove a safe retry or the retry also fails, rerun
   guarded contact instead of using raw tmux input.
+- If post-send readback finds the same guarded payload still pending in the
+  composer, `agent-contact` clears that owned residue and reports
+  `mutated_unsubmitted`, not `sent_unproven`.
 - If `agent-contact` returns `sent_unproven`, inspect
   `delivery_proof_reason`, `post_send_guarded_contact_visible`, and
   `pre_submit_contact_proven`, and `post_send_state`; do not treat it as
@@ -405,6 +408,10 @@ Long Codex guarded sends can show `[Pasted Content 1024 chars]` before submit.
 When the guarded line is at least 1024 characters, that threshold placeholder is
 accepted as the just-pasted guarded payload; smaller wrong-count placeholders
 still fail closed.
+
+If post-send readback finds the same guarded payload still pending in the
+composer, `agent-contact` clears that owned residue and reports
+`mutated_unsubmitted`, not `sent_unproven`.
 
 Attached sessions, busy/working panes, trust prompts, approval prompts, dead/unknown
 panes, ambiguous identity, and wrong-provider matches still refuse. Do not fall

@@ -231,3 +231,6 @@ git diff --check
   guarded residue, `agent-contact` retries once through the same guarded gates.
   If it still reports `mutated_unsubmitted`, delivery failed; rerun
   `agent-contact` instead of switching to raw tmux input.
+- If post-send readback finds the same guarded payload still pending in the
+  composer, `agent-contact` clears that owned residue and reports
+  `mutated_unsubmitted`, not `sent_unproven`.

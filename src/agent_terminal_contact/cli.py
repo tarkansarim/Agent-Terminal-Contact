@@ -611,6 +611,35 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         return EXIT_UNPROVEN
 
     delivery_proven = bool(post_send_result["delivery_proven"])
+    if not delivery_proven and post_send_result["post_send_state"] == PaneState.PENDING_USER_TEXT.value:
+        recovery, contaminated_state, contaminated_reason = _recover_own_guarded_payload_residue(
+            selection,
+            runner,
+            transport,
+            args.capture_lines,
+            contact_id,
+            guarded_message,
+        )
+        if recovery is not None:
+            _emit(
+                args,
+                stdout,
+                {
+                    **base,
+                    "status": "mutated_unsubmitted",
+                    "stage": "post_send_pending_residue",
+                    "contact_id": contact_id,
+                    "reason": "post-submit readback found the guarded payload still pending in the composer",
+                    "pane_state": contaminated_state,
+                    "pane_reason": contaminated_reason,
+                    "pre_submit_contact_proven": pre_submit_contact_proven,
+                    "recovery": recovery,
+                    "send_attempts": send_attempts,
+                    "delivery_proven": False,
+                },
+            )
+            return EXIT_TRANSPORT
+
     status = "sent" if delivery_proven else "sent_unproven"
     result_payload = {
         **base,
@@ -1065,6 +1094,7 @@ def _emit(args: argparse.Namespace, stdout: TextIO, payload: dict[str, object]) 
         "delivery_proof_reason",
         "post_send_guarded_contact_visible",
         "pre_submit_contact_proven",
+        "send_attempts",
         "delivery_proven",
         "log_path",
     ):
