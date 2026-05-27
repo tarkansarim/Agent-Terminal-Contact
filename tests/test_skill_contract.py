@@ -3892,7 +3892,7 @@ class SkillContractTests(unittest.TestCase):
                 "codex -s danger-full-access -a never resume aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa Please\\ do\\ work",
             )
 
-    def test_agent_tmux_codex_latest_uses_source_index_instead_of_delegate_stale_thread(self):
+    def test_agent_tmux_codex_latest_prefers_cwd_match_over_newer_same_name_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
             tmp_path = Path(tmp)
             repo_path = Path(repo)
@@ -3976,8 +3976,56 @@ class SkillContractTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             fields = result.stdout.rstrip("\n").split("\t")
-            self.assertEqual(fields[:3], [repo_path.name, latest_id, "2026-05-19T20:05:56Z"])
-            self.assertIn(latest_id, fields[3])
+            self.assertEqual(fields[:3], [f"{repo_path.name}_old", stale_id, "2026-05-10T20:00:00Z"])
+            self.assertIn(stale_id, fields[3])
+
+    def test_agent_tmux_codex_latest_fails_closed_on_same_name_cwd_mismatch_only(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            repo_path = Path(repo)
+            codex_home = tmp_path / "codex-home"
+            sessions = codex_home / "sessions" / "2026" / "05" / "19"
+            sessions.mkdir(parents=True)
+            mismatched_id = "22222222-2222-4222-8222-222222222222"
+            (codex_home / "session_index.jsonl").write_text(
+                json.dumps(
+                    {
+                        "id": mismatched_id,
+                        "thread_name": repo_path.name,
+                        "updated_at": "2026-05-19T20:05:56Z",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (sessions / f"rollout-2026-05-19T20-05-56-{mismatched_id}.jsonl").write_text(
+                json.dumps(
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": mismatched_id,
+                            "cwd": str(tmp_path / "other-repo"),
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-latest", str(repo_path)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "CODEX_HOME": str(codex_home),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("no Codex session found for workdir", result.stderr)
 
     def test_agent_tmux_codex_latest_fails_closed_on_equal_timestamp_ambiguity(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:

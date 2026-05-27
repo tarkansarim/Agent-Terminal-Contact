@@ -3027,12 +3027,12 @@ def session_file_for(session_id: str) -> Path | None:
     return matches[0]
 
 
-def session_file_matches_repo(path: Path, *, deep: bool) -> bool:
+def session_file_repo_evidence(path: Path, *, deep: bool) -> str:
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
             for raw in handle:
                 if not deep and '"session_meta"' not in raw:
-                    return False
+                    return "unknown"
                 try:
                     record = json.loads(raw)
                 except json.JSONDecodeError:
@@ -3043,7 +3043,9 @@ def session_file_matches_repo(path: Path, *, deep: bool) -> bool:
                 if record.get("type") == "session_meta" and isinstance(payload, dict):
                     cwd = resolve_path(payload.get("cwd"))
                     if cwd == repo:
-                        return True
+                        return "match"
+                    if cwd is not None:
+                        return "mismatch"
                     continue
                 if not deep or repo_string not in raw:
                     continue
@@ -3059,11 +3061,11 @@ def session_file_matches_repo(path: Path, *, deep: bool) -> bool:
                         continue
                     workdir = resolve_path(parsed_args.get("workdir"))
                     if workdir == repo:
-                        return True
+                        return "match"
     except OSError as exc:
         print(f"agent-tmux: failed to read Codex session file {path}: {exc}", file=sys.stderr)
         raise SystemExit(1)
-    return False
+    return "unknown"
 
 
 records = []
@@ -3099,10 +3101,9 @@ for record in records:
     if best_updated is not None and record["updated_at"] != best_updated:
         break
     path = session_file_for(record["id"])
-    exact_thread_name = record["thread_name"] == repo_name
     repo_named_thread = repo_name in record["thread_name"]
-    exact_session_repo = path is not None and session_file_matches_repo(path, deep=repo_named_thread)
-    if exact_thread_name or exact_session_repo:
+    exact_session_repo = path is not None and session_file_repo_evidence(path, deep=repo_named_thread) == "match"
+    if exact_session_repo:
         best_updated = record["updated_at"]
         candidates.append({**record, "path": path})
 
@@ -3111,10 +3112,9 @@ if not candidates:
         path = session_file_for(record["id"])
         if path is None:
             continue
-        exact_thread_name = record["thread_name"] == repo_name
         repo_named_thread = repo_name in record["thread_name"]
-        exact_session_repo = session_file_matches_repo(path, deep=repo_named_thread)
-        if exact_thread_name or exact_session_repo:
+        exact_session_repo = session_file_repo_evidence(path, deep=repo_named_thread) == "match"
+        if exact_session_repo:
             best_updated = record["updated_at"]
             candidates.append({**record, "path": path})
             break
@@ -3127,10 +3127,9 @@ if not candidates:
             path = session_file_for(record["id"])
             if path is None:
                 continue
-            exact_thread_name = record["thread_name"] == repo_name
             repo_named_thread = repo_name in record["thread_name"]
-            exact_session_repo = session_file_matches_repo(path, deep=repo_named_thread)
-            if exact_thread_name or exact_session_repo:
+            exact_session_repo = session_file_repo_evidence(path, deep=repo_named_thread) == "match"
+            if exact_session_repo:
                 candidates.append({**record, "path": path})
     if not candidates:
         print(f"agent-tmux: no Codex session found for workdir: {repo}", file=sys.stderr)

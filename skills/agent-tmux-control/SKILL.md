@@ -229,8 +229,10 @@ show the worker was started with `danger-full-access` and `never` approval. Do n
 Latest-session parsing for these aliases is fail-closed. `codex-latest` reads
 `${CODEX_HOME:-~/.codex}/session_index.jsonl` and the matching session file
 directly. A session qualifies only when the session file has exact resolved
-`cwd`/function-call `workdir` evidence for the repo, or when the index
-`thread_name` exactly equals the repo basename. Missing metadata, duplicate
+`cwd` or function-call `workdir` evidence for the repo. A matching
+`thread_name` is never enough when the recorded session `cwd` belongs to a
+different repo; same-name stale chats must be skipped in favor of a cwd-matching
+session or fail closed before a worker launch. Missing metadata, duplicate
 newest candidates, and ambiguous session-file matches fail closed before a
 worker launch.
 
