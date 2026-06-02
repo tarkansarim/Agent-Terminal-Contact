@@ -298,6 +298,10 @@ the exact TOML block to add or asks the operator to run Codex once in that
 project and approve the trust prompt. A launch that would stop at Codex's
 project trust screen must not report `started`.
 
+After `tmux new-session`, the wrapper checks that the provider pane is still
+live before reporting `started`. If Codex exits during launch, the wrapper
+fails loudly and includes captured provider stderr when available.
+
 ## Code-Map Sidecar Workers
 
 Use the source-owned wrapper for a code-map patch-artifact sidecar when a

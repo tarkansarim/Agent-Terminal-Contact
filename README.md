@@ -150,7 +150,7 @@ Do not pass `-s`/`--sandbox` or `-a`/`--ask-for-approval` to these helpers.
 The full-permission aliases already add `-s danger-full-access -a never`, and
 the wrapper rejects duplicate permission flags before starting tmux.
 
-Before launching, the wrapper checks three things:
+Before launching, the wrapper checks:
 
 - the requested tmux session name is not already in use
 - the expected persistent tmux server is reachable through
@@ -159,6 +159,10 @@ Before launching, the wrapper checks three things:
   sessions, so the launch will not be trapped in a sandbox-local fresh server
 - Codex already trusts the exact repo path in
   `${CODEX_HOME:-~/.codex}/config.toml`
+
+After `tmux new-session`, the wrapper verifies that the provider pane is still
+live before reporting `started`. If Codex exits during launch, the wrapper
+returns an error and includes captured provider stderr when available.
 
 If the tmux server is missing, empty, or reached through an unexpected `$TMUX`
 socket, the wrapper refuses before starting tmux. Run from an unsandboxed shell

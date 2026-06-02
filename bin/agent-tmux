@@ -350,6 +350,36 @@ append_capped_log() {
     "$@" | "$(resolved_path "$0")" __log-writer "${log_path}" "${max_bytes}" "${keep_parts}"
 }
 
+tmux_pane_is_live() {
+    local session="$1"
+    local pane_dead
+    if ! pane_dead="$(tmux display-message -p -t "${session}" '#{pane_dead}' 2>/dev/null)"; then
+        return 1
+    fi
+    [[ "${pane_dead}" == "0" ]]
+}
+
+launch_failure_detail() {
+    local session="$1"
+    local stderr_path="$2"
+    local stderr_detail=""
+    local captured=""
+    if [[ -s "${stderr_path}" ]]; then
+        stderr_detail="$(<"${stderr_path}")"
+    fi
+    captured="$(tmux capture-pane -p -t "${session}" -S -200 2>/dev/null || true)"
+    tmux kill-session -t "${session}" >/dev/null 2>&1 || true
+    if [[ -n "${stderr_detail}" ]]; then
+        printf "failed to start %s: provider exited during launch; captured provider stderr follows:\n%s\n" "${session}" "${stderr_detail}"
+        return
+    fi
+    if [[ -n "${captured}" ]]; then
+        printf "failed to start %s: provider exited during launch; captured pane output follows:\n%s\n" "${session}" "${captured}"
+        return
+    fi
+    printf "failed to start %s: provider exited during launch\n" "${session}"
+}
+
 enable_pipe_log() {
     local session="$1"
     validate_session_name "${session}"
@@ -397,32 +427,26 @@ start_session() {
     fi
 
     local command_string
+    local launch_stderr
+    launch_stderr="$(mktemp)"
     if (($# == 0)); then
         command_string="$(quote_command "${SHELL:-/bin/bash}" -l)"
     else
-        command_string="$(quote_command "$@")"
+        command_string="$(quote_command bash -lc 'stderr_file="$1"; shift; exec "$@" 2> >(tee -a "$stderr_file" >&2)' _ "${launch_stderr}" "$@")"
     fi
 
-    local launch_stderr
-    launch_stderr="$(mktemp)"
     if ! tmux new-session -d -s "${session}" -c "${workdir}" "${command_string}" 2>"${launch_stderr}"; then
         local detail
         detail="$(<"${launch_stderr}")"
         rm -f "${launch_stderr}"
         die "failed to start ${session}: ${detail:-tmux new-session failed}"
     fi
-    if ! session_exists "${session}"; then
-        local captured=""
-        captured="$(tmux capture-pane -p -t "${session}" -S -200 2>/dev/null || true)"
-        if [[ -n "${captured}" ]]; then
-            rm -f "${launch_stderr}"
-            die "failed to start ${session}: provider exited during launch; captured pane output follows:
-${captured}"
-        fi
+    sleep "${AGENT_TMUX_LAUNCH_VERIFY_DELAY:-0.2}"
+    if ! session_exists "${session}" || ! tmux_pane_is_live "${session}"; then
         local detail
-        detail="$(<"${launch_stderr}")"
+        detail="$(launch_failure_detail "${session}" "${launch_stderr}")"
         rm -f "${launch_stderr}"
-        die "failed to start ${session}: provider exited during launch${detail:+: ${detail}}"
+        die "${detail}"
     fi
     rm -f "${launch_stderr}"
     if ! enable_pipe_log "${session}"; then

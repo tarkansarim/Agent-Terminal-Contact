@@ -131,11 +131,42 @@ def write_fake_tmux(tmp_path):
         "    printf 'duplicate session\\n' >&2\n"
         "    exit 1\n"
         "  fi\n"
-        "  if [ \"${AGENT_TMUX_PROVIDER_EXIT_AFTER_NEW:-0}\" != 1 ]; then\n"
+        "  ARGS=(\"$@\")\n"
+        "  LAST_INDEX=$((${#ARGS[@]} - 1))\n"
+        "  COMMAND_ARG=\"${ARGS[$LAST_INDEX]}\"\n"
+        "  if [[ \"$COMMAND_ARG\" == bash\\ -lc\\ stderr_file* ]]; then\n"
+        "    eval \"set -- $COMMAND_ARG\"\n"
+        "    shift 5\n"
+        "    NORMALIZED=\"\"\n"
+        "    for ARG in \"$@\"; do\n"
+        "      printf -v QUOTED '%q' \"$ARG\"\n"
+        "      if [ -n \"$NORMALIZED\" ]; then\n"
+        "        NORMALIZED+=\" \"\n"
+        "      fi\n"
+        "      NORMALIZED+=\"$QUOTED\"\n"
+        "    done\n"
+        "    ARGS[$LAST_INDEX]=\"$NORMALIZED\"\n"
+        "  fi\n"
+        "  if [ \"${AGENT_TMUX_PROVIDER_EXIT_AFTER_NEW:-0}\" = 1 ]; then\n"
+        "    printf 'dead\\n' >\"$STATE_FILE\"\n"
+        "    if [ -n \"${AGENT_TMUX_PROVIDER_STDERR_TEXT:-}\" ]; then\n"
+        "      printf '%s\\n' \"${AGENT_TMUX_PROVIDER_STDERR_TEXT}\" >&2\n"
+        "    fi\n"
+        "  else\n"
         "    printf 'live\\n' >\"$STATE_FILE\"\n"
         "  fi\n"
-        "  printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n"
+        "  printf '%s\\n' \"${ARGS[@]}\" >\"${AGENT_TMUX_CAPTURE}\"\n"
         "  exit 0\n"
+        "fi\n"
+        "if [ \"$1\" = display-message ]; then\n"
+        "  if [ ! -f \"$STATE_FILE\" ]; then\n"
+        "    printf 'no current target\\n' >&2\n"
+        "    exit 1\n"
+        "  fi\n"
+        "  if [ \"$5\" = '#{pane_dead}' ]; then\n"
+        "    [ \"$(cat \"$STATE_FILE\")\" = dead ] && printf '1\\n' || printf '0\\n'\n"
+        "    exit 0\n"
+        "  fi\n"
         "fi\n"
         "if [ \"$1\" = capture-pane ]; then\n"
         "  printf '%s\\n' \"${AGENT_TMUX_CAPTURE_PANE_TEXT:-fake captured pane}\"\n"
@@ -1093,6 +1124,43 @@ class SkillContractTests(unittest.TestCase):
                     self.assertIn("full-permission aliases already pass", result.stderr)
                     self.assertFalse(capture.exists())
 
+    def test_agent_tmux_resume_full_aliases_reject_duplicate_permission_args(self):
+        cases = (
+            ["codex-resume-full", "sess", "{repo}", "Thread Name", "-s", "danger-full-access"],
+            ["codex-resume-full", "sess", "{repo}", "Thread Name", "--ask-for-approval=never"],
+            ["codex-resume-latest-full", "sess", "{repo}", "--sandbox=danger-full-access"],
+            ["codex-resume-latest-full", "sess", "{repo}", "-a", "never"],
+        )
+        for argv_template in cases:
+            with self.subTest(argv=argv_template):
+                with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+                    tmp_path = Path(tmp)
+                    capture = tmp_path / "args.txt"
+                    delegate = tmp_path / "delegate-agent-tmux"
+                    delegate.write_text(
+                        "#!/usr/bin/env bash\n"
+                        "printf '%s\\n' \"$@\" >\"${AGENT_TMUX_CAPTURE}\"\n",
+                        encoding="utf-8",
+                    )
+                    delegate.chmod(0o755)
+                    argv = [repo if arg == "{repo}" else arg for arg in argv_template]
+                    result = subprocess.run(
+                        ["bash", "bin/agent-tmux", *argv],
+                        cwd=ROOT,
+                        check=False,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env={
+                            "AGENT_TMUX_DELEGATE": str(delegate),
+                            "AGENT_TMUX_CAPTURE": str(capture),
+                            "PATH": "/usr/bin:/bin",
+                        },
+                    )
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn("full-permission aliases already pass", result.stderr)
+                    self.assertFalse(capture.exists())
+
     def test_agent_tmux_codex_full_surfaces_provider_exit_before_started(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
             tmp_path = Path(tmp)
@@ -1133,6 +1201,57 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertNotIn("started sess", result.stdout)
             self.assertIn("provider exited during launch", result.stderr)
+            self.assertIn("captured pane output follows", result.stderr)
+            self.assertIn("--sandbox <SANDBOX_MODE>", result.stderr)
+
+    def test_agent_tmux_codex_full_surfaces_fast_exit_stderr_before_started(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            repo_path = Path(repo).resolve()
+            codex_home = tmp_path / "codex-home"
+            write_codex_project_trust(codex_home, repo_path)
+            capture = tmp_path / "args.txt"
+            fake_bin = write_fake_tmux(tmp_path)
+            codex = fake_bin / "codex"
+            codex.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf \"error: the argument '--sandbox <SANDBOX_MODE>' cannot be used multiple times\\n\" >&2\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            codex.chmod(0o755)
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 1\n"
+                "fi\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-full", "sess", repo],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_PROVIDER_EXIT_AFTER_NEW": "1",
+                    "AGENT_TMUX_PROVIDER_STDERR_TEXT": (
+                        "error: the argument '--sandbox <SANDBOX_MODE>' cannot be used multiple times"
+                    ),
+                    "CODEX_HOME": str(codex_home),
+                    "HOME": str(tmp_path / "home"),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertNotIn("started sess", result.stdout)
+            self.assertIn("captured provider stderr follows", result.stderr)
             self.assertIn("--sandbox <SANDBOX_MODE>", result.stderr)
 
     def test_agent_tmux_codex_full_refuses_missing_project_trust_before_tmux_start(self):
