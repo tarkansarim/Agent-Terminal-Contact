@@ -146,6 +146,10 @@ They launch Codex with:
 -s danger-full-access -a never
 ```
 
+Do not pass `-s`/`--sandbox` or `-a`/`--ask-for-approval` to these helpers.
+The full-permission aliases already add `-s danger-full-access -a never`, and
+the wrapper rejects duplicate permission flags before starting tmux.
+
 Before launching, the wrapper checks three things:
 
 - the requested tmux session name is not already in use

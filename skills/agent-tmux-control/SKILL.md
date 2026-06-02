@@ -254,7 +254,10 @@ agent-tmux codex-resume-latest-full <session> <repo>
 The wrapper expands these aliases to Codex CLI flags `-s danger-full-access -a
 never` in the delegated command line so later captures and process inspection
 show the worker was started with `danger-full-access` and `never` approval. Do not use
-`--dangerously-bypass-approvals-and-sandbox` for this workflow.
+`--dangerously-bypass-approvals-and-sandbox` for this workflow, and do not pass
+`-s`/`--sandbox` or `-a`/`--ask-for-approval` yourself; the full aliases already
+provide those flags and reject duplicate caller-supplied permission options
+before launch.
 Latest-session parsing for these aliases is fail-closed. `codex-latest` first
 reads the current Codex thread database at `${CODEX_HOME:-~/.codex}/state_5.sqlite`
 and falls back to legacy `${CODEX_HOME:-~/.codex}/session_index.jsonl` only when

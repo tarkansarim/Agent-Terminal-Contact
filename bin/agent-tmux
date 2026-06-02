@@ -403,8 +403,31 @@ start_session() {
         command_string="$(quote_command "$@")"
     fi
 
-    tmux new-session -d -s "${session}" -c "${workdir}" "${command_string}"
-    enable_pipe_log "${session}"
+    local launch_stderr
+    launch_stderr="$(mktemp)"
+    if ! tmux new-session -d -s "${session}" -c "${workdir}" "${command_string}" 2>"${launch_stderr}"; then
+        local detail
+        detail="$(<"${launch_stderr}")"
+        rm -f "${launch_stderr}"
+        die "failed to start ${session}: ${detail:-tmux new-session failed}"
+    fi
+    if ! session_exists "${session}"; then
+        local captured=""
+        captured="$(tmux capture-pane -p -t "${session}" -S -200 2>/dev/null || true)"
+        if [[ -n "${captured}" ]]; then
+            rm -f "${launch_stderr}"
+            die "failed to start ${session}: provider exited during launch; captured pane output follows:
+${captured}"
+        fi
+        local detail
+        detail="$(<"${launch_stderr}")"
+        rm -f "${launch_stderr}"
+        die "failed to start ${session}: provider exited during launch${detail:+: ${detail}}"
+    fi
+    rm -f "${launch_stderr}"
+    if ! enable_pipe_log "${session}"; then
+        die "failed to enable pipe log for ${session}"
+    fi
     echo "agent-tmux: started ${session} in ${workdir}"
 }
 
@@ -712,6 +735,31 @@ reject_bypass_arg() {
             die "full-permission aliases must use -s danger-full-access -a never, not --dangerously-bypass-approvals-and-sandbox"
         fi
     done
+}
+
+reject_full_permission_duplicate_args() {
+    local arg
+    for arg in "$@"; do
+        case "${arg}" in
+            -s|--sandbox)
+                die "full-permission aliases already pass -s danger-full-access; do not pass ${arg} again"
+                ;;
+            -a|--ask-for-approval)
+                die "full-permission aliases already pass -a never; do not pass ${arg} again"
+                ;;
+            --sandbox=*|--ask-for-approval=*)
+                die "full-permission aliases already pass -s danger-full-access -a never; do not pass ${arg%%=*} again"
+                ;;
+            --)
+                return 0
+                ;;
+        esac
+    done
+}
+
+reject_full_permission_conflicts() {
+    reject_bypass_arg "$@"
+    reject_full_permission_duplicate_args "$@"
 }
 
 is_full_permission_profile() {
@@ -3456,21 +3504,21 @@ main() {
             ;;
         codex-full)
             (($# >= 2)) || die "codex-full requires <session> <workdir> [codex-args...]"
-            reject_bypass_arg "$@"
             local session="$1"
             local workdir="$2"
             shift 2
+            reject_full_permission_conflicts "$@"
             require_new_requested_session "${session}"
             require_codex_project_trust "${workdir}"
             start_session "${session}" "${workdir}" codex "${FULL_PERMISSION_ARGS[@]}" "$@"
             ;;
         codex-resume-full)
             (($# >= 3)) || die "codex-resume-full requires <session> <workdir> <thread-name-or-id> [prompt...]"
-            reject_bypass_arg "$@"
             local session="$1"
             local workdir="$2"
             local thread_name="$3"
             shift 3
+            reject_full_permission_conflicts "$@"
             local prompt_args=()
             if (($# > 0)); then
                 prompt_args=("$*")
@@ -3481,10 +3529,10 @@ main() {
             ;;
         codex-resume-latest-full)
             (($# >= 2)) || die "codex-resume-latest-full requires <session> <workdir> [prompt...]"
-            reject_bypass_arg "$@"
             local session="$1"
             local workdir="$2"
             shift 2
+            reject_full_permission_conflicts "$@"
             require_delegate
             require_new_requested_session "${session}"
             local session_id
