@@ -277,7 +277,18 @@ the same deterministic latest-session-id path.
 
 Before wrapper-launched Codex workers (`codex`, `codex-full`, `codex-resume`,
 `codex-resume-full`, `codex-resume-latest`, and
-`codex-resume-latest-full`), the wrapper verifies an exact trusted
+`codex-resume-latest-full`), the wrapper verifies that the reachable tmux server
+through `tmux -S <expected-socket>` is the expected persistent socket
+`${AGENT_TMUX_EXPECTED_SOCKET:-/tmp/tmux-$(id -u)/default}` and already has
+sessions. If no server is reachable, the server is empty, `$TMUX` points at a
+different socket, or listed sessions report a different socket, it refuses before
+`tmux new-session` because the worker may be launched into a sandbox-local server
+that disappears when the call ends.
+
+The same persistent-socket preflight applies to wrapper-owned code-map sidecar
+launches before their `tmux new-session` call.
+
+The same launch preflight verifies an exact trusted
 `[projects."<absolute repo path>"]` entry in `${CODEX_HOME:-~/.codex}/config.toml`.
 If that trust entry is missing, it refuses before `tmux new-session` and prints
 the exact TOML block to add or asks the operator to run Codex once in that

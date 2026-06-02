@@ -146,11 +146,20 @@ They launch Codex with:
 -s danger-full-access -a never
 ```
 
-Before launching, the wrapper checks two things:
+Before launching, the wrapper checks three things:
 
 - the requested tmux session name is not already in use
+- the expected persistent tmux server is reachable through
+  `tmux -S <expected-socket>`, reports sessions from the expected socket
+  `${AGENT_TMUX_EXPECTED_SOCKET:-/tmp/tmux-$(id -u)/default}` and already has
+  sessions, so the launch will not be trapped in a sandbox-local fresh server
 - Codex already trusts the exact repo path in
   `${CODEX_HOME:-~/.codex}/config.toml`
+
+If the tmux server is missing, empty, or reached through an unexpected `$TMUX`
+socket, the wrapper refuses before starting tmux. Run from an unsandboxed shell
+that can see the persistent tmux server, or set `AGENT_TMUX_EXPECTED_SOCKET` to
+the intended persistent socket.
 
 If the trust entry is missing, the wrapper refuses before starting tmux and
 prints the TOML block to add.

@@ -152,6 +152,9 @@ The command refuses before sending when:
 - the target pane shows pending user text
 - the target pane shows a trust or approval prompt
 - the target pane is working, dead, or unknown
+- a wrapper-launched tmux worker cannot see the expected persistent tmux socket
+  via `tmux -S <expected-socket>`, sees an empty tmux server, sees `$TMUX` on a
+  different socket, or lists sessions from a different socket before launch
 - a full-permission `agent-tmux` alias is asked to pass
   `--dangerously-bypass-approvals-and-sandbox`
 - a code-map sidecar launch would reuse an existing deterministic sidecar

@@ -122,6 +122,62 @@ require_tmux() {
     command -v tmux >/dev/null 2>&1 || die "tmux is required"
 }
 
+expected_persistent_tmux_socket() {
+    if [[ -n "${AGENT_TMUX_EXPECTED_SOCKET:-}" ]]; then
+        resolved_path "${AGENT_TMUX_EXPECTED_SOCKET}"
+        return
+    fi
+    printf "/tmp/tmux-%s/default\n" "$(id -u)"
+}
+
+tmux_socket_from_env() {
+    local raw="${TMUX:-}"
+    [[ -n "${raw}" ]] || return 1
+    printf "%s\n" "${raw%%,*}"
+}
+
+require_persistent_tmux_server() {
+    require_tmux
+    local expected_socket
+    local env_socket
+    local sessions_output
+    local rc
+    local line
+    local socket_path
+    local saw_session=0
+    expected_socket="$(expected_persistent_tmux_socket)"
+
+    if env_socket="$(tmux_socket_from_env)"; then
+        env_socket="$(resolved_path "${env_socket}")"
+        if [[ "${env_socket}" != "${expected_socket}" ]]; then
+            die "refusing to launch on unexpected TMUX socket: ${env_socket}; expected persistent socket: ${expected_socket}. Unset TMUX or run agent-tmux outside the sandboxed/ephemeral tmux context."
+        fi
+    fi
+
+    set +e
+    sessions_output="$(tmux -S "${expected_socket}" list-sessions -F '#{socket_path}' 2>&1)"
+    rc=$?
+    set -e
+    if ((rc != 0)); then
+        if [[ "${sessions_output}" == *"no server running"* || "${sessions_output}" == *"no current target"* ]]; then
+            die "persistent tmux server is not reachable at expected socket: ${expected_socket}; refusing to create a fresh server that may be sandbox-local and non-persistent. Start from an unsandboxed shell or set AGENT_TMUX_EXPECTED_SOCKET to the intended persistent tmux socket."
+        fi
+        die "failed to inspect active tmux server before launch: ${sessions_output:-tmux list-sessions failed}"
+    fi
+
+    while IFS= read -r line; do
+        [[ -n "${line}" ]] || continue
+        saw_session=1
+        socket_path="$(resolved_path "${line}")"
+        if [[ "${socket_path}" != "${expected_socket}" ]]; then
+            die "refusing to launch on tmux socket ${socket_path}; expected persistent socket: ${expected_socket}. The worker would not be visible from the persistent tmux server."
+        fi
+    done <<<"${sessions_output}"
+    if ((saw_session == 0)); then
+        die "active tmux server has no sessions at expected socket: ${expected_socket}; refusing to launch into a fresh empty server that may not persist after this call."
+    fi
+}
+
 session_exists() {
     local session="$1"
     require_tmux
@@ -332,6 +388,7 @@ start_session() {
 
     validate_session_name "${session}"
     [[ -d "${workdir}" ]] || die "workdir does not exist: ${workdir}"
+    require_persistent_tmux_server
     configure_tmux_scrollback
     if session_exists "${session}"; then
         echo "agent-tmux: session already exists: ${session}"
@@ -2716,6 +2773,7 @@ start_code_map_sidecar_session() {
     local stderr_file
     local rc=0
     command_string="$(quote_command "$@")"
+    require_persistent_tmux_server
     if [[ "${AGENT_TMUX_SHOW_EFFECTIVE_COMMAND:-1}" != "0" ]]; then
         echo "agent-tmux: tmux command: tmux new-session -d -s $(printf "%q" "${session}") -c $(printf "%q" "${artifact_dir}") ${command_string}" >&2
     fi

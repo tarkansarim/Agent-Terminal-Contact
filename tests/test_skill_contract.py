@@ -105,11 +105,27 @@ def write_fake_tmux(tmp_path):
     tmux.write_text(
         "#!/usr/bin/env bash\n"
         f"STATE_FILE={str(state_file)!r}\n"
+        "SOCKET_ARG=\"${AGENT_TMUX_SOCKET_PATH:-/tmp/tmux-$(id -u)/default}\"\n"
+        "if [ \"$1\" = -S ]; then\n"
+        "  SOCKET_ARG=\"$2\"\n"
+        "  shift 2\n"
+        "fi\n"
         "case \"$1\" in\n"
         "  start-server|set-option|set-window-option)\n"
         "    exit 0\n"
         "    ;;\n"
         "esac\n"
+        "if [ \"$1\" = list-sessions ]; then\n"
+        "  if [ \"${AGENT_TMUX_NO_SERVER:-0}\" = 1 ]; then\n"
+        "    printf 'no server running on %s\\n' \"$SOCKET_ARG\" >&2\n"
+        "    exit 1\n"
+        "  fi\n"
+        "  if [ \"${AGENT_TMUX_EMPTY_SERVER:-0}\" = 1 ]; then\n"
+        "    exit 0\n"
+        "  fi\n"
+        "  printf '%s\\n' \"${AGENT_TMUX_SOCKET_PATH:-$SOCKET_ARG}\"\n"
+        "  exit 0\n"
+        "fi\n"
         "if [ \"$1\" = new-session ]; then\n"
         "  if [ \"${AGENT_TMUX_FAIL_NEW:-0}\" = 1 ]; then\n"
         "    printf 'duplicate session\\n' >&2\n"
@@ -4707,6 +4723,152 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("requested session already exists: sess", result.stderr)
             self.assertFalse(capture.exists())
 
+    def test_agent_tmux_launch_refuses_when_persistent_tmux_server_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            capture = tmp_path / "args.txt"
+            codex_home = tmp_path / "codex-home"
+            write_codex_project_trust(codex_home, repo)
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 1\n"
+                "fi\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            fake_bin = write_fake_tmux(tmp_path)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex", "sess", repo],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_NO_SERVER": "1",
+                    "CODEX_HOME": str(codex_home),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("persistent tmux server is not reachable", result.stderr)
+            self.assertIn("refusing to create a fresh server", result.stderr)
+            self.assertFalse(capture.exists())
+
+    def test_agent_tmux_launch_refuses_empty_tmux_server(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            capture = tmp_path / "args.txt"
+            codex_home = tmp_path / "codex-home"
+            write_codex_project_trust(codex_home, repo)
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 1\n"
+                "fi\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            fake_bin = write_fake_tmux(tmp_path)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex", "sess", repo],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_EMPTY_SERVER": "1",
+                    "CODEX_HOME": str(codex_home),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("active tmux server has no sessions", result.stderr)
+            self.assertIn("fresh empty server", result.stderr)
+            self.assertFalse(capture.exists())
+
+    def test_agent_tmux_launch_refuses_unexpected_socket_from_tmux_env(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            capture = tmp_path / "args.txt"
+            codex_home = tmp_path / "codex-home"
+            write_codex_project_trust(codex_home, repo)
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 1\n"
+                "fi\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            fake_bin = write_fake_tmux(tmp_path)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex", "sess", repo],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "CODEX_HOME": str(codex_home),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
+                    "TMUX": f"{tmp_path / 'sandbox-socket'},123,0",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("unexpected TMUX socket", result.stderr)
+            self.assertFalse(capture.exists())
+
+    def test_agent_tmux_launch_refuses_tmux_server_socket_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            capture = tmp_path / "args.txt"
+            codex_home = tmp_path / "codex-home"
+            write_codex_project_trust(codex_home, repo)
+            delegate = tmp_path / "delegate-agent-tmux"
+            delegate.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = has ]; then\n"
+                "  exit 1\n"
+                "fi\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            delegate.chmod(0o755)
+            fake_bin = write_fake_tmux(tmp_path)
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex", "sess", repo],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_CAPTURE": str(capture),
+                    "AGENT_TMUX_SOCKET_PATH": str(tmp_path / "sandbox-socket"),
+                    "CODEX_HOME": str(codex_home),
+                    "PATH": f"{fake_bin}:{TEST_PATH}",
+                },
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("refusing to launch on tmux socket", result.stderr)
+            self.assertFalse(capture.exists())
+
     def test_agent_tmux_regular_non_log_command_delegates_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -4759,6 +4921,7 @@ class SkillContractTests(unittest.TestCase):
                 text=True,
                 env={
                     "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_AUTO_GC_IDLE_OWNERS": "0",
                     "PATH": "/usr/bin:/bin",
                 },
             )
@@ -4791,6 +4954,7 @@ class SkillContractTests(unittest.TestCase):
                 text=True,
                 env={
                     "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_AUTO_GC_IDLE_OWNERS": "0",
                     "AGENT_TMUX_ENV_CAPTURE": str(env_capture),
                     "PATH": "/usr/bin:/bin",
                 },
@@ -4822,6 +4986,7 @@ class SkillContractTests(unittest.TestCase):
                 text=True,
                 env={
                     "AGENT_TMUX_DELEGATE": str(delegate),
+                    "AGENT_TMUX_AUTO_GC_IDLE_OWNERS": "0",
                     "PATH": "/usr/bin:/bin",
                 },
             )
