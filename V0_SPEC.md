@@ -85,6 +85,11 @@ V0 must prove:
   `/usr/local/bin`, shared network for Codex API access, the sidecar artifact
   directory as the only writable map-output bind, and a separate wrapper-owned
   runtime bind for Codex state
+- `codex-latest` reads current Codex repo history from
+  `CODEX_HOME/state_5.sqlite` before falling back to legacy
+  `CODEX_HOME/session_index.jsonl`, and still requires the matching
+  rollout/session file to prove the requested repo through `session_meta.cwd` or
+  function-call `workdir`
 - fork sidecars copy the requested Codex session file from source
   `CODEX_HOME/sessions` plus the matching `session_index.jsonl` entry when
   present into the wrapper-owned `CODEX_HOME` before launch

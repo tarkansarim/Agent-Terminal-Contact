@@ -12,8 +12,8 @@ guarded payload, and report whether delivery was proven or refused.
 It does not replace Codex, Claude, tmux, or the system `agent-tmux` helper. This
 repo owns `agent-contact` plus a user-level `agent-tmux` wrapper. The wrapper
 delegates normal commands to `/usr/local/bin/agent-tmux` and adds checked routes
-for Codex launches, latest-chat resume, log handling, artifact ownership lookup,
-and code-map sidecar sessions.
+for Codex launches, latest-chat resume from the current Codex thread database,
+log handling, artifact ownership lookup, and code-map sidecar sessions.
 
 ## What It Does
 

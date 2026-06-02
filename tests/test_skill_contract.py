@@ -3,6 +3,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -182,6 +183,102 @@ def write_codex_latest_fixture(tmp_path, repo, *, thread_name="Thread Name", ses
         + "\n",
         encoding="utf-8",
     )
+    return codex_home
+
+
+def write_codex_state_latest_fixture(
+    tmp_path,
+    repo,
+    *,
+    title="State Thread",
+    session_id=None,
+    updated_at=1780175679,
+    updated_at_ms=None,
+):
+    codex_home = Path(tmp_path) / "codex-home"
+    sessions = codex_home / "sessions" / "2026" / "05" / "30"
+    sessions.mkdir(parents=True, exist_ok=True)
+    write_codex_project_trust(codex_home, repo)
+    session_id = session_id or "99999999-9999-4999-8999-999999999999"
+    rollout_path = sessions / f"rollout-2026-05-30T14-02-18-{session_id}.jsonl"
+    rollout_path.write_text(
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": session_id,
+                    "cwd": str(Path(repo).resolve()),
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    conn = sqlite3.connect(codex_home / "state_5.sqlite")
+    try:
+        conn.execute(
+            """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                rollout_path TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                model_provider TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                title TEXT NOT NULL,
+                sandbox_policy TEXT NOT NULL,
+                approval_mode TEXT NOT NULL,
+                tokens_used INTEGER NOT NULL DEFAULT 0,
+                has_user_event INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
+                archived_at INTEGER,
+                git_sha TEXT,
+                git_branch TEXT,
+                git_origin_url TEXT,
+                cli_version TEXT NOT NULL DEFAULT '',
+                first_user_message TEXT NOT NULL DEFAULT '',
+                agent_nickname TEXT,
+                agent_role TEXT,
+                memory_mode TEXT NOT NULL DEFAULT 'enabled',
+                model TEXT,
+                reasoning_effort TEXT,
+                agent_path TEXT,
+                created_at_ms INTEGER,
+                updated_at_ms INTEGER,
+                thread_source TEXT,
+                preview TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO threads (
+                id, rollout_path, created_at, updated_at, source, model_provider,
+                cwd, title, sandbox_policy, approval_mode, cli_version,
+                first_user_message, created_at_ms, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                str(rollout_path),
+                updated_at,
+                updated_at,
+                "cli",
+                "openai",
+                str(Path(repo).resolve()),
+                title,
+                "workspace-write",
+                "never",
+                "0.135.0",
+                title,
+                updated_at * 1000,
+                updated_at_ms,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
     return codex_home
 
 
@@ -4068,6 +4165,94 @@ class SkillContractTests(unittest.TestCase):
             fields = result.stdout.rstrip("\n").split("\t")
             self.assertEqual(fields[:3], [f"{repo_path.name}_old", stale_id, "2026-05-10T20:00:00Z"])
             self.assertIn(stale_id, fields[3])
+
+    def test_agent_tmux_codex_latest_uses_state_db_without_legacy_index(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            repo_path = Path(repo)
+            session_id = "99999999-9999-4999-8999-999999999999"
+            codex_home = write_codex_state_latest_fixture(
+                tmp_path,
+                repo_path,
+                title="State DB Thread",
+                session_id=session_id,
+                updated_at=1780175679,
+            )
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-latest", str(repo_path)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "CODEX_HOME": str(codex_home),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, "")
+            fields = result.stdout.rstrip("\n").split("\t")
+            self.assertEqual(fields[:2], ["State DB Thread", session_id])
+            self.assertEqual(fields[2], "2026-05-30T21:14:39.000000Z")
+            self.assertIn(session_id, fields[3])
+
+    def test_agent_tmux_codex_latest_state_db_ignores_stale_legacy_index(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            repo_path = Path(repo)
+            state_id = "99999999-9999-4999-8999-999999999999"
+            legacy_id = "11111111-1111-4111-8111-111111111111"
+            codex_home = write_codex_state_latest_fixture(
+                tmp_path,
+                repo_path,
+                title="Current State Thread",
+                session_id=state_id,
+                updated_at=1780175679,
+            )
+            legacy_sessions = codex_home / "sessions" / "2026" / "05" / "12"
+            legacy_sessions.mkdir(parents=True)
+            (codex_home / "session_index.jsonl").write_text(
+                json.dumps(
+                    {
+                        "id": legacy_id,
+                        "thread_name": "Stale Legacy Thread",
+                        "updated_at": "2026-05-12T00:00:00Z",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (legacy_sessions / f"rollout-2026-05-12T00-00-00-{legacy_id}.jsonl").write_text(
+                json.dumps(
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": legacy_id,
+                            "cwd": str(repo_path.resolve()),
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-latest", str(repo_path)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "CODEX_HOME": str(codex_home),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            fields = result.stdout.rstrip("\n").split("\t")
+            self.assertEqual(fields[:2], ["Current State Thread", state_id])
+            self.assertIn(state_id, fields[3])
+            self.assertNotIn(legacy_id, result.stdout)
 
     def test_agent_tmux_codex_latest_fails_closed_on_same_name_cwd_mismatch_only(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:

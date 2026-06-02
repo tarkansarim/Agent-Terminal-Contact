@@ -42,8 +42,9 @@ routes.
 
 codex-existing is delegated, but an empty rc=1 absence result is normalized into
 a clear stderr line for machine callers. codex-latest is source-owned and reads
-the Codex session index plus session files directly. Other regular commands are
-delegated unchanged to /usr/local/bin/agent-tmux by default. Set
+the Codex thread database, falling back to the legacy session index plus session
+files directly. Other regular commands are delegated unchanged to
+/usr/local/bin/agent-tmux by default. Set
 AGENT_TMUX_DELEGATE to test or override the delegated helper path.
 
 Session logs are source-owned by this wrapper for start/codex launch routes and
@@ -597,7 +598,7 @@ gc_idle_owner_sessions() {
     sessions_rc=$?
     set -e
     if ((sessions_rc != 0)); then
-        if [[ "${sessions_output}" == *"no server running"* ]]; then
+        if [[ "${sessions_output}" == *"no server running"* || "${sessions_output}" == *"Operation not permitted"* ]]; then
             if ((quiet_summary == 0)); then
                 echo "agent-tmux gc-idle-owners: mode=${mode} inspected=0 matched=0 killed=0 older_than=${older_than}s"
             fi
@@ -2967,13 +2968,16 @@ source_owned_codex_latest() {
     resolved_workdir="$(canonical_workdir "${workdir}")"
     local codex_home="${CODEX_HOME:-${HOME:-}/.codex}"
     python3 - "${resolved_workdir}" "${codex_home}" <<'PY'
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
+import sqlite3
 import sys
 
 repo = Path(sys.argv[1]).resolve()
 codex_home = Path(sys.argv[2]).expanduser()
+state_path = codex_home / "state_5.sqlite"
 index_path = codex_home / "session_index.jsonl"
 sessions_dir = codex_home / "sessions"
 repo_name = repo.name
@@ -2981,13 +2985,6 @@ repo_string = str(repo)
 SESSION_ID_RE = re.compile(
     r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
 )
-
-if not index_path.is_file():
-    print(f"agent-tmux: Codex session index not found: {index_path}", file=sys.stderr)
-    raise SystemExit(1)
-if not sessions_dir.is_dir():
-    print(f"agent-tmux: Codex sessions directory not found: {sessions_dir}", file=sys.stderr)
-    raise SystemExit(1)
 
 
 def parse_record(raw: str, source: str) -> dict:
@@ -3002,6 +2999,41 @@ def parse_record(raw: str, source: str) -> dict:
     return record
 
 
+def timestamp_to_sort_and_label(raw_seconds: object, raw_millis: object, fallback: object) -> tuple[float, str] | None:
+    value: float | None = None
+    if isinstance(raw_millis, int) and raw_millis > 0:
+        value = raw_millis / 1000.0
+    elif isinstance(raw_seconds, int) and raw_seconds > 0:
+        value = float(raw_seconds)
+    elif isinstance(fallback, int) and fallback > 0:
+        value = float(fallback)
+    elif isinstance(fallback, str) and fallback:
+        parsed = parse_timestamp(fallback)
+        if parsed is not None:
+            return parsed, fallback
+    if value is None:
+        return None
+    label = datetime.fromtimestamp(value, timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    return value, label
+
+
+def parse_timestamp(raw: object) -> float | None:
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if not isinstance(raw, str) or not raw:
+        return None
+    text = raw
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
 def resolve_path(raw: object) -> Path | None:
     if not isinstance(raw, str) or not raw:
         return None
@@ -3012,9 +3044,10 @@ def resolve_path(raw: object) -> Path | None:
 
 
 session_files_by_id: dict[str, list[Path]] = {}
-for session_file in sessions_dir.rglob("*.jsonl"):
-    for match in SESSION_ID_RE.findall(session_file.name):
-        session_files_by_id.setdefault(match.lower(), []).append(session_file)
+if sessions_dir.is_dir():
+    for session_file in sessions_dir.rglob("*.jsonl"):
+        for match in SESSION_ID_RE.findall(session_file.name):
+            session_files_by_id.setdefault(match.lower(), []).append(session_file)
 
 
 def session_file_for(session_id: str) -> Path | None:
@@ -3068,63 +3101,144 @@ def session_file_repo_evidence(path: Path, *, deep: bool) -> str:
     return "unknown"
 
 
-records = []
-with index_path.open("r", encoding="utf-8", errors="replace") as handle:
-    for line_number, raw in enumerate(handle, 1):
-        raw = raw.strip()
-        if not raw:
-            continue
-        record = parse_record(raw, f"{index_path}:{line_number}")
-        session_id = record.get("id")
-        thread_name = record.get("thread_name")
-        updated_at = record.get("updated_at")
-        if not all(isinstance(value, str) and value for value in (session_id, thread_name, updated_at)):
-            print(f"agent-tmux: malformed Codex session index record in {index_path}:{line_number}: missing id, thread_name, or updated_at", file=sys.stderr)
+def load_state_records() -> list[dict]:
+    if not state_path.is_file():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{state_path}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        print(f"agent-tmux: failed to open Codex thread database {state_path}: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+    try:
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, title, first_user_message, updated_at, updated_at_ms,
+                       created_at, created_at_ms, rollout_path, cwd
+                FROM threads
+                """
+            ).fetchall()
+        except sqlite3.Error as exc:
+            if "no such table" in str(exc).lower():
+                return []
+            print(f"agent-tmux: failed to read Codex thread database {state_path}: {exc}", file=sys.stderr)
             raise SystemExit(1)
+    finally:
+        conn.close()
+
+    records: list[dict] = []
+    for row_number, row in enumerate(rows, 1):
+        cwd = resolve_path(row["cwd"])
+        if cwd != repo:
+            continue
+        session_id = row["id"]
+        if not isinstance(session_id, str) or not session_id:
+            print(f"agent-tmux: malformed Codex thread record in {state_path}:{row_number}: missing id", file=sys.stderr)
+            raise SystemExit(1)
+        title = row["title"] if isinstance(row["title"], str) and row["title"] else row["first_user_message"]
+        if not isinstance(title, str) or not title:
+            title = session_id
+        timestamp = timestamp_to_sort_and_label(row["updated_at"], row["updated_at_ms"], row["created_at_ms"] or row["created_at"])
+        if timestamp is None:
+            print(f"agent-tmux: malformed Codex thread record in {state_path}:{row_number}: missing updated_at", file=sys.stderr)
+            raise SystemExit(1)
+        path = resolve_path(row["rollout_path"])
         records.append(
             {
                 "id": session_id,
-                "thread_name": thread_name,
-                "updated_at": updated_at,
-                "line_number": line_number,
+                "thread_name": title,
+                "updated_at": timestamp[1],
+                "sort_updated": timestamp[0],
+                "line_number": -row_number,
+                "path": path,
+                "source": "state",
             }
         )
+    return records
 
+
+def load_legacy_records() -> list[dict]:
+    if not index_path.is_file():
+        if state_path.is_file():
+            return []
+        print(f"agent-tmux: Codex session index not found: {index_path}", file=sys.stderr)
+        raise SystemExit(1)
+    if not sessions_dir.is_dir():
+        print(f"agent-tmux: Codex sessions directory not found: {sessions_dir}", file=sys.stderr)
+        raise SystemExit(1)
+
+    records: list[dict] = []
+    with index_path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line_number, raw in enumerate(handle, 1):
+            raw = raw.strip()
+            if not raw:
+                continue
+            record = parse_record(raw, f"{index_path}:{line_number}")
+            session_id = record.get("id")
+            thread_name = record.get("thread_name")
+            updated_at = record.get("updated_at")
+            if not all(isinstance(value, str) and value for value in (session_id, thread_name, updated_at)):
+                print(f"agent-tmux: malformed Codex session index record in {index_path}:{line_number}: missing id, thread_name, or updated_at", file=sys.stderr)
+                raise SystemExit(1)
+            sort_updated = parse_timestamp(updated_at)
+            if sort_updated is None:
+                print(f"agent-tmux: malformed Codex session index record in {index_path}:{line_number}: invalid updated_at", file=sys.stderr)
+                raise SystemExit(1)
+            records.append(
+                {
+                    "id": session_id,
+                    "thread_name": thread_name,
+                    "updated_at": updated_at,
+                    "sort_updated": sort_updated,
+                    "line_number": line_number,
+                    "path": None,
+                    "source": "legacy",
+                }
+            )
+    if not records and not state_path.is_file():
+        print(f"agent-tmux: Codex session index is empty: {index_path}", file=sys.stderr)
+        raise SystemExit(1)
+    return records
+
+
+state_records = load_state_records()
+records = state_records if state_records else load_legacy_records()
 if not records:
-    print(f"agent-tmux: Codex session index is empty: {index_path}", file=sys.stderr)
+    print(f"agent-tmux: no Codex session found for workdir: {repo}", file=sys.stderr)
     raise SystemExit(1)
 
-records.sort(key=lambda item: (item["updated_at"], item["line_number"]), reverse=True)
+records.sort(key=lambda item: (item["sort_updated"], item["line_number"]), reverse=True)
 candidates = []
 best_updated = None
 for record in records:
-    if best_updated is not None and record["updated_at"] != best_updated:
+    if best_updated is not None and record["sort_updated"] != best_updated:
         break
-    path = session_file_for(record["id"])
+    path = record["path"] or session_file_for(record["id"])
     repo_named_thread = repo_name in record["thread_name"]
     exact_session_repo = path is not None and session_file_repo_evidence(path, deep=repo_named_thread) == "match"
     if exact_session_repo:
-        best_updated = record["updated_at"]
+        best_updated = record["sort_updated"]
         candidates.append({**record, "path": path})
 
 if not candidates:
     for record in records:
-        path = session_file_for(record["id"])
+        path = record["path"] or session_file_for(record["id"])
         if path is None:
             continue
         repo_named_thread = repo_name in record["thread_name"]
         exact_session_repo = session_file_repo_evidence(path, deep=repo_named_thread) == "match"
         if exact_session_repo:
-            best_updated = record["updated_at"]
+            best_updated = record["sort_updated"]
             candidates.append({**record, "path": path})
             break
     if best_updated is not None:
         for record in records:
-            if record["updated_at"] != best_updated:
+            if record["sort_updated"] != best_updated:
                 continue
             if any(candidate["id"] == record["id"] for candidate in candidates):
                 continue
-            path = session_file_for(record["id"])
+            path = record["path"] or session_file_for(record["id"])
             if path is None:
                 continue
             repo_named_thread = repo_name in record["thread_name"]
@@ -3135,9 +3249,9 @@ if not candidates:
         print(f"agent-tmux: no Codex session found for workdir: {repo}", file=sys.stderr)
         raise SystemExit(1)
 
-candidates.sort(key=lambda item: (item["updated_at"], item["line_number"]), reverse=True)
+candidates.sort(key=lambda item: (item["sort_updated"], item["line_number"]), reverse=True)
 best = candidates[0]
-same_updated = [item for item in candidates if item["updated_at"] == best["updated_at"]]
+same_updated = [item for item in candidates if item["sort_updated"] == best["sort_updated"]]
 if len(same_updated) > 1 and len({item["id"] for item in same_updated}) > 1:
     ids = ", ".join(item["id"] for item in same_updated)
     print(f"agent-tmux: multiple latest Codex sessions found for workdir {repo}: {ids}", file=sys.stderr)
