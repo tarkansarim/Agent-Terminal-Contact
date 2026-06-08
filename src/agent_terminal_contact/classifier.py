@@ -30,6 +30,11 @@ CODEX_UNRESOLVED_TEMPLATE_RE = re.compile(r"(?:\{[^{}\n]+\}|@[A-Za-z][A-Za-z0-9_
 CODEX_STARTER_PLACEHOLDER_REASON = "codex starter placeholder has no pending user text"
 CODEX_PROMPT_MARKERS = ("\u203a",)
 CLAUDE_PROMPT_MARKERS = (">", "\u276f")
+_CLAUDE_BACKGROUND_STATUS_RE = re.compile(
+    r"^\s*\d+\s+(?:shell|shells|tool\s+use|tool\s+uses|subagent|subagents|"
+    r"background\s+task|background\s+tasks)\s+running\s*$",
+    re.IGNORECASE,
+)
 
 
 class PaneState(str, Enum):
@@ -478,6 +483,8 @@ def _has_provider_prompt_context(
     if footer_index is not None:
         for index in non_empty_indexes:
             if index > footer_index:
+                if provider == "claude" and _is_claude_background_status_line(lines[index]):
+                    continue
                 return False
 
     nearby_end = footer_index + 1 if footer_index is not None else min(len(lines), line_index + 4)
@@ -556,3 +563,7 @@ def _cursor_is_at_empty_prompt_body(
 
 def _strip_prompt_cursor(body: str) -> str:
     return body.replace("\u258c", "")
+
+
+def _is_claude_background_status_line(line: str) -> bool:
+    return bool(_CLAUDE_BACKGROUND_STATUS_RE.match(line))

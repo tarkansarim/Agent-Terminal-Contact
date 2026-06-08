@@ -59,6 +59,13 @@ CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS = 1024
 CODEX_LITERAL_INPUT_CHUNK_SIZE = 200
 CODEX_LITERAL_INPUT_DELAY_SECONDS = 0.03
 MAX_RECOVERED_SEND_ATTEMPTS = 2
+CLAUDE_COLLAPSED_PASTE_RE = re.compile(r"^\[Pasted text #[0-9]+\]$")
+CLAUDE_COLLAPSED_PASTE_THRESHOLD_CHARS = 1024
+CLAUDE_LITERAL_INPUT_CHUNK_SIZE = 200
+CLAUDE_LITERAL_INPUT_DELAY_SECONDS = 0.03
+INITIAL_SETTLE_READBACK_ATTEMPTS = 10
+INITIAL_SETTLE_READBACK_STABLE_MISMATCH_ATTEMPTS = 6
+INITIAL_SETTLE_READBACK_DELAY_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -301,6 +308,34 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         cursor_line_index=before_capture.cursor_line_index,
         cursor_column_index=before_capture.cursor_x,
     )
+
+    if classification.state == PaneState.DEAD_OR_UNKNOWN:
+        stable_mismatch_key: str | None = None
+        stable_mismatch_count = 0
+        for _ in range(INITIAL_SETTLE_READBACK_ATTEMPTS):
+            time.sleep(INITIAL_SETTLE_READBACK_DELAY_SECONDS)
+            try:
+                before_capture = transport.capture_state(selection.pane.pane_id, args.capture_lines)
+            except TransportError:
+                break
+            before = before_capture.text
+            classification = classify_pane(
+                before,
+                provider=selection.provider,
+                cursor_line_index=before_capture.cursor_line_index,
+                cursor_column_index=before_capture.cursor_x,
+            )
+            if classification.state != PaneState.DEAD_OR_UNKNOWN:
+                break
+            mismatch_key = f"{classification.state.value}:{classification.reason}"
+            if mismatch_key == stable_mismatch_key:
+                stable_mismatch_count += 1
+            else:
+                stable_mismatch_key = mismatch_key
+                stable_mismatch_count = 1
+            if stable_mismatch_count >= INITIAL_SETTLE_READBACK_STABLE_MISMATCH_ATTEMPTS:
+                break
+
     base = {
         "repo": selection.repo,
         "provider": selection.provider,
@@ -515,6 +550,9 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                 pre_submit_contact_proven = True
 
             try:
+                _lit_chunk_size, _lit_chunk_delay = _claude_literal_input_params(
+                    selection.provider, guarded_message
+                )
                 transport.send(
                     send_target.pane_id,
                     guarded_message,
@@ -527,6 +565,8 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                     ),
                     pre_submit_check=_prove_pre_submit_contact,
                     bracketed_paste=_bracketed_paste_required(selection.provider, guarded_message),
+                    literal_key_chunk_size=_lit_chunk_size,
+                    literal_key_chunk_delay_seconds=_lit_chunk_delay,
                 )
                 break
             except UnsubmittedMessageError as exc:
@@ -1141,6 +1181,7 @@ def _prompt_body_contains_own_guarded_residue(
         _normalized_prompt_body_matches_pasted_contact(prompt_body, guarded_message, provider=provider)
         or _codex_threshold_placeholder_prefix_matches_own_long_payload(normalized, guarded_message, provider=provider)
         or _is_codex_collapsed_paste_placeholder(normalized, provider=provider)
+        or _is_claude_collapsed_paste_placeholder(normalized, guarded_message, provider=provider)
         or contact_id in prompt_body
         or contact_id in normalized
     )
@@ -1164,7 +1205,23 @@ def _codex_threshold_placeholder() -> str:
 
 
 def _bracketed_paste_required(provider: str, guarded_message: str) -> bool:
-    return provider == "codex" and len(guarded_message) >= CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS
+    if provider == "codex":
+        return len(guarded_message) >= CODEX_COLLAPSED_PASTE_THRESHOLD_CHARS
+    if provider == "claude":
+        return len(guarded_message) >= CLAUDE_COLLAPSED_PASTE_THRESHOLD_CHARS
+    return False
+
+
+def _claude_literal_input_params(provider: str, guarded_message: str) -> tuple[int | None, float]:
+    """For long Claude messages, use chunked literal key input instead of bracketed paste.
+
+    Bracketed paste collapses into a [Pasted text #N] chip in Claude's TUI which can fail
+    to submit reliably. Literal chunked input stages the message as plain typed text,
+    which the existing wrapped-text pre-submit verification handles correctly.
+    """
+    if provider == "claude" and len(guarded_message) >= CLAUDE_COLLAPSED_PASTE_THRESHOLD_CHARS:
+        return CLAUDE_LITERAL_INPUT_CHUNK_SIZE, CLAUDE_LITERAL_INPUT_DELAY_SECONDS
+    return None, 0.0
 
 
 def _message_payload_error(message: str) -> str | None:
@@ -1194,6 +1251,13 @@ def _normalized_prompt_body_matches_pasted_contact(prompt_body: str, guarded_mes
         return True
     if _codex_visual_wrapped_prompt_body_matches_guarded_message(prompt_body, guarded_message):
         return True
+    if provider == "claude":
+        if (
+            CLAUDE_COLLAPSED_PASTE_RE.match(normalized)
+            and len(guarded_message) >= CLAUDE_COLLAPSED_PASTE_THRESHOLD_CHARS
+        ):
+            return True
+        return False
     if provider != "codex":
         return False
     match = CODEX_COLLAPSED_PASTE_RE.match(normalized)
@@ -1209,6 +1273,14 @@ def _is_codex_collapsed_paste_placeholder(normalized_prompt_body: str, *, provid
     if provider != "codex":
         return False
     return CODEX_COLLAPSED_PASTE_RE.match(normalized_prompt_body) is not None
+
+
+def _is_claude_collapsed_paste_placeholder(normalized_prompt_body: str, guarded_message: str, *, provider: str) -> bool:
+    if provider != "claude":
+        return False
+    if len(guarded_message) < CLAUDE_COLLAPSED_PASTE_THRESHOLD_CHARS:
+        return False
+    return CLAUDE_COLLAPSED_PASTE_RE.match(normalized_prompt_body) is not None
 
 
 def _codex_threshold_placeholder_prefix_matches_own_long_payload(

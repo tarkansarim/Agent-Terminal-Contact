@@ -363,6 +363,31 @@ Press enter to continue
         result = classify_pane("plain terminal output with no prompt\n")
         self.assertEqual(result.state, PaneState.DEAD_OR_UNKNOWN)
 
+    def test_idle_claude_prompt_with_background_shell_status(self):
+        text = "previous output\n\n> ▌\n? for shortcuts\n1 shell running\n"
+        result = classify_pane(text, provider="claude", cursor_line_index=2, cursor_column_index=2)
+        self.assertEqual(result.state, PaneState.IDLE_EMPTY_PROMPT)
+
+    def test_idle_claude_prompt_with_multiple_shells_running(self):
+        text = "previous output\n\n> ▌\n? for shortcuts\n3 shells running\n"
+        result = classify_pane(text, provider="claude", cursor_line_index=2, cursor_column_index=2)
+        self.assertEqual(result.state, PaneState.IDLE_EMPTY_PROMPT)
+
+    def test_idle_claude_prompt_with_tool_use_running(self):
+        text = "previous output\n\n> ▌\n? for shortcuts\n1 tool use running\n"
+        result = classify_pane(text, provider="claude", cursor_line_index=2, cursor_column_index=2)
+        self.assertEqual(result.state, PaneState.IDLE_EMPTY_PROMPT)
+
+    def test_non_status_line_after_claude_footer_is_rejected(self):
+        text = "previous output\n\n> ▌\n? for shortcuts\nsomething else\n"
+        result = classify_pane(text, provider="claude", cursor_line_index=2, cursor_column_index=2)
+        self.assertEqual(result.state, PaneState.DEAD_OR_UNKNOWN)
+
+    def test_background_shell_status_not_allowed_for_codex(self):
+        text = "previous output\n\n› \n  gpt-5.5 xhigh · /tmp/project\n1 shell running\n"
+        result = classify_pane(text, provider="codex", cursor_line_index=2)
+        self.assertEqual(result.state, PaneState.DEAD_OR_UNKNOWN)
+
 
 if __name__ == "__main__":
     unittest.main()

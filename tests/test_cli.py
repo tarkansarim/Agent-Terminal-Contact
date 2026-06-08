@@ -137,6 +137,18 @@ def claude_v2_wrapped_lines(lines, *, session="owner-SkillPackagingDiscipline-12
     )
 
 
+def claude_pending_contact(message='hello'):
+    return f"previous assistant output\n\n> {guarded_line(message)}▌\n? for shortcuts\n"
+
+
+def claude_collapsed_pasted_contact(message='hello'):
+    return f"previous assistant output\n\n> [Pasted text #1]\n? for shortcuts\n"
+
+
+def claude_idle_with_contact_echo(message='hello'):
+    return f"{guarded_line(message)}\n\n> ▌\n? for shortcuts\n"
+
+
 def wrapped_guarded_echo(message='hello', width=24):
     line = guarded_line(message)
     return "\n".join(line[index : index + width] for index in range(0, len(line), width))
@@ -3555,6 +3567,189 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertEqual(payload["stage"], "post_send_revalidate")
             self.assertFalse(payload["delivery_proven"])
             self.assertTrue(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+
+    def test_long_claude_message_uses_literal_input_not_bracketed_paste(self):
+        # Long Claude messages use literal chunked input to avoid [Pasted text #N] chip collapse
+        # which can fail to submit reliably in Claude's TUI.
+        long_message = "chipme-" * 160
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CLAUDE_IDLE,
+                    CLAUDE_IDLE,
+                    CLAUDE_IDLE,
+                    CLAUDE_IDLE,
+                    claude_pending_contact(long_message),
+                    claude_idle_with_contact_echo(long_message),
+                ],
+                provider="claude",
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "claude",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            paste_calls = [call for call in runner.calls if call[0][:2] == ("tmux", "paste-buffer")]
+            self.assertFalse(paste_calls, "expected no paste-buffer calls for long Claude message (uses literal input)")
+            literal_calls = [
+                call for call in runner.calls
+                if call[0][:5] == ("tmux", "send-keys", "-t", "%1", "-l")
+            ]
+            self.assertTrue(literal_calls, "expected literal key sends for long Claude message")
+
+    def test_pre_submit_accepts_long_claude_message_via_literal_input(self):
+        # Long Claude messages are sent via literal chunked key input (no paste chip).
+        # Pre-submit verification must accept the staged plain text as proof.
+        long_message = "chip-" * 210
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    CLAUDE_IDLE,
+                    CLAUDE_IDLE,
+                    CLAUDE_IDLE,
+                    CLAUDE_IDLE,
+                    claude_pending_contact(long_message),
+                    claude_idle_with_contact_echo(long_message),
+                ],
+                provider="claude",
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "claude",
+                    "--message",
+                    long_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(payload["delivery_proven"])
+            self.assertTrue(payload["pre_submit_contact_proven"])
+
+    def test_claude_paste_chip_not_accepted_for_short_message(self):
+        short_message = "hello world"
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [CLAUDE_IDLE] * 4 + [claude_collapsed_pasted_contact(short_message)] * 10,
+                provider="claude",
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "claude",
+                    "--message",
+                    short_message,
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_TRANSPORT)
+            self.assertFalse(payload["delivery_proven"])
+            self.assertEqual(payload["status"], "mutated_unsubmitted")
+
+    def test_dead_or_unknown_settles_to_idle_before_send(self):
+        bare_claude_prompt = "previous output\n> \n"
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    bare_claude_prompt,
+                    bare_claude_prompt,
+                    CLAUDE_IDLE,
+                    CLAUDE_IDLE,
+                    CLAUDE_IDLE,
+                    CLAUDE_IDLE,
+                    claude_pending_contact("hello"),
+                    claude_idle_with_contact_echo("hello"),
+                ],
+                provider="claude",
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "claude",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+
+    def test_dead_or_unknown_settle_exhausted_refuses(self):
+        bare_claude_prompt = "previous output\n> \n"
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [bare_claude_prompt] * 20,
+                provider="claude",
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "claude",
+                    "--message",
+                    "hello",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["pane_state"], "dead_or_unknown")
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
 
     def test_paste_failure_deletes_loaded_tmux_buffer(self):
         with tempfile.TemporaryDirectory() as repo:

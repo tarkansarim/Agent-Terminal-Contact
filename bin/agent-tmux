@@ -194,6 +194,7 @@ configure_tmux_scrollback() {
     tmux set-option -g history-limit "${history_limit}" >/dev/null
     tmux set-window-option -g mode-keys vi >/dev/null
     tmux set-option -g set-clipboard on >/dev/null 2>&1 || true
+    tmux set-option -g focus-events on >/dev/null 2>&1 || true
 
     local disable_alt_screen="${AGENT_TMUX_DISABLE_ALT_SCREEN:-0}"
     case "${disable_alt_screen}" in
@@ -3662,6 +3663,30 @@ main() {
             ;;
         logs)
             logs_command "$@"
+            ;;
+        clear-input)
+            (($# == 1)) || die "clear-input requires <session>"
+            local session="$1"
+            validate_session_name "${session}"
+            require_delegate
+            # Enable focus-events globally; Claude TUI requires these to accept programmatic
+            # submit keys after staged text is cleared and new input is sent.
+            tmux set-option -g focus-events on >/dev/null 2>&1 || true
+            local pane_id
+            pane_id="$(tmux display-message -t "${session}" -p "#{pane_id}" 2>/dev/null)" || true
+            if [[ -n "${pane_id}" ]]; then
+                # Escape closes any completion popup or chip selection in the composer.
+                # Repeated C-u kills each wrapped line upward (handles multi-line typed text);
+                # C-k clears any remaining tail on the last line. The delegate then adds its
+                # own C-u * N + C-k for final paste-chip and partial-line cleanup.
+                tmux send-keys -t "${pane_id}" Escape 2>/dev/null || true
+                local _ci
+                for ((_ci = 0; _ci < 15; _ci++)); do
+                    tmux send-keys -t "${pane_id}" C-u 2>/dev/null || true
+                done
+                tmux send-keys -t "${pane_id}" C-k 2>/dev/null || true
+            fi
+            exec "${DELEGATE}" clear-input "${session}"
             ;;
         *)
             require_delegate
