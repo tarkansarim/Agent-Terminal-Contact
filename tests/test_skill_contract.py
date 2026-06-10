@@ -491,6 +491,27 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("source-owned user-level wrapper", text)
         self.assertIn("/usr/local/bin/agent-tmux", text)
 
+    def test_skill_documents_supervisor_delegation_gate(self):
+        text = (ROOT / "skills" / "agent-tmux-control" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("## Supervisor Delegation Gate", text)
+        self.assertIn("Objective Gate", text)
+        self.assertIn("At most 2 files changed", text)
+        self.assertIn("At most ~40 lines changed", text)
+        self.assertIn("No new files created", text)
+        self.assertIn("No build-system, shader, or pipeline file changes", text)
+        self.assertIn("Delegation Default", text)
+        self.assertIn("Direct edit:", text)
+        self.assertIn("No justification line = violation", text)
+        self.assertIn("Anti-Drift Tripwire", text)
+        self.assertIn("3 consecutive direct edits", text)
+        self.assertIn("Closeout Audit", text)
+        self.assertIn("direct-edit count vs. worker-task count", text)
+        self.assertIn("agent-contact delegate", text)
+        self.assertIn("--task-file", text)
+        self.assertIn("PLANE-233", text)
+
     def test_install_dry_run_names_non_invasive_targets(self):
         with tempfile.TemporaryDirectory() as home:
             result = subprocess.run(
