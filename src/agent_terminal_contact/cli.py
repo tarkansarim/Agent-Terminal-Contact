@@ -6,6 +6,7 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+from pathlib import Path
 import re
 import secrets
 import shlex
@@ -93,6 +94,8 @@ def main(
 
     if args.command == "send":
         return _send(args, runner, stdout, stderr)
+    if args.command == "delegate":
+        return _delegate(args, runner, stdout, stderr)
     if args.command == "trust-roots":
         return _trust_roots(args, runner, stdout)
     if args.command == "artifact-info":
@@ -116,6 +119,19 @@ def _build_parser() -> argparse.ArgumentParser:
     send.add_argument("--agent-tmux", default="agent-tmux", help="agent-tmux executable path")
     send.add_argument("--capture-lines", type=int, default=160)
     send.add_argument("--contact-id", help=argparse.SUPPRESS)
+
+    delegate = subparsers.add_parser(
+        "delegate",
+        help="brief a worker from a task file via guarded contact (avoids long inline pastes)",
+    )
+    delegate.add_argument("--repo", required=True, help="absolute or relative target project path")
+    delegate.add_argument("--provider", required=True, choices=("codex", "claude"))
+    delegate.add_argument("--task-file", required=True, help="path to task brief file to send")
+    delegate.add_argument("--session", help="explicit tmux session name to validate and use")
+    delegate.add_argument("--dry-run", action="store_true", help="classify and report without sending")
+    delegate.add_argument("--json", action="store_true", help="emit JSON output")
+    delegate.add_argument("--agent-tmux", default="agent-tmux", help="agent-tmux executable path")
+    delegate.add_argument("--capture-lines", type=int, default=160)
 
     trust_roots = subparsers.add_parser(
         "trust-roots",
@@ -247,6 +263,39 @@ def _trust_roots(args: argparse.Namespace, runner: Runner, stdout: TextIO) -> in
     if suggestion.launcher_root is not None:
         stdout.write(f"export AGENT_CONTACT_TRUSTED_LAUNCHER_ROOTS={shlex.quote(suggestion.launcher_root)}\n")
     return EXIT_OK
+
+
+def _delegate(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: TextIO) -> int:
+    task_path = Path(args.task_file)
+    try:
+        task_contents = task_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        payload = {
+            "status": "refused",
+            "stage": "task_file",
+            "reason": f"cannot read task file: {exc}",
+            "task_file": str(task_path),
+        }
+        if args.json:
+            stdout.write(json.dumps(payload, sort_keys=True) + "\n")
+        else:
+            stderr.write(f"agent-contact: refused: {payload['reason']}\n")
+        return EXIT_REFUSED
+
+    message = f"DELEGATE: {task_path.name}\n\n{task_contents}"
+    send_args = argparse.Namespace(
+        command="send",
+        repo=args.repo,
+        provider=args.provider,
+        message=message,
+        session=args.session,
+        dry_run=args.dry_run,
+        json=args.json,
+        agent_tmux=args.agent_tmux,
+        capture_lines=args.capture_lines,
+        contact_id=None,
+    )
+    return _send(send_args, runner, stdout, stderr)
 
 
 def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: TextIO) -> int:

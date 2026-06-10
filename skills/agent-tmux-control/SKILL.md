@@ -57,6 +57,70 @@ Do not guess broad roots. Launcher roots are exact executable directories, not
 broad parent directories. `trust-roots` prints the discovered roots for
 debugging.
 
+## Supervisor Delegation Gate
+
+When acting as a supervisor over a live tmux worker, every implementation change must
+pass the following gate before the supervisor edits source directly.
+
+### Objective Gate — Direct Edit Allowed Only When ALL Hold
+
+- At most 2 files changed.
+- At most ~40 lines changed.
+- No new files created.
+- No build-system, shader, or pipeline file changes.
+- Verification is a cheap existing test — not a full build cycle or OSTM run.
+
+If any condition fails, route the change to the live worker. Do not apply supervisor
+judgment to override the gate — the gate is objective precisely because judgment always
+prefers the cheaper (direct) path.
+
+### Delegation Default
+
+When a healthy worker is already spawned, delegation is the default behavior.
+A direct edit must emit a one-line auditable justification in the supervisor reply:
+
+```
+Direct edit: 1 file / 12 lines / clamp-only
+```
+
+No justification line = violation. A supervisor reply containing a source edit
+with no justification line is out-of-policy.
+
+### Anti-Drift Tripwire
+
+After 3 consecutive direct edits within a supervised slice, the next change **must**
+go to the worker, or the supervisor must explicitly declare the worker dead or stuck
+and relaunch. Three consecutive direct edits without a worker turn is the circuit
+breaker — the tripwire resets whenever a change is routed to the worker.
+
+### Closeout Audit
+
+Slice closeout must report direct-edit count vs. worker-task count for the slice.
+All-direct with a live worker is a flagged violation that must be resolved before
+the slice is accepted.
+
+### Delegation Via Task File
+
+Use `agent-contact delegate` to brief a worker from a task file instead of a long
+inline paste. This is the recommended path when the task brief is longer than a
+short nudge:
+
+```bash
+agent-contact delegate \
+  --repo /path/to/repo \
+  --provider codex \
+  --task-file /path/to/task.md \
+  [--session <tmux-session>] \
+  [--dry-run]
+```
+
+The task file contains the full delegation brief. `delegate` reads it, prepends a
+`DELEGATE: <filename>` header, and sends it through the same guarded contact path
+as `send`. Use `--dry-run` to preview without sending.
+
+Note: reliable delivery of long task files depends on PLANE-233 (paste/submit
+friction). For short nudges, `agent-contact send --message "..."` is sufficient.
+
 ## Hard Safety Rules
 
 - Never inject keystrokes into a raw PTY such as `/dev/pts/*` unless the user explicitly authorizes that exact terminal.
