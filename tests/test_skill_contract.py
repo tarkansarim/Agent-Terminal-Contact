@@ -4435,6 +4435,65 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(fields[2], "2026-05-30T21:14:39.000000Z")
             self.assertIn(session_id, fields[3])
 
+    def test_agent_tmux_codex_latest_sanitizes_multiline_state_title(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            repo_path = Path(repo)
+            session_id = "99999999-9999-4999-8999-999999999999"
+            codex_home = write_codex_state_latest_fixture(
+                tmp_path,
+                repo_path,
+                title="Generate guide\nwith\ttabs",
+                session_id=session_id,
+                updated_at=1780175679,
+            )
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-latest", str(repo_path)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "CODEX_HOME": str(codex_home),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, "")
+            self.assertEqual(len(result.stdout.splitlines()), 1)
+            fields = result.stdout.rstrip("\n").split("\t")
+            self.assertEqual(fields[:2], ["Generate guide with tabs", session_id])
+            self.assertEqual(len(fields), 4)
+
+    def test_agent_tmux_codex_latest_accepts_legacy_nanosecond_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
+            tmp_path = Path(tmp)
+            repo_path = Path(repo)
+            session_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+            codex_home = write_codex_latest_fixture(
+                tmp_path,
+                repo_path,
+                session_id=session_id,
+                updated_at="2026-03-06T02:34:47.657490995Z",
+            )
+            result = subprocess.run(
+                ["bash", "bin/agent-tmux", "codex-latest", str(repo_path)],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "CODEX_HOME": str(codex_home),
+                    "PATH": "/usr/bin:/bin",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            fields = result.stdout.rstrip("\n").split("\t")
+            self.assertEqual(fields[:3], ["Thread Name", session_id, "2026-03-06T02:34:47.657490995Z"])
+            self.assertIn(session_id, fields[3])
+
     def test_agent_tmux_codex_latest_state_db_ignores_stale_legacy_index(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as repo:
             tmp_path = Path(tmp)

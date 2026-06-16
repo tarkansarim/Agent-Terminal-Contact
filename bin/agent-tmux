@@ -3156,6 +3156,7 @@ def parse_timestamp(raw: object) -> float | None:
     text = raw
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
+    text = re.sub(r"(\.\d{6})\d+([+-]\d\d:\d\d)$", r"\1\2", text)
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:
@@ -3163,6 +3164,12 @@ def parse_timestamp(raw: object) -> float | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.timestamp()
+
+
+def output_field(raw: object) -> str:
+    if not isinstance(raw, str):
+        raw = str(raw)
+    return " ".join(raw.split())
 
 
 def resolve_path(raw: object) -> Path | None:
@@ -3391,7 +3398,7 @@ path = best["path"] or session_file_for(best["id"])
 if path is None:
     print(f"agent-tmux: latest Codex session file not found for id: {best['id']}", file=sys.stderr)
     raise SystemExit(1)
-print(f"{best['thread_name']}\t{best['id']}\t{best['updated_at']}\t{path}")
+print(f"{output_field(best['thread_name'])}\t{best['id']}\t{best['updated_at']}\t{path}")
 PY
 }
 
