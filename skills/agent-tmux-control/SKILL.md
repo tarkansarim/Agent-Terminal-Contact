@@ -86,6 +86,16 @@ Direct edit: 1 file / 12 lines / clamp-only
 No justification line = violation. A supervisor reply containing a source edit
 with no justification line is out-of-policy.
 
+### Minimal Supervisor Nudges
+
+When a supervisor contacts a live worker to correct behavior, use the smallest
+natural-language nudge that names the observed problem and asks the worker to
+apply repo/user rules. Do not send long implementation plans, root-cause guesses,
+file lists, validation recipes, or step-by-step fixes unless the worker is
+blocked and explicitly asks for that detail. The goal is to test and preserve
+the worker's rule-following behavior; over-detailed supervisor prompts can mask
+bad rules, confuse ownership, and turn supervision into micro-management.
+
 ### Anti-Drift Tripwire
 
 After 3 consecutive direct edits within a supervised slice, the next change **must**
