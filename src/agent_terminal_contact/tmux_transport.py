@@ -155,6 +155,12 @@ class AgentTmuxTransport:
         validate_pane_id(pane_id)
         self._submit(pane_id, key=key)
 
+    def interrupt(self, pane_id: str, key: str = "Escape") -> None:
+        validate_pane_id(pane_id)
+        result = self.runner.run(["tmux", "send-keys", "-t", pane_id, key])
+        if result.returncode != 0:
+            raise TransportError(_detail("interrupt key failed", result.stderr, result.stdout))
+
     def _delete_buffer(self, buffer_name: str):
         return self.runner.run(["tmux", "delete-buffer", "-b", buffer_name])
 

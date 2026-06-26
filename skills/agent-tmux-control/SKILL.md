@@ -189,9 +189,15 @@ friction). For short nudges, `agent-contact send --message "..."` is sufficient.
   visible leftover payload text is treated as owned residue from that
   just-attempted send and is cleared before returning `mutated_unsubmitted`;
   do not treat that suffix form as pre-submit proof.
-- This does not weaken refusal boundaries: attached sessions, busy/working
-  panes, trust prompts, approval prompts, dead/unknown panes, ambiguous identity,
-  wrong-provider matches, and non-tmux targets still refuse.
+- This does not weaken refusal boundaries: attached sessions, trust prompts,
+  approval prompts, dead/unknown panes, ambiguous identity, wrong-provider
+  matches, and non-tmux targets still refuse. Busy/working panes refuse by
+  default; a supervisor may use
+  `agent-contact send --session <exact-worker> --interrupt-working ...` only for
+  a detached tmux-managed worker session that needs intervention. The guarded
+  interrupt sends `Escape`, waits for a sendable prompt, then uses the normal
+  guarded send path; if the worker stays busy or lands in a non-sendable state,
+  it refuses instead of sending blind input.
 - Messages with terminal control bytes or bracketed-paste markers are refused; summarize or sanitize captured terminal output before sending it.
 - The guarded contact payload is one `CONTACT_ID ... MESSAGE_JSON ...` line and does not request tmux bracketed-paste wrapping; Codex starter-placeholder prompts are handled by literal key input inside `agent-contact`.
 - Real sends to attached tmux sessions are refused; detach or use a tmux-managed worker session for cross-agent contact.
@@ -544,10 +550,13 @@ For long Codex payloads, this cleanup also covers `[Pasted Content 1024 chars]`
 followed by visible leftover payload text from the same just-attempted send; the
 suffix form is cleanup evidence, not pre-submit proof.
 
-Attached sessions, busy/working panes, trust prompts, approval prompts, dead/unknown
-panes, ambiguous identity, and wrong-provider matches still refuse. Do not fall
-back to raw `agent-tmux send` unless the current operator explicitly authorizes
-that exact bypass.
+Attached sessions, trust prompts, approval prompts, dead/unknown panes,
+ambiguous identity, and wrong-provider matches still refuse. Busy/working panes
+refuse unless the supervisor uses
+`agent-contact send --session <exact-worker> --interrupt-working ...`; that path
+sends `Escape`, waits for a sendable prompt, then sends through guarded contact.
+Do not fall back to raw `agent-tmux send` unless the current operator explicitly
+authorizes that exact bypass.
 
 To inspect source ownership before patching an installed helper, use:
 
@@ -613,7 +622,9 @@ Expected refusal states:
 - `pending_user_text`: detached tmux-managed workers are cleared by
   `agent-contact`; if it is reported as a refusal, stop and inspect the reason
 - `approval_prompt` or `trust_prompt`: stop; the target needs local handling
-- `agent_working`: wait, capture later, or ask the user
+- `agent_working`: wait/capture later, or for supervisor intervention use
+  `--session <exact-worker> --interrupt-working`; if that refuses, stop and
+  inspect the refusal
 - `dead_or_unknown`: stop; there is no safe idle prompt
 
 ## Launch And Observe

@@ -67,6 +67,8 @@ CLAUDE_LITERAL_INPUT_DELAY_SECONDS = 0.03
 INITIAL_SETTLE_READBACK_ATTEMPTS = 10
 INITIAL_SETTLE_READBACK_STABLE_MISMATCH_ATTEMPTS = 6
 INITIAL_SETTLE_READBACK_DELAY_SECONDS = 0.5
+WORKING_INTERRUPT_KEY = "Escape"
+WORKING_INTERRUPT_POLL_DELAY_SECONDS = 0.2
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,15 @@ class GuardedPayloadRecovery:
     contaminated_reason: str
     recovered_state: str | None = None
     recovered_reason: str | None = None
+
+
+class WorkingInterruptRefused(RuntimeError):
+    def __init__(self, stage: str, reason: str, pane_state: str, pane_reason: str):
+        super().__init__(reason)
+        self.stage = stage
+        self.reason = reason
+        self.pane_state = pane_state
+        self.pane_reason = pane_reason
 
 
 def main(
@@ -118,6 +129,17 @@ def _build_parser() -> argparse.ArgumentParser:
     send.add_argument("--json", action="store_true", help="emit JSON output")
     send.add_argument("--agent-tmux", default="agent-tmux", help="agent-tmux executable path")
     send.add_argument("--capture-lines", type=int, default=160)
+    send.add_argument(
+        "--interrupt-working",
+        action="store_true",
+        help="for an explicit tmux worker session, interrupt a working agent and wait for a prompt before sending",
+    )
+    send.add_argument(
+        "--interrupt-timeout",
+        type=float,
+        default=30.0,
+        help="seconds to wait for --interrupt-working to return to a sendable prompt",
+    )
     send.add_argument("--contact-id", help=argparse.SUPPRESS)
 
     delegate = subparsers.add_parser(
@@ -293,6 +315,8 @@ def _delegate(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: 
         json=args.json,
         agent_tmux=args.agent_tmux,
         capture_lines=args.capture_lines,
+        interrupt_working=False,
+        interrupt_timeout=30.0,
         contact_id=None,
     )
     return _send(send_args, runner, stdout, stderr)
@@ -414,7 +438,21 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         )
         return EXIT_REFUSED
 
-    if classification.state not in (PaneState.IDLE_EMPTY_PROMPT, PaneState.PENDING_USER_TEXT):
+    if args.interrupt_working and not args.session:
+        _emit(
+            args,
+            stdout,
+            {
+                **base,
+                "status": "refused",
+                "stage": "interrupt_scope",
+                "reason": "--interrupt-working requires an explicit --session target",
+            },
+        )
+        return EXIT_REFUSED
+
+    allow_working_interrupt = args.interrupt_working and classification.state == PaneState.AGENT_WORKING
+    if classification.state not in (PaneState.IDLE_EMPTY_PROMPT, PaneState.PENDING_USER_TEXT) and not allow_working_interrupt:
         _emit(
             args,
             stdout,
@@ -458,12 +496,17 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
     guarded_message = _guarded_message(contact_id, args.message)
 
     if args.dry_run:
-        status = "would_clear_and_send" if initial_clear_required else "would_send"
+        status = "would_interrupt_and_send" if allow_working_interrupt else (
+            "would_clear_and_send" if initial_clear_required else "would_send"
+        )
         payload = {
             **base,
             "status": status,
             "contact_id": contact_id,
         }
+        if allow_working_interrupt:
+            payload["interrupt_key"] = WORKING_INTERRUPT_KEY
+            payload["interrupt_timeout_seconds"] = args.interrupt_timeout
         if initial_clear_required:
             payload["clear_command"] = _clear_input_command(selection.pane.session_name)
         _emit(
@@ -474,7 +517,18 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         return EXIT_OK
 
     composer_cleared = False
+    interrupted_working = False
+    interrupt_result: dict[str, object] = {}
     try:
+        if allow_working_interrupt:
+            interrupt_result = _interrupt_working_and_wait_for_prompt(
+                selection,
+                runner,
+                transport,
+                args.capture_lines,
+                timeout_seconds=args.interrupt_timeout,
+            )
+            interrupted_working = True
         if initial_clear_required:
             _clear_target_composer(selection, runner, transport)
             composer_cleared = True
@@ -561,6 +615,23 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                 "stage": "pre_send_revalidate",
                 "contact_id": contact_id,
                 "reason": str(exc),
+            },
+        )
+        return EXIT_REFUSED
+    except WorkingInterruptRefused as exc:
+        _emit(
+            args,
+            stdout,
+            {
+                **base,
+                "status": "refused",
+                "stage": exc.stage,
+                "contact_id": contact_id,
+                "reason": exc.reason,
+                "pane_state": exc.pane_state,
+                "pane_reason": exc.pane_reason,
+                "interrupt_key": WORKING_INTERRUPT_KEY,
+                "interrupted_working": True,
             },
         )
         return EXIT_REFUSED
@@ -752,6 +823,8 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
                     "post_send_resubmit": bool(resubmit_result.get("resubmit_attempted")),
                     "send_attempts": send_attempts,
                     "delivery_proven": True,
+                    "interrupted_working": interrupted_working,
+                    **interrupt_result,
                 }
                 if recovery is not None:
                     result_payload["recovery"] = recovery
@@ -810,6 +883,8 @@ def _send(args: argparse.Namespace, runner: Runner, stdout: TextIO, stderr: Text
         "pre_submit_contact_proven": post_send_result["pre_submit_contact_proven"],
         "send_attempts": send_attempts,
         "delivery_proven": delivery_proven,
+        "interrupted_working": interrupted_working,
+        **interrupt_result,
     }
     if recovery is not None:
         result_payload["recovery"] = recovery
@@ -1041,6 +1116,62 @@ def _capture_prompt_after_optional_clear(selection, runner: Runner, transport: A
         cursor_column_index=capture.cursor_x,
     )
     return target, capture, classification, True
+
+
+def _interrupt_working_and_wait_for_prompt(
+    selection,
+    runner: Runner,
+    transport: AgentTmuxTransport,
+    lines: int,
+    *,
+    timeout_seconds: float,
+) -> dict[str, object]:
+    if timeout_seconds < 0:
+        raise WorkingInterruptRefused(
+            "interrupt_timeout_config",
+            "--interrupt-timeout must not be negative",
+            PaneState.AGENT_WORKING.value,
+            "invalid interrupt timeout",
+        )
+    target = revalidate_target(selection, runner)
+    transport.interrupt(target.pane_id, key=WORKING_INTERRUPT_KEY)
+    deadline = time.monotonic() + timeout_seconds
+    last_state = PaneState.AGENT_WORKING.value
+    last_reason = "agent still appears to be working"
+
+    while True:
+        target = revalidate_target(selection, runner)
+        capture = transport.capture_state(target.pane_id, lines)
+        classification = classify_pane(
+            capture.text,
+            provider=selection.provider,
+            cursor_line_index=capture.cursor_line_index,
+            cursor_column_index=capture.cursor_x,
+        )
+        last_state = classification.state.value
+        last_reason = classification.reason
+        if classification.state in (PaneState.IDLE_EMPTY_PROMPT, PaneState.PENDING_USER_TEXT):
+            return {
+                "interrupt_key": WORKING_INTERRUPT_KEY,
+                "interrupt_timeout_seconds": timeout_seconds,
+                "interrupt_pane_state": classification.state.value,
+                "interrupt_pane_reason": classification.reason,
+            }
+        if classification.state != PaneState.AGENT_WORKING:
+            raise WorkingInterruptRefused(
+                "interrupt_blocked_state",
+                "interrupt did not return to a sendable prompt",
+                classification.state.value,
+                classification.reason,
+            )
+        if time.monotonic() >= deadline:
+            raise WorkingInterruptRefused(
+                "interrupt_timeout",
+                "worker remained busy after interrupt",
+                last_state,
+                last_reason,
+            )
+        time.sleep(WORKING_INTERRUPT_POLL_DELAY_SECONDS)
 
 
 def _clear_target_composer(selection, runner: Runner, transport: AgentTmuxTransport) -> None:
@@ -1442,6 +1573,11 @@ def _emit(args: argparse.Namespace, stdout: TextIO, payload: dict[str, object]) 
         "recovery",
         "clear_command",
         "cleared_composer",
+        "interrupted_working",
+        "interrupt_key",
+        "interrupt_timeout_seconds",
+        "interrupt_pane_state",
+        "interrupt_pane_reason",
         "post_send_state",
         "post_send_reason",
         "delivery_proof_reason",

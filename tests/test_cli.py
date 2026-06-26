@@ -1401,6 +1401,124 @@ class AgentContactCliTests(unittest.TestCase):
             self.assertFalse(any(call[0] == ("agent-tmux", "clear-input", "codex-demo") for call in runner.calls))
             self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
 
+    def test_interrupt_working_requires_explicit_session(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                "• Working (12s • esc to interrupt)\n\n\u203a stale visible input\n  gpt-5.5 xhigh · /tmp/project\n",
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--message",
+                    "hello",
+                    "--interrupt-working",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["stage"], "interrupt_scope")
+            self.assertFalse(any(call[0] == ("tmux", "send-keys", "-t", "%1", "Escape") for call in runner.calls))
+
+    def test_interrupt_working_sends_after_escape_returns_to_idle_prompt(self):
+        submitted_working = f"{guarded_line()}\n\n• Working (1s • esc to interrupt)\n"
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    "• Working (12s • esc to interrupt)\n\n\u203a stale visible input\n  gpt-5.5 xhigh · /tmp/project\n",
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    CODEX_IDLE,
+                    codex_pending_contact(),
+                    submitted_working,
+                ],
+            )
+            runner.responses[("tmux", "list-panes", "-s", "-t", "codex-demo", "-F", PANE_FORMAT)] = CommandResult(
+                (), 0, pane_line("codex-demo", "%1", repo), ""
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--session",
+                    "codex-demo",
+                    "--message",
+                    "hello",
+                    "--interrupt-working",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_OK)
+            self.assertEqual(payload["status"], "sent")
+            self.assertTrue(payload["delivery_proven"])
+            self.assertTrue(payload["interrupted_working"])
+            self.assertEqual(payload["interrupt_key"], "Escape")
+            self.assertEqual(payload["interrupt_pane_state"], "idle_empty_prompt")
+            self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "Escape") for call in runner.calls))
+            self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "C-m") for call in runner.calls))
+
+    def test_interrupt_working_refuses_when_worker_stays_busy(self):
+        with tempfile.TemporaryDirectory() as repo:
+            runner = FakeRunner(
+                repo,
+                [
+                    "• Working (12s • esc to interrupt)\n",
+                    "• Working (13s • esc to interrupt)\n",
+                ],
+            )
+            runner.responses[("tmux", "list-panes", "-s", "-t", "codex-demo", "-F", PANE_FORMAT)] = CommandResult(
+                (), 0, pane_line("codex-demo", "%1", repo), ""
+            )
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "send",
+                    "--repo",
+                    repo,
+                    "--provider",
+                    "codex",
+                    "--session",
+                    "codex-demo",
+                    "--message",
+                    "hello",
+                    "--interrupt-working",
+                    "--interrupt-timeout",
+                    "0",
+                    "--json",
+                    "--contact-id",
+                    "AC-TEST",
+                ],
+                runner=runner,
+                stdout=stdout,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, EXIT_REFUSED)
+            self.assertEqual(payload["stage"], "interrupt_timeout")
+            self.assertEqual(payload["pane_state"], "agent_working")
+            self.assertTrue(any(call[0] == ("tmux", "send-keys", "-t", "%1", "Escape") for call in runner.calls))
+            self.assertFalse(any(call[0][:3] == ("tmux", "load-buffer", "-b") for call in runner.calls))
+
     def test_control_character_message_refuses_before_discovery(self):
         with tempfile.TemporaryDirectory() as repo:
             runner = FakeRunner(repo, CODEX_IDLE)
