@@ -7,7 +7,16 @@ worker handoffs.
 
 ## Active
 
-- No active entries.
+1. **code-map sidecar may produce readable but validator-rejected PROPOSED_CHANGES.patch artifacts containing terminal control bytes after restricted-shell artifact writes; do not apply such artifacts as trusted sidecar output.**
+   - Status: `active`
+   - Slice: `code-map-sidecar-artifact-validation`
+   - Scope: `project`
+   - Source: CudaGroomTool2 code-map sidecar closeout 2026-07-06
+   - Revisit when: before changing or relying on agent-tmux codex-code-map-sidecar artifact generation or validation
+   - Gate: Reproduce or regression-test agent-tmux codex-code-map-validate-artifacts on a sidecar PROPOSED_CHANGES.patch created from minimal shell/builtin redirection; accepted fix must either prevent terminal-control bytes in artifacts or surface a cleaner worker-facing write route before reporting map sidecar output as applyable.
+   - Evidence: none recorded
+   - Recorded: `2026-07-06T11:16:31Z`
+
 
 ## Superseded Or Historical
 
