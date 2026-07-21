@@ -1,6 +1,6 @@
 ---
 name: agent-tmux-control
-description: "Tmux-managed Codex/Claude/CLI agents via agent-tmux/agent-contact: launch, resume, monitor, capture, repo agent routing, latest Codex chat, provider mismatch, guarded contact, unsafe raw PTY."
+description: "agent-tmux/agent-contact terminal control: repo agent launch/resume, latest Codex chat, vanilla/default sessions, provider mismatch, guarded contact, unsafe raw PTY."
 ---
 
 # Agent Tmux Control
@@ -17,6 +17,30 @@ Codex/Claude repo agent, finding or resuming the latest Codex chat in a repo,
 cross-agent terminal coordination, capturing another agent's output, provider
 mismatch refusals, guarded contact recovery, and replacing unsafe raw PTY
 injection. Do not use this skill for ordinary one-shot shell commands.
+
+## Vanilla Provider Sessions
+
+When the user asks for vanilla Codex, vanilla Claude, provider defaults, or a
+custom-rules-versus-default comparison, use `agent-vanilla`. The user does not
+need to know or type the command. Start a fresh session; rules and skills already
+loaded into the current conversation cannot be removed reliably.
+
+```bash
+agent-vanilla codex --workdir /path/to/repo
+agent-vanilla claude --workdir /path/to/repo
+```
+
+The Codex route uses a separate `CODEX_HOME`, disables applicable user/repo
+skills, suppresses project instructions, and keeps the normal authentication
+token plus Codex built-in capabilities. The Claude route uses Claude's native
+`--safe-mode`. Both routes exclude user/repo instructions, custom skills,
+hooks, plugins, MCP configuration, and resumed custom context. Provider-built-in
+capabilities and administrator policy remain in force.
+
+Do not add `--config`, `--profile`, resume/continue flags, custom system prompts,
+settings files, plugins, MCP files, agents, or extra instruction directories to
+a vanilla launch. Label the resulting session and evidence as `vanilla`; do not
+claim an ordinary or resumed session is vanilla.
 
 Use `agent-tmux` for launch, resume, capture, transcript, attach, and stop.
 On this workstation, the `agent-tmux` command should resolve to the

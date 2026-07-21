@@ -531,7 +531,9 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(".local/bin/agent-contact", result.stdout)
             self.assertIn(".local/bin/agent-tmux", result.stdout)
+            self.assertIn(".local/bin/agent-vanilla", result.stdout)
             self.assertIn(".codex/skills/agent-tmux-control/SKILL.md", result.stdout)
+            self.assertIn(".claude/skills/agent-tmux-control/SKILL.md", result.stdout)
             self.assertNotIn("/usr/local/bin/agent-tmux", result.stdout)
 
     def test_windows_install_script_documents_supported_artifacts(self):
