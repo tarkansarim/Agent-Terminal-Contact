@@ -26,30 +26,10 @@
       "notes": "Source-owned user wrapper that preserves normal agent-tmux behavior and adds explicit full-permission Codex worker aliases plus patch-artifact code-map sidecar aliases."
     },
     {
-      "id": "agent-vanilla",
-      "kind": "command",
-      "ownership": "owned",
-      "installed_path": "$HOME/.local/bin/agent-vanilla",
-      "source_path": "bin/agent-vanilla",
-      "install_command": "cd {source_repo} && bash scripts/install.sh --force",
-      "check_command": "cd {source_repo} && bash scripts/install.sh --check",
-      "command_names": ["agent-vanilla"],
-      "notes": "Starts fresh Codex or Claude sessions with provider defaults and without user/repo customization."
-    },
-    {
       "id": "agent-tmux-control-skill",
       "kind": "skill",
       "ownership": "owned",
       "installed_path": "$CODEX_HOME/skills/agent-tmux-control/SKILL.md",
-      "source_path": "skills/agent-tmux-control/SKILL.md",
-      "install_command": "cd {source_repo} && bash scripts/install.sh --force",
-      "check_command": "cd {source_repo} && bash scripts/install.sh --check"
-    },
-    {
-      "id": "agent-tmux-control-skill-claude",
-      "kind": "skill",
-      "ownership": "owned",
-      "installed_path": "$CLAUDE_CONFIG_DIR/skills/agent-tmux-control/SKILL.md",
       "source_path": "skills/agent-tmux-control/SKILL.md",
       "install_command": "cd {source_repo} && bash scripts/install.sh --force",
       "check_command": "cd {source_repo} && bash scripts/install.sh --check"

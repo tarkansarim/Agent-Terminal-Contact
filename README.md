@@ -71,9 +71,7 @@ This installs:
 
 - `~/.local/bin/agent-contact`
 - `~/.local/bin/agent-tmux`
-- `~/.local/bin/agent-vanilla`
 - `${CODEX_HOME:-~/.codex}/skills/agent-tmux-control/SKILL.md`
-- `${CLAUDE_CONFIG_DIR:-~/.claude}/skills/agent-tmux-control/SKILL.md`
 
 When `--force` has to preserve a prior installed skill, backups go under this
 repo's ignored `backups/install/` tree, not under `~/.codex` or `~/.claude`.
@@ -174,16 +172,6 @@ the intended persistent socket.
 If the trust entry is missing, the wrapper refuses before starting tmux and
 prints the TOML block to add.
 
-## Vanilla Provider Comparison
-
-Ask the current agent to use vanilla Codex or vanilla Claude. It starts a fresh
-session through `agent-vanilla`; the user does not need to memorize a command.
-
-The Codex route uses an isolated profile, suppresses `AGENTS.md`, and disables
-applicable user/repo skills while retaining authentication and Codex built-ins.
-The Claude route uses Claude's native `--safe-mode`. Neither route resumes a
-customized conversation or loads user/repo hooks, plugins, or MCP settings.
-
 `gc-idle-owners` cleans up detached `owner-*` Codex sessions that are still at
 the Codex starter template prompt. It defaults to a dry run and a 30 minute age
 threshold. `codex-existing` runs the same conservative cleanup before checking
@@ -227,9 +215,7 @@ This repo owns:
 
 - `~/.local/bin/agent-contact`
 - `~/.local/bin/agent-tmux`
-- `~/.local/bin/agent-vanilla`
 - `${CODEX_HOME:-~/.codex}/skills/agent-tmux-control/SKILL.md`
-- `${CLAUDE_CONFIG_DIR:-~/.claude}/skills/agent-tmux-control/SKILL.md`
 - Windows `agent-contact.ps1` and `agent-contact.cmd` shims
 
 This repo does not own `/usr/local/bin/agent-tmux`.
@@ -249,7 +235,6 @@ Run checks:
 .venv/bin/python -m unittest discover -s tests
 .venv/bin/python -m compileall src tests
 bash -n bin/agent-tmux scripts/install.sh bin/agent-contact
-python -m py_compile bin/agent-vanilla
 git diff --check
 ```
 
