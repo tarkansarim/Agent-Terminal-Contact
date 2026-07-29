@@ -386,7 +386,8 @@ def write_fake_mktemp(bin_dir):
 
 class SkillContractTests(unittest.TestCase):
     def test_skill_description_is_compact_and_body_preserves_discovery_details(self):
-        text = (ROOT / "skills" / "agent-tmux-control" / "SKILL.md").read_text(
+        package = ROOT / "skills" / "agent-tmux-control"
+        text = (package / "SKILL.md").read_text(
             encoding="utf-8"
         )
         match = re.match(r"---\n(?P<frontmatter>.*?)\n---\n(?P<body>.*)", text, re.S)
@@ -398,7 +399,7 @@ class SkillContractTests(unittest.TestCase):
         )
         self.assertIsNotNone(description_match)
         description = description_match.group("description")
-        body = match.group("body")
+        body = (package / "modules" / "core.md").read_text(encoding="utf-8")
 
         self.assertLessEqual(len(description), 210)
         for trigger in (
@@ -422,7 +423,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(moved_detail, body)
 
     def test_skill_requires_agent_contact_for_cross_agent_messages(self):
-        text = (ROOT / "skills" / "agent-tmux-control" / "SKILL.md").read_text(
+        text = (ROOT / "skills" / "agent-tmux-control" / "modules" / "core.md").read_text(
             encoding="utf-8"
         )
         self.assertIn("Use `agent-contact send`", text)
@@ -493,26 +494,22 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("source-owned user-level wrapper", text)
         self.assertIn("/usr/local/bin/agent-tmux", text)
 
-    def test_skill_documents_supervisor_delegation_gate(self):
-        text = (ROOT / "skills" / "agent-tmux-control" / "SKILL.md").read_text(
+    def test_skill_documents_supervisor_ownership_boundary(self):
+        text = (ROOT / "skills" / "agent-tmux-control" / "modules" / "core.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("## Supervisor Delegation Gate", text)
-        self.assertIn("Objective Gate", text)
-        self.assertIn("At most 2 files changed", text)
-        self.assertIn("At most ~40 lines changed", text)
-        self.assertIn("No new files created", text)
-        self.assertIn("No build-system, shader, or pipeline file changes", text)
-        self.assertIn("Delegation Default", text)
-        self.assertIn("Direct edit:", text)
-        self.assertIn("No justification line = violation", text)
+        self.assertIn("## Supervisor Ownership Boundary", text)
+        self.assertIn(
+            "Supervision ownership is a role boundary, not a file-count or line-count",
+            text,
+        )
+        self.assertIn("Use evidence-based judgment within the user's assigned role.", text)
+        self.assertIn("When the user assigned supervision only", text)
+        self.assertNotIn("Do not apply supervisor judgment to override the gate", text)
+        self.assertNotIn("After 3 consecutive direct edits", text)
         self.assertIn("Minimal Supervisor Nudges", text)
         self.assertIn("smallest\nnatural-language nudge", text)
         self.assertIn("over-detailed supervisor prompts", text)
-        self.assertIn("Anti-Drift Tripwire", text)
-        self.assertIn("3 consecutive direct edits", text)
-        self.assertIn("Closeout Audit", text)
-        self.assertIn("direct-edit count vs. worker-task count", text)
         self.assertIn("agent-contact delegate", text)
         self.assertIn("--task-file", text)
         self.assertIn("PLANE-233", text)
@@ -531,15 +528,170 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(".local/bin/agent-contact", result.stdout)
             self.assertIn(".local/bin/agent-tmux", result.stdout)
-            self.assertIn(".codex/skills/agent-tmux-control/SKILL.md", result.stdout)
+            self.assertIn(".codex/skills/agent-tmux-control", result.stdout)
             self.assertNotIn("/usr/local/bin/agent-tmux", result.stdout)
+
+    def test_dual_provider_install_entrypoint_is_source_owned(self):
+        install_all = ROOT / "scripts" / "install-all.sh"
+        install_claude = ROOT / "scripts" / "install_claude_skill.sh"
+        self.assertTrue(install_all.is_file())
+        self.assertTrue(install_claude.is_file())
+        all_text = install_all.read_text(encoding="utf-8")
+        claude_text = install_claude.read_text(encoding="utf-8")
+        self.assertIn('"${SCRIPT_DIR}/install.sh" "$@"', all_text)
+        self.assertIn('"${SCRIPT_DIR}/install_claude_skill.sh" "$@"', all_text)
+        self.assertIn('${CLAUDE_HOME:-${HOME}/.claude}', claude_text)
+        self.assertIn(".skill-source", claude_text)
+        self.assertIn("backups/install", claude_text)
+        self.assertIn('rsync -a --delete "${SOURCE}/" "${STAGE}/"', claude_text)
+
+    def test_codex_installer_snapshots_and_checks_complete_skill_package(self):
+        with tempfile.TemporaryDirectory() as home:
+            home_path = Path(home)
+            codex_home = home_path / ".codex"
+            bin_dir = home_path / ".local" / "bin"
+            env = {
+                "HOME": home,
+                "CODEX_HOME": str(codex_home),
+                "BIN_DIR": str(bin_dir),
+                "PATH": f"{bin_dir}:/usr/bin:/bin",
+            }
+            install = subprocess.run(
+                ["bash", "scripts/install.sh", "--force"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(install.returncode, 0, install.stderr)
+            source_core = ROOT / "skills" / "agent-tmux-control" / "modules" / "core.md"
+            installed_package = codex_home / "skills" / "agent-tmux-control"
+            installed_core = installed_package / "modules" / "core.md"
+            self.assertEqual(installed_core.read_bytes(), source_core.read_bytes())
+
+            (installed_package / "stale.md").write_text("stale\n", encoding="utf-8")
+            check = subprocess.run(
+                ["bash", "scripts/install.sh", "--check"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(check.returncode, 3)
+            self.assertIn("installed skill package differs from repo source", check.stderr)
+
+    def test_claude_installer_snapshots_and_checks_complete_skill_package(self):
+        with tempfile.TemporaryDirectory() as home:
+            claude_home = Path(home) / ".claude"
+            env = {
+                "HOME": home,
+                "CLAUDE_HOME": str(claude_home),
+                "PATH": "/usr/bin:/bin",
+            }
+            install = subprocess.run(
+                ["bash", "scripts/install_claude_skill.sh", "--force"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(install.returncode, 0, install.stderr)
+            source_core = ROOT / "skills" / "agent-tmux-control" / "modules" / "core.md"
+            installed_package = claude_home / "skills" / "agent-tmux-control"
+            installed_core = installed_package / "modules" / "core.md"
+            self.assertEqual(installed_core.read_bytes(), source_core.read_bytes())
+            self.assertEqual(
+                (installed_package / ".skill-source").read_text(encoding="utf-8").strip(),
+                str(ROOT),
+            )
+
+            installed_core.write_text("stale module\n", encoding="utf-8")
+            check = subprocess.run(
+                ["bash", "scripts/install_claude_skill.sh", "--check"],
+                cwd=ROOT,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(check.returncode, 3)
+            self.assertIn("installed package differs from source", check.stderr)
+
+    def test_package_installers_preserve_current_snapshot_when_staging_fails(self):
+        with tempfile.TemporaryDirectory() as home:
+            home_path = Path(home)
+            codex_home = home_path / ".codex"
+            claude_home = home_path / ".claude"
+            bin_dir = home_path / ".local" / "bin"
+            codex_env = {
+                "HOME": home,
+                "CODEX_HOME": str(codex_home),
+                "BIN_DIR": str(bin_dir),
+                "PATH": "/usr/bin:/bin",
+            }
+            claude_env = {
+                "HOME": home,
+                "CLAUDE_HOME": str(claude_home),
+                "PATH": "/usr/bin:/bin",
+            }
+            for script, env in (
+                ("scripts/install.sh", codex_env),
+                ("scripts/install_claude_skill.sh", claude_env),
+            ):
+                install = subprocess.run(
+                    ["bash", script, "--force"],
+                    cwd=ROOT,
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                )
+                self.assertEqual(install.returncode, 0, install.stderr)
+
+            codex_core = codex_home / "skills" / "agent-tmux-control" / "modules" / "core.md"
+            claude_core = claude_home / "skills" / "agent-tmux-control" / "modules" / "core.md"
+            codex_before = codex_core.read_bytes()
+            claude_before = claude_core.read_bytes()
+            fake_bin = home_path / "fake-bin"
+            fake_bin.mkdir()
+            fake_rsync = fake_bin / "rsync"
+            fake_rsync.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+            fake_rsync.chmod(0o755)
+            failing_path = f"{fake_bin}:/usr/bin:/bin"
+
+            for script, env in (
+                ("scripts/install.sh", {**codex_env, "PATH": failing_path}),
+                ("scripts/install_claude_skill.sh", {**claude_env, "PATH": failing_path}),
+            ):
+                reinstall = subprocess.run(
+                    ["bash", script, "--force"],
+                    cwd=ROOT,
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                )
+                self.assertNotEqual(reinstall.returncode, 0)
+
+            self.assertEqual(codex_core.read_bytes(), codex_before)
+            self.assertEqual(claude_core.read_bytes(), claude_before)
 
     def test_windows_install_script_documents_supported_artifacts(self):
         text = (ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
         self.assertIn("agent-contact.ps1", text)
         self.assertIn("agent-contact.cmd", text)
         self.assertIn("agent-contact.root", text)
-        self.assertIn("agent-tmux-control/SKILL.md", text)
+        self.assertIn("agent-tmux-control", text)
+        self.assertIn("Copy-SkillPackageSnapshot", text)
         self.assertIn("backups/install", text)
         self.assertIn("Move-LegacyProviderRootBackups", text)
         self.assertIn("Linux/WSL only", text)
@@ -642,7 +794,7 @@ class SkillContractTests(unittest.TestCase):
                 },
             )
             self.assertEqual(check.returncode, 3)
-            self.assertIn("installed skill differs from repo source", check.stderr)
+            self.assertIn("installed skill package differs from repo source", check.stderr)
 
     def test_install_check_refuses_skill_load_backup_artifacts(self):
         with tempfile.TemporaryDirectory() as home:
@@ -725,8 +877,14 @@ class SkillContractTests(unittest.TestCase):
             self.assertFalse(stale_skill_backup.exists())
             self.assertFalse(stale_dir_backup.exists())
             self.assertFalse((codex_home / "agent-terminal-contact").exists())
+            package_backups = list(backup_dir.glob("agent-tmux-control.bak-*"))
+            package_backups = [
+                path for path in package_backups
+                if (path / "SKILL.md.bak-20260517T122141").exists()
+            ]
+            self.assertEqual(len(package_backups), 1)
             self.assertEqual(
-                (backup_dir / "SKILL.md.bak-20260517T122141").read_text(encoding="utf-8"),
+                (package_backups[0] / "SKILL.md.bak-20260517T122141").read_text(encoding="utf-8"),
                 "stale skill backup\n",
             )
             self.assertEqual(
@@ -846,9 +1004,12 @@ class SkillContractTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             backup_dir = backup_root / "codex" / "agent-tmux-control"
-            backups = list(backup_dir.glob("SKILL.md.bak-*"))
+            backups = list(backup_dir.glob("agent-tmux-control.bak-*"))
             self.assertEqual(len(backups), 1)
-            self.assertEqual(backups[0].read_text(encoding="utf-8"), "local hardened skill\n")
+            self.assertEqual(
+                (backups[0] / "SKILL.md").read_text(encoding="utf-8"),
+                "local hardened skill\n",
+            )
             self.assertFalse((codex_home / "agent-terminal-contact").exists())
             self.assertEqual(list(skill_dir.glob("*.bak*")), [])
             self.assertEqual(installed_skill.read_text(encoding="utf-8"), source_skill.read_text(encoding="utf-8"))
@@ -871,7 +1032,7 @@ class SkillContractTests(unittest.TestCase):
                 env={"HOME": home, "CODEX_HOME": str(codex_home), "PATH": "/usr/bin:/bin"},
             )
             self.assertEqual(result.returncode, 3)
-            self.assertIn("refusing to overwrite symlinked installed skill", result.stderr)
+            self.assertIn("refusing to overwrite symlinked installed skill package", result.stderr)
             self.assertEqual(external_skill.read_text(encoding="utf-8"), "external skill must survive\n")
 
     def test_install_refuses_symlinked_skill_directory_without_force(self):

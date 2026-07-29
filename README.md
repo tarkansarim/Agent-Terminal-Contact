@@ -63,18 +63,22 @@ Use `--session <tmux-session>` when you already know the exact tmux session.
 From this repo:
 
 ```bash
-bash scripts/install.sh --force
-bash scripts/install.sh --check
+bash scripts/install-all.sh --force
+bash scripts/install-all.sh --check
 ```
 
 This installs:
 
 - `~/.local/bin/agent-contact`
 - `~/.local/bin/agent-tmux`
-- `${CODEX_HOME:-~/.codex}/skills/agent-tmux-control/SKILL.md`
+- `${CODEX_HOME:-~/.codex}/skills/agent-tmux-control/`
+- `${CLAUDE_HOME:-~/.claude}/skills/agent-tmux-control/`
 
 When `--force` has to preserve a prior installed skill, backups go under this
 repo's ignored `backups/install/` tree, not under `~/.codex` or `~/.claude`.
+Each provider receives a snapshot of the complete source package, including
+`SKILL.md` and `modules/core.md`. Install checks compare the complete tree and
+reject symlinks or stale extra payload files.
 
 The installed `agent-tmux` is a wrapper owned by this repo. Normal commands are
 passed through to `/usr/local/bin/agent-tmux`. The wrapper only takes over the
@@ -215,7 +219,8 @@ This repo owns:
 
 - `~/.local/bin/agent-contact`
 - `~/.local/bin/agent-tmux`
-- `${CODEX_HOME:-~/.codex}/skills/agent-tmux-control/SKILL.md`
+- `${CODEX_HOME:-~/.codex}/skills/agent-tmux-control/`
+- `${CLAUDE_HOME:-~/.claude}/skills/agent-tmux-control/`
 - Windows `agent-contact.ps1` and `agent-contact.cmd` shims
 
 This repo does not own `/usr/local/bin/agent-tmux`.

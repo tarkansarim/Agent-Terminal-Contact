@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "project": "AgentTerminalContact",
-  "rollout_command": "cd {source_repo} && bash scripts/install.sh --force && bash scripts/install.sh --check",
+  "rollout_command": "cd {source_repo} && bash scripts/install-all.sh --force && bash scripts/install-all.sh --check",
   "artifacts": [
     {
       "id": "agent-contact",
@@ -29,10 +29,19 @@
       "id": "agent-tmux-control-skill",
       "kind": "skill",
       "ownership": "owned",
-      "installed_path": "$CODEX_HOME/skills/agent-tmux-control/SKILL.md",
-      "source_path": "skills/agent-tmux-control/SKILL.md",
+      "installed_path": "$CODEX_HOME/skills/agent-tmux-control",
+      "source_path": "skills/agent-tmux-control",
       "install_command": "cd {source_repo} && bash scripts/install.sh --force",
       "check_command": "cd {source_repo} && bash scripts/install.sh --check"
+    },
+    {
+      "id": "agent-tmux-control-claude-skill",
+      "kind": "skill",
+      "ownership": "owned",
+      "installed_path": "$CLAUDE_HOME/skills/agent-tmux-control",
+      "source_path": "skills/agent-tmux-control",
+      "install_command": "cd {source_repo} && bash scripts/install_claude_skill.sh --force",
+      "check_command": "cd {source_repo} && bash scripts/install_claude_skill.sh --check"
     },
     {
       "id": "agent-contact-windows-powershell",

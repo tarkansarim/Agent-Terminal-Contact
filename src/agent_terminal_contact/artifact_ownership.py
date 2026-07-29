@@ -148,6 +148,7 @@ def _environment(env: dict[str, str] | None) -> dict[str, str]:
     result = dict(os.environ if env is None else env)
     result.setdefault("HOME", str(Path.home()))
     result.setdefault("CODEX_HOME", str(Path(result["HOME"]) / ".codex"))
+    result.setdefault("CLAUDE_HOME", str(Path(result["HOME"]) / ".claude"))
     result.setdefault("PATH", os.environ.get("PATH", ""))
     return result
 
@@ -185,12 +186,70 @@ def _installed_match(installed_path: Path, source_path: Path | None, ownership: 
     if installed_path.is_symlink():
         try:
             if installed_path.resolve(strict=True) == source_path.resolve(strict=True):
+                if source_path.is_dir():
+                    return {
+                        "matches": False,
+                        "type": "symlink",
+                        "reason": "installed package directory must be a snapshot, not a symlink",
+                    }
                 return {"matches": True, "type": "symlink", "reason": "installed symlink resolves to source path"}
         except OSError as exc:
             return {"matches": False, "type": "broken_symlink", "reason": str(exc)}
     if installed_path.is_file() and source_path.is_file() and filecmp.cmp(installed_path, source_path, shallow=False):
         return {"matches": True, "type": "bytes", "reason": "installed file bytes match source file"}
+    if installed_path.is_dir() and source_path.is_dir():
+        difference = _directory_difference(installed_path, source_path)
+        if difference is None:
+            return {"matches": True, "type": "tree", "reason": "installed package tree matches source tree"}
+        return {"matches": False, "type": "different", "reason": difference}
     return {"matches": False, "type": "different", "reason": "installed artifact differs from source path"}
+
+
+def _directory_difference(installed_path: Path, source_path: Path) -> str | None:
+    installed_entries = _directory_entries(installed_path)
+    source_entries = _directory_entries(source_path)
+    if isinstance(installed_entries, str):
+        return installed_entries
+    if isinstance(source_entries, str):
+        return source_entries
+
+    installed_names = set(installed_entries)
+    source_names = set(source_entries)
+    if installed_names != source_names:
+        missing = sorted(source_names - installed_names)
+        extra = sorted(installed_names - source_names)
+        details = []
+        if missing:
+            details.append(f"missing entries: {', '.join(missing)}")
+        if extra:
+            details.append(f"extra entries: {', '.join(extra)}")
+        return "installed package tree differs from source tree: " + "; ".join(details)
+
+    for relative in sorted(source_names):
+        source_entry = source_entries[relative]
+        installed_entry = installed_entries[relative]
+        if source_entry.is_dir() != installed_entry.is_dir():
+            return f"installed package entry type differs from source: {relative}"
+        if source_entry.is_file() != installed_entry.is_file():
+            return f"installed package entry type differs from source: {relative}"
+        if source_entry.is_file() and not filecmp.cmp(installed_entry, source_entry, shallow=False):
+            return f"installed package file differs from source: {relative}"
+    return None
+
+
+def _directory_entries(root: Path) -> dict[str, Path] | str:
+    entries: dict[str, Path] = {}
+    for current, directories, files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        for name in directories + files:
+            entry = current_path / name
+            relative = entry.relative_to(root).as_posix()
+            if entry.is_symlink():
+                return f"package tree contains symlink: {relative}"
+            if not entry.is_dir() and not entry.is_file():
+                return f"package tree contains unsupported entry: {relative}"
+            entries[relative] = entry
+    return entries
 
 
 def _matches_query(report: dict[str, Any], query: str, environment: dict[str, str]) -> bool:

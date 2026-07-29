@@ -15,9 +15,9 @@ Usage:
 
 Installs AgentTerminalContact for the current user on Windows:
   - writes agent-contact.ps1 and agent-contact.cmd shims under `$BIN_DIR or ~/.local/bin
-  - copies skills/agent-tmux-control/SKILL.md into `$CODEX_HOME/skills/agent-tmux-control/SKILL.md
+  - snapshot-installs skills/agent-tmux-control into `$CODEX_HOME/skills/agent-tmux-control
 
-Forced skill replacement backs up prior skill files under this repo's ignored
+Forced skill replacement backs up the prior package under this repo's ignored
 backups/install/ tree, not under `$CODEX_HOME.
 
 The source-owned agent-tmux wrapper is Bash/tmux-specific and is installed by
@@ -86,6 +86,125 @@ function Assert-FileBytesMatch {
     $actualText = Get-Content -LiteralPath $Actual -Raw
     if ($expectedText -ne $actualText) {
         throw "install.ps1: $Label differs from repo source: $Actual"
+    }
+}
+
+function Get-PackageTree {
+    param([string]$Root, [string]$Label)
+    $rootItem = Get-Item -LiteralPath $Root -Force -ErrorAction Stop
+    if (-not $rootItem.PSIsContainer -or ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "install.ps1: $Label must be a real directory, not a symlink: $Root"
+    }
+
+    $entries = [System.Collections.Generic.List[string]]::new()
+    foreach ($item in Get-ChildItem -LiteralPath $Root -Force -Recurse) {
+        $relative = [IO.Path]::GetRelativePath($Root, $item.FullName).Replace("\", "/")
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "install.ps1: $Label contains a symlink or reparse point: $relative"
+        }
+        if ($item.PSIsContainer) {
+            $entries.Add("D $relative")
+            continue
+        }
+        $hash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
+        $entries.Add("F $relative $hash")
+    }
+    return @($entries | Sort-Object)
+}
+
+function Test-PackageTreesMatch {
+    param([string]$Source, [string]$Target)
+    try {
+        $sourceTree = Get-PackageTree $Source "source skill package"
+        $targetTree = Get-PackageTree $Target "installed skill package"
+    }
+    catch {
+        return $false
+    }
+    return $null -eq (Compare-Object -ReferenceObject $sourceTree -DifferenceObject $targetTree)
+}
+
+function Get-UniqueBackupPath {
+    param([string]$BackupDir)
+    $stamp = Get-Date -Format "yyyyMMddTHHmmss"
+    $candidate = Join-Path $BackupDir "agent-tmux-control.bak-$stamp"
+    $counter = 1
+    while (Test-Path -LiteralPath $candidate) {
+        $candidate = Join-Path $BackupDir "agent-tmux-control.bak-$stamp-$counter"
+        $counter += 1
+    }
+    return $candidate
+}
+
+function Copy-SkillPackageSnapshot {
+    param(
+        [string]$Source,
+        [string]$Target,
+        [string]$BackupDir,
+        [string]$ProviderHome
+    )
+    if ([IO.Path]::GetFullPath($Source) -eq [IO.Path]::GetFullPath($Target)) {
+        throw "install.ps1: source skill package and install target are the same path: $Target"
+    }
+    Get-PackageTree $Source "source skill package" | Out-Null
+    $skillFile = Join-Path $Source "SKILL.md"
+    if (-not (Test-Path -LiteralPath $skillFile -PathType Leaf)) {
+        throw "install.ps1: source SKILL.md is missing: $skillFile"
+    }
+
+    $targetItem = Get-Item -LiteralPath $Target -Force -ErrorAction SilentlyContinue
+    $targetMatches = $null -ne $targetItem -and (Test-PackageTreesMatch $Source $Target)
+    if ($null -ne $targetItem -and -not $targetMatches -and -not $Force) {
+        throw "install.ps1: refusing to overwrite divergent installed skill package without -Force: $Target"
+    }
+
+    $token = [Guid]::NewGuid().ToString("N")
+    $stage = Join-Path $ProviderHome ".agent-tmux-control.new.$token"
+    $old = Join-Path $ProviderHome ".agent-tmux-control.old.$token"
+    $backup = $null
+    try {
+        Invoke-InstallAction {
+            Copy-Item -LiteralPath $Source -Destination $stage -Recurse -Force
+        } "snapshot $Source -> $stage"
+
+        if ($null -ne $targetItem) {
+            if ($targetMatches) {
+                Invoke-InstallAction {
+                    Move-Item -LiteralPath $Target -Destination $old
+                } "move current package outside the skill root"
+            }
+            else {
+                $backup = Get-UniqueBackupPath $BackupDir
+                Invoke-InstallAction {
+                    New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
+                    Move-Item -LiteralPath $Target -Destination $backup
+                } "backup divergent skill package to $backup"
+            }
+        }
+
+        Invoke-InstallAction {
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Target) | Out-Null
+            Move-Item -LiteralPath $stage -Destination $Target
+        } "activate skill package snapshot at $Target"
+    }
+    catch {
+        if (-not (Test-Path -LiteralPath $Target)) {
+            if (Test-Path -LiteralPath $old) {
+                Move-Item -LiteralPath $old -Destination $Target
+            }
+            elseif ($backup -and (Test-Path -LiteralPath $backup)) {
+                Move-Item -LiteralPath $backup -Destination $Target
+            }
+        }
+        throw
+    }
+    finally {
+        if (Test-Path -LiteralPath $stage) {
+            Remove-Item -LiteralPath $stage -Recurse -Force
+        }
+        if (Test-Path -LiteralPath $old) {
+            Remove-Item -LiteralPath $old -Recurse -Force
+        }
     }
 }
 
@@ -164,8 +283,8 @@ $HomeDir = Get-HomeDir
 $CodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HomeDir ".codex" }
 $BinDir = if ($env:BIN_DIR) { $env:BIN_DIR } else { Join-Path (Join-Path $HomeDir ".local") "bin" }
 $BackupRoot = if ($env:AGENT_TERMINAL_CONTACT_BACKUP_ROOT) { $env:AGENT_TERMINAL_CONTACT_BACKUP_ROOT } else { Join-Path $Root "backups/install" }
-$SkillSource = Join-Path $Root "skills/agent-tmux-control/SKILL.md"
-$SkillTarget = Join-Path $CodexHome "skills/agent-tmux-control/SKILL.md"
+$SkillSource = Join-Path $Root "skills/agent-tmux-control"
+$SkillTarget = Join-Path $CodexHome "skills/agent-tmux-control"
 $SkillBackupDir = Join-Path $BackupRoot "codex/agent-tmux-control"
 $LegacySkillBackupDir = Join-Path $CodexHome "agent-terminal-contact/backups/agent-tmux-control"
 $ShimPs1Source = Join-Path $Root "bin/agent-contact.ps1"
@@ -177,7 +296,9 @@ $RootMarker = Join-Path $BinDir "agent-contact.root"
 if ($Check) {
     Assert-FileBytesMatch $ShimPs1Source $ShimPs1 "agent-contact.ps1 shim"
     Assert-FileBytesMatch $ShimCmdSource $ShimCmd "agent-contact.cmd shim"
-    Assert-FileBytesMatch $SkillSource $SkillTarget "agent-tmux-control skill"
+    if (-not (Test-PackageTreesMatch $SkillSource $SkillTarget)) {
+        throw "install.ps1: installed skill package differs from repo source: $SkillTarget"
+    }
     if (-not (Test-Path -LiteralPath $RootMarker -PathType Leaf)) {
         throw "install.ps1: agent-contact root marker is missing: $RootMarker"
     }
@@ -196,7 +317,7 @@ if ($Check) {
 
 Copy-WithBackup $ShimPs1Source $ShimPs1 $BinDir "agent-contact.ps1"
 Copy-WithBackup $ShimCmdSource $ShimCmd $BinDir "agent-contact.cmd"
-Copy-WithBackup $SkillSource $SkillTarget $SkillBackupDir "SKILL.md"
+Copy-SkillPackageSnapshot $SkillSource $SkillTarget $SkillBackupDir $CodexHome
 Move-LegacyProviderRootBackups $LegacySkillBackupDir $SkillBackupDir
 Invoke-InstallAction {
     New-Item -ItemType Directory -Force -Path $BinDir | Out-Null

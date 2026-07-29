@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -109,6 +110,69 @@ class ArtifactOwnershipCliTests(unittest.TestCase):
             self.assertTrue(match["installed_matches_source"])
             self.assertEqual(match["match_type"], "bytes")
 
+    def test_artifact_info_compares_complete_copied_skill_package(self):
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            source_tool = root_path / "bin" / "example-tool"
+            source_tool.parent.mkdir()
+            source_tool.write_text("#!/bin/sh\n", encoding="utf-8")
+            source_skill = root_path / "skills" / "example"
+            (source_skill / "modules").mkdir(parents=True)
+            (source_skill / "SKILL.md").write_text("relay\n", encoding="utf-8")
+            (source_skill / "modules" / "core.md").write_text("details\n", encoding="utf-8")
+            installed_tool = root_path / "installed" / "example-tool"
+            installed_tool.parent.mkdir()
+            installed_tool.symlink_to(source_tool)
+            installed_skill = root_path / "installed" / "example"
+            shutil.copytree(source_skill, installed_skill)
+            manifest = write_manifest(root_path, installed_tool, installed_skill, source_tool, source_skill)
+
+            stdout = io.StringIO()
+            code = main(
+                ["artifact-info", "example-skill", "--json", "--manifest", str(manifest)],
+                stdout=stdout,
+            )
+            match = json.loads(stdout.getvalue())["matches"][0]
+            self.assertEqual(code, EXIT_OK)
+            self.assertTrue(match["installed_matches_source"])
+            self.assertEqual(match["match_type"], "tree")
+
+            (installed_skill / "modules" / "core.md").write_text("stale\n", encoding="utf-8")
+            stdout = io.StringIO()
+            main(
+                ["artifact-info", "example-skill", "--json", "--manifest", str(manifest)],
+                stdout=stdout,
+            )
+            match = json.loads(stdout.getvalue())["matches"][0]
+            self.assertFalse(match["installed_matches_source"])
+            self.assertIn("modules/core.md", match["match_reason"])
+
+    def test_artifact_info_rejects_symlinks_inside_copied_skill_package(self):
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            source_tool = root_path / "bin" / "example-tool"
+            source_tool.parent.mkdir()
+            source_tool.write_text("#!/bin/sh\n", encoding="utf-8")
+            source_skill = root_path / "skills" / "example"
+            source_skill.mkdir(parents=True)
+            (source_skill / "SKILL.md").write_text("relay\n", encoding="utf-8")
+            installed_tool = root_path / "installed" / "example-tool"
+            installed_tool.parent.mkdir()
+            installed_tool.symlink_to(source_tool)
+            installed_skill = root_path / "installed" / "example"
+            installed_skill.mkdir()
+            (installed_skill / "SKILL.md").symlink_to(source_skill / "SKILL.md")
+            manifest = write_manifest(root_path, installed_tool, installed_skill, source_tool, source_skill)
+
+            stdout = io.StringIO()
+            main(
+                ["artifact-info", "example-skill", "--json", "--manifest", str(manifest)],
+                stdout=stdout,
+            )
+            match = json.loads(stdout.getvalue())["matches"][0]
+            self.assertFalse(match["installed_matches_source"])
+            self.assertIn("symlink", match["match_reason"])
+
     def test_artifact_info_reports_explicit_not_owned_artifact(self):
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)
@@ -169,9 +233,11 @@ class ArtifactOwnershipCliTests(unittest.TestCase):
         stdout = io.StringIO()
         old_home = os.environ.get("HOME")
         old_codex_home = os.environ.get("CODEX_HOME")
+        old_claude_home = os.environ.get("CLAUDE_HOME")
         with tempfile.TemporaryDirectory() as home:
             os.environ["HOME"] = home
             os.environ["CODEX_HOME"] = str(Path(home) / ".codex")
+            os.environ["CLAUDE_HOME"] = str(Path(home) / ".claude")
             try:
                 code = main(["artifact-info", "--all", "--json", "--manifest", str(manifest)], stdout=stdout)
             finally:
@@ -183,12 +249,17 @@ class ArtifactOwnershipCliTests(unittest.TestCase):
                     os.environ.pop("CODEX_HOME", None)
                 else:
                     os.environ["CODEX_HOME"] = old_codex_home
+                if old_claude_home is None:
+                    os.environ.pop("CLAUDE_HOME", None)
+                else:
+                    os.environ["CLAUDE_HOME"] = old_claude_home
         payload = json.loads(stdout.getvalue())
         ids = {match["id"]: match for match in payload["matches"]}
         self.assertEqual(code, EXIT_OK)
         self.assertEqual(ids["agent-contact"]["ownership"], "owned")
         self.assertEqual(ids["agent-tmux-wrapper"]["ownership"], "owned")
         self.assertEqual(ids["agent-tmux-control-skill"]["ownership"], "owned")
+        self.assertEqual(ids["agent-tmux-control-claude-skill"]["ownership"], "owned")
         self.assertEqual(ids["agent-contact-windows-powershell"]["ownership"], "owned")
         self.assertEqual(ids["agent-contact-windows-cmd"]["ownership"], "owned")
         self.assertEqual(ids["system-agent-tmux-helper"]["ownership"], "not_owned")
@@ -199,6 +270,7 @@ class ArtifactOwnershipCliTests(unittest.TestCase):
         stdout = io.StringIO()
         old_home = os.environ.get("HOME")
         old_codex_home = os.environ.get("CODEX_HOME")
+        old_claude_home = os.environ.get("CLAUDE_HOME")
         old_path = os.environ.get("PATH")
         old_pathext = os.environ.get("PATHEXT")
         with tempfile.TemporaryDirectory() as home:
@@ -209,6 +281,7 @@ class ArtifactOwnershipCliTests(unittest.TestCase):
             installed_cmd.write_text((root / "bin" / "agent-contact.cmd").read_text(encoding="utf-8"), encoding="utf-8")
             os.environ["HOME"] = home
             os.environ["CODEX_HOME"] = str(home_path / ".codex")
+            os.environ["CLAUDE_HOME"] = str(home_path / ".claude")
             os.environ["PATH"] = str(bin_dir)
             os.environ["PATHEXT"] = ".CMD;.PS1"
             try:
@@ -222,6 +295,10 @@ class ArtifactOwnershipCliTests(unittest.TestCase):
                     os.environ.pop("CODEX_HOME", None)
                 else:
                     os.environ["CODEX_HOME"] = old_codex_home
+                if old_claude_home is None:
+                    os.environ.pop("CLAUDE_HOME", None)
+                else:
+                    os.environ["CLAUDE_HOME"] = old_claude_home
                 if old_path is None:
                     os.environ.pop("PATH", None)
                 else:
